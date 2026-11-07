@@ -2,20 +2,22 @@ using Test
 include("corpus.jl")
 include("testruntime.jl")
 include("testembedding.jl")
+include("testunicode.jl")
 
 # Idioms that must compile to a standalone executable giving the same result as Julia.
 # Known gaps, and what is needed. When one starts working, its `@test_broken` fails (as an
 # unexpected pass): remove it from here, and it will be tested as supported.
 const KNOWN_BROKEN = Dict(
     "Matrix"          => "BLAS (`dgemm`) is not linked",
-    "parse Int"       => "dynamic behavior in `tryparse_internal`",
     "catch typed"     => "objects have no type tag, so `isa` on a caught exception is wrong",
-    # printing: there is no `stdout` yet, and `show` needs type information at run time
-    (name => "no stdout: needs an `IO` for the standard streams (and type tags, for `show`)" for name in (
-        "println Int", "println String", "print Float64", "println Bool/Char", "println mixed",
-        "interpolation", "println Vector", "println tuple", "show", "@show", "print in loop",
-        "repr", "@printf", "stderr",
-    ))...,
+    # `show` of containers builds an `IOContext` (an `ImmutableDict` of type objects) and prints type names
+    "println Vector"  => "`show` of containers needs type objects at run time (type descriptors)",
+    "println tuple"   => "`show` of containers needs type objects at run time (type descriptors)",
+    "repr"            => "`show` of containers needs type objects at run time (type descriptors)",
+    # the globals `stdout` and `stderr` have the abstract type `IO`: use `STDOUT`, `STDERR`
+    "stderr"          => "`stderr` is a global of the abstract type `IO`: use `STDERR`",
+    "@printf"         => "`@printf` without an `io` uses `stdout`: use `@printf(STDOUT, ...)`",
+    "Printf.Format runtime" => "a `Printf.Format` is parsed from its string at run time, which is dynamic: make it once",
 )
 
 @testset "StaticCompilerOverrides" begin
@@ -48,7 +50,7 @@ end
 # Code that can't work as a standalone binary is rejected when compiling, rather than crashing
 # (or silently misbehaving) when it is run, unless that is asked for
 @testset "Strict mode" begin
-    printing() = (println(42); 1) # needs `stdout`, and dynamic dispatch (`show`)
+    printing() = (println([1, 2, 3]); 1) # `show` of an array needs types at run time (dynamic dispatch)
     main = StaticCompilerOverrides.make_main(printing)
     compile(; kwargs...) = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)); kwargs...)
 
@@ -59,10 +61,22 @@ end
     @test occursin("strict = false", sprint(showerror, err))
     @test "ijl_apply_generic" in undefined_symbols(printing)    # reported by the diagnostics too
 
-    # strict = false compiles it anyway (and the calls abort the program if they are reached)
-    @test isfile(compile(strict = false))
-    # `allow` accepts specific runtime functions: not enough here, since there are others
-    @test_throws UnsupportedCodeError compile(allow = ("ijl_apply_generic",))
+    # the global `stderr` has the abstract type `IO`: the message says to use `STDERR`
+    uses_stderr() = (println(stderr, "message"); 1)
+    stderr_main = StaticCompilerOverrides.make_main(uses_stderr)
+    err2 = try Base.invokelatest(compile_executable, stderr_main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(stderr_main))); nothing catch e; e end
+    @test err2 isa UnsupportedCodeError
+    @test occursin("STDERR", sprint(showerror, err2))
+
+    # strict = false compiles code that has dynamic dispatch anyway (and the call aborts the program if
+    # it is reached); `allow` accepts specific runtime functions, which is not enough here as there are
+    # references to Julia objects too
+    dynamic() = (x = Base.inferencebarrier(3); Int(x + 1))
+    dyn_main = StaticCompilerOverrides.make_main(dynamic)
+    compile_dynamic(; kwargs...) = Base.invokelatest(compile_executable, dyn_main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(dyn_main)); kwargs...)
+    @test_throws UnsupportedCodeError compile_dynamic()
+    @test isfile(compile_dynamic(strict = false))
+    @test_throws UnsupportedCodeError compile_dynamic(allow = ("ijl_apply_generic",))
     # code that is supported is not affected
     ok() = 1
     ok_main = StaticCompilerOverrides.make_main(ok)

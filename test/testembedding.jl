@@ -74,3 +74,24 @@ using LLVM: LLVM, @dispose
     @test isempty(failures)
     isempty(failures) || println(join(first(failures, 10), "\n"), "\n... ", length(failures), " in total")
 end
+
+# Constants are shared by all the functions of a library: they are compiled separately (and then
+# linked), and a mutable object that they all refer to has to remain one object
+@testset "Embedding constants: shared state across functions" begin
+    using Libdl: dlopen, dlsym, dlclose
+    @eval const SHARED_COUNTER = Ref(0)
+    @eval shared_inc() = (SHARED_COUNTER[] += 1; Int(SHARED_COUNTER[]))
+    @eval shared_get() = Int(SHARED_COUNTER[])
+    lib = Base.invokelatest(compile_shlib, [(shared_inc, ()), (shared_get, ())], mktempdir())
+    handle = dlopen(lib)
+    try
+        inc() = ccall(dlsym(handle, :shared_inc), Int, ())
+        get() = ccall(dlsym(handle, :shared_get), Int, ())
+        @test get() == 0
+        @test inc() == 1
+        @test inc() == 2
+        @test get() == 2 # the same counter
+    finally
+        dlclose(handle)
+    end
+end

@@ -68,9 +68,42 @@ const CORPUS = [
     "sprint"                => () -> length(sprint(print, 12345)),
     "@printf"               => () -> (Printf.@printf("%d %.2f\n", 3, 2.5); 1),
     "stderr"                => () -> (println(stderr, "to stderr"); 1),
+    "STDOUT"                => () -> (println(STDOUT, "explicit ", 1, ' ', 2.5); print(STDOUT, "x", 'y'); println(STDOUT); 1),
+    "STDERR"                => () -> (println(STDERR, "to stderr"); print(STDERR, 1, 2, 3); println(STDERR); 1),
+    "STDOUT show"           => () -> (show(STDOUT, 12); show(STDOUT, "str"); show(STDOUT, 'c'); println(STDOUT); 1),
+    "STDOUT flush"          => () -> (print(STDOUT, "a"); flush(STDOUT); print(STDERR, "b"); flush(STDERR); println(STDOUT); 1),
+    "@printf STDOUT"        => () -> (Printf.@printf(STDOUT, "%d %5.2f %s\n", 3, 2.5, "x"); 1),
+    # printf of StaticTools (C's format specifiers); libc's stdout throughout, as `STDOUT` is
+    "printf one"            => () -> (printf(c"%d\n", 42); printf(c"%5.2f|\n", 2.5); 1),
+    "printf several"        => () -> (printf(c"%d + %d = %d\n", 1, 2, 3); printf(c"%s has %5.2f%% of %lld\n", c"x", 12.345, 10^12); 1),
+    "printf types"          => () -> (printf(c"%d %d %u %x %.3f %.1f\n", Int8(-5), Int16(-300), UInt8(200), UInt16(255), 1.5f0, Float16(2.5)); 1),
+    "printf String arg"     => () -> (printf(c"%s|%s|%s\n", "julia", c"static", string("a", 1)); 1),
+    "printf in loop"        => () -> (for i in 1:4; printf(c"%d: %6.3f %s\n", i, i / 3, i % 2 == 0 ? c"even" : c"odd"); end; 1),
+    "printf STDOUT STDERR"  => () -> (printf(STDOUT, c"out %d %s\n", 1, c"x"); printf(STDERR, c"err %d %s\n", 2, c"y"); printf(STDOUT, c"plain\n"); 1),
+    "printf with STDOUT"    => () -> (print(STDOUT, "a "); printf(c"%d ", 1); print(STDOUT, "b "); printf(c"%d\n", 2); 1),
+    "printf many args"      => () -> (printf(c"%d%d%d%d%d%d%d%d%d%d%d%d\n", 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2); printf(c"%d %f %d %f %s %lld\n", 1, 2.0, 3, 4.0, c"five", 6); 1),
+    # Printf (Julia's own formats: `%d` is for any integer)
+    "sprintf"               => () -> length(Printf.@sprintf("%d %5.2f %s %c %x|%-6s|%+d", 12, 3.14159, "str", 'z', 255, "ab", 5)),
+    "sprintf Int64/Float32" => () -> length(Printf.@sprintf("%d %d %f %g %e", typemax(Int64), Int8(-3), 1.5f0, 0.1, 12345.678)),
+    "@printf STDERR"        => () -> (Printf.@printf(STDERR, "e %d %s\n", 3, "x"); 1),
+    "Printf.format"         => () -> (Printf.format(STDOUT, FORMAT, "pi", 3.14159); 1),
+    "Printf.Format runtime" => () -> (Printf.format(STDOUT, Printf.Format("%s=%08.3f\n"), "pi", 3.14159); 1),
+    "@printf unicode/%%"    => () -> (Printf.@printf(STDOUT, "%s 100%% %5s|\n", "é∑", "日本"); 1),
+    "print String vararg"   => () -> (print("a", "b", "c", "d"); println(); println("x", 1, 2, 3, "y"); 1),
+    "println nothing"       => () -> (println(); println(nothing); println(missing); 1),
+    "println Symbol/Float32" => () -> (println(:sym, ' ', 1.5f0, ' ', 0x1f, ' ', -3); 1),
+    "show String/Char"      => () -> (show("a \"quoted\"\n string"); show('x'); show('\n'); show('λ'); println(); 1),
+    "show escapes"          => () -> (show("tab\there \u00e9 \u2200 \e"); println(); 1),
+    "@show String"          => () -> (s = "abc"; @show s; c = 'z'; @show c; 1),
+    "lowercase/uppercase"   => () -> (println(lowercase("HeLLo ÀÉÎ"), uppercase("HeLLo àéî"), uppercasefirst("élan")); 1),
+    "isletter etc"          => () -> (cs = ('a', 'Z', '5', ' ', 'é', '∑', '\n'); println(count(isletter, cs), count(isuppercase, cs), count(islowercase, cs), count(isdigit, cs), count(isspace, cs)); 1),
+    "textwidth"             => () -> (println(textwidth("abc"), textwidth("日本"), textwidth('é')); 1),
+    "unicode"               => () -> (println("héllo ∑ 日本"); println('λ'); 1),
+    "big output"            => () -> (for i in 1:2000; print(i, ' '); end; println(); 1),
     "Vector{Any}"           => () -> length(Any[1, "a", 2.0]),
 ]
 const GLOBAL_REF = Ref(0)
+const FORMAT = Printf.Format("%s=%08.3f\n") # made once, as `@printf` does
 
 function run_corpus(; kwargs...)
     results = Tuple{String,Symbol,String}[]

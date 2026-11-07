@@ -51,3 +51,59 @@ for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_t
         """ $f
     end
 end
+
+## Entry points that take the arguments of the command line
+
+"The arguments of the command line, without the name of the program, as in `Base.ARGS`."
+function command_line_arguments(argc::Int, argv::Ptr{Ptr{UInt8}})
+    args = Vector{String}(undef, max(argc - 1, 0))
+    for i in 2:argc
+        args[i-1] = unsafe_string(unsafe_load(argv, i))
+    end
+    return args
+end
+
+# what the entry point of `f(args::Vector{String})` does: `ARGS` is also set, as it is in Julia,
+# and the result of `f` is the exit status of the program (if it is an integer)
+function run_entry(f, argc::Int, argv::Ptr{Ptr{UInt8}})
+    args = command_line_arguments(argc, argv)
+    append!(Base.ARGS, args)
+    status = f(args)
+    return status isa Integer ? Int(status) : 0
+end
+
+# A function `main(argc::Int, argv::Ptr{Ptr{UInt8}})` that runs `f(args)`, named `name`. The entry
+# point of the executable has the name of the function, so it is made in a module of its own.
+function entry_point(f, name::AbstractString)
+    entry = Module(:StaticEntryPoint)
+    Core.eval(entry, :(function $(Symbol(name))(argc::Int, argv::Ptr{Ptr{UInt8}})
+        return $run_entry($f, argc, argv)
+    end))
+    return Base.invokelatest(getproperty, entry, Symbol(name))
+end
+
+"""
+    compile_executable(f, (Vector{String},), [path], [name]; kwargs...)
+
+Compile an executable that runs `f(args)`, where `args` are the arguments of the command line, as
+`ARGS` is in Julia (they are also available as `ARGS`). If `f` returns an integer, it is the exit
+status of the program. This is the convention of Julia's `main(args)`:
+
+```julia
+function main(args::Vector{String})
+    println("Hello, ", isempty(args) ? "world" : args[1], "!")
+end
+compile_executable(main, (Vector{String},))
+```
+"""
+function compile_executable(f::Function, types::Tuple{DataType}, args...; kwargs...)
+    # (the type of a tuple of types is a tuple of `DataType`s: it is the value that tells)
+    types == (Vector{String},) || return invoke(compile_executable, Tuple{Vararg{Any}}, f, types, args...; kwargs...)
+    return compile_executable_with_arguments(f, args...; kwargs...)
+end
+
+function compile_executable_with_arguments(f::Function, path::String = pwd(), name::AbstractString = string(nameof(f)); kwargs...)
+    entry = entry_point(f, name)
+    # (the entry point was just defined, so look at the latest world)
+    return Base.invokelatest(compile_executable, entry, (Int, Ptr{Ptr{UInt8}}), path, String(name); kwargs...)
+end

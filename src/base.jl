@@ -35,3 +35,34 @@ end
 @static if isdefined(Base, :default_cancel_token)
     @device_override Base.default_cancel_token() = nothing
 end
+
+# The slow path of a cancellation point (`@cancel_check`), which is only reached when it reports a pending
+# yield or cancellation. Without a source it can only be a request to let another task run: there are none.
+@static if isdefined(Base, :handle_cancellation!)
+    @device_override Base.handle_cancellation!(::Nothing, ::UInt8) = nothing
+end
+
+# Letting another task run: there is no other task
+@device_override Base.yield() = nothing
+
+# `string(chars, strings, symbols...)` (`_string`) loops over its arguments twice, the first time to
+# add up their lengths and the second to copy them, again with arguments of different types: so
+# recurse over them, as in `print_to_string`
+@static if isdefined(Base, :_string_n) && isdefined(Base, :__unsafe_string!)
+    @device_override function Base._string(a::Union{Char, String, SubString{String}, Symbol}...)
+        out = Base._string_n(string_size(a...))
+        string_fill!(out, 1, a...)
+        return out
+    end
+
+    string_size() = 0
+    string_size(v::Char, rest...) = ncodeunits(v) + string_size(rest...)
+    string_size(v::Union{String, SubString{String}}, rest...) = sizeof(v) + string_size(rest...)
+    string_size(v::Symbol, rest...) = sizeof(v) + string_size(rest...)
+
+    string_fill!(out, offs) = nothing
+    function string_fill!(out, offs, v, rest...)
+        offs += Base.__unsafe_string!(out, v, offs)
+        return string_fill!(out, offs, rest...)
+    end
+end

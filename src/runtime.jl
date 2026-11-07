@@ -37,19 +37,23 @@ define internal void @_static_oom() noreturn {
   unreachable
 }
 
-; objects: no GC, no type-tag header
+; Objects have a header of 16 bytes before them, as in Julia: the type tag, in the 8 bytes before the
+; object (which compiled code may write: see `julia.gc_alloc_bytes` below), and padding, so that the
+; object is aligned to 16 bytes. No GC: nothing is ever freed.
 define linkonce_odr ptr @gpu_gc_pool_alloc(i64 %sz) {
-  %p = call ptr @calloc(i64 1, i64 %sz)
+  %total = add i64 %sz, 16
+  %p = call ptr @calloc(i64 1, i64 %total)
   %isnull = icmp eq ptr %p, null
   br i1 %isnull, label %oom, label %ok
 oom:
   call void @_static_oom()
   unreachable
 ok:
-  ret ptr %p
+  %obj = getelementptr inbounds i8, ptr %p, i64 16
+  ret ptr %obj
 }
 
-; Julia 1.14: allocation of an object of a known size (the caller initializes the header)
+; Julia 1.14: allocation of an object of a known size: the caller writes the type tag, at `obj - 8`
 define linkonce_odr ptr @"julia.gc_alloc_bytes"(ptr %ptls, i64 %sz, i64 %ty) {
   %p = call ptr @gpu_gc_pool_alloc(i64 %sz)
   ret ptr %p
@@ -64,17 +68,14 @@ define linkonce_odr void @gpu_unsupported_allocation(ptr %name) {
 ; The caller fills in the length. Zeroed, as Julia does for pointer-containing memory.
 define linkonce_odr ptr @jl_alloc_genericmemory_unchecked(ptr %ptls, i64 %nbytes, ptr %ty) {
   %total = add i64 %nbytes, 16
-  %p = call ptr @calloc(i64 1, i64 %total)
-  %isnull = icmp eq ptr %p, null
-  br i1 %isnull, label %oom, label %ok
-oom:
-  call void @_static_oom()
-  unreachable
-ok:
-  %data = getelementptr inbounds i8, ptr %p, i64 16
-  %slot = getelementptr inbounds i8, ptr %p, i64 8
+  %obj = call ptr @gpu_gc_pool_alloc(i64 %total)
+  %tagslot = getelementptr inbounds i8, ptr %obj, i64 -8
+  %tag = ptrtoint ptr %ty to i64
+  store i64 %tag, ptr %tagslot, align 8
+  %data = getelementptr inbounds i8, ptr %obj, i64 16
+  %slot = getelementptr inbounds i8, ptr %obj, i64 8
   store ptr %data, ptr %slot, align 8
-  ret ptr %p
+  ret ptr %obj
 }
 
 define linkonce_odr void @jl_argument_error(ptr %msg) noreturn {
@@ -83,25 +84,32 @@ define linkonce_odr void @jl_argument_error(ptr %msg) noreturn {
   unreachable
 }
 
-; boxed primitives (no type-tag header: only usable where the type is statically known,
-; e.g. as arguments to the aborting error functions below)
+; boxed primitives
 define linkonce_odr ptr @ijl_box_int64(i64 %v) {
   %p = call ptr @gpu_gc_pool_alloc(i64 8)
+  %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
+  store i64 {{TAG_INT64}}, ptr %tagslot, align 8
   store i64 %v, ptr %p, align 8
   ret ptr %p
 }
 define linkonce_odr ptr @ijl_box_uint64(i64 %v) {
   %p = call ptr @gpu_gc_pool_alloc(i64 8)
+  %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
+  store i64 {{TAG_UINT64}}, ptr %tagslot, align 8
   store i64 %v, ptr %p, align 8
   ret ptr %p
 }
 define linkonce_odr ptr @ijl_box_int32(i32 %v) {
   %p = call ptr @gpu_gc_pool_alloc(i64 8)
+  %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
+  store i64 {{TAG_INT32}}, ptr %tagslot, align 8
   store i32 %v, ptr %p, align 4
   ret ptr %p
 }
 define linkonce_odr ptr @ijl_box_uint32(i32 %v) {
   %p = call ptr @gpu_gc_pool_alloc(i64 8)
+  %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
+  store i64 {{TAG_UINT32}}, ptr %tagslot, align 8
   store i32 %v, ptr %p, align 4
   ret ptr %p
 }
@@ -110,6 +118,8 @@ define linkonce_odr ptr @ijl_box_uint32(i32 %v) {
 define linkonce_odr ptr @ijl_alloc_string(i64 %n) {
   %total = add i64 %n, 9
   %p = call ptr @gpu_gc_pool_alloc(i64 %total)
+  %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
+  store i64 {{TAG_STRING}}, ptr %tagslot, align 8
   store i64 %n, ptr %p, align 8
   ret ptr %p
 }
@@ -127,9 +137,24 @@ define linkonce_odr ptr @jl_pchar_to_string(ptr %p, i64 %n) {
   ret ptr %s
 }
 
+; a String with a copy of the C string at `p`
+declare i64 @strlen(ptr)
+define linkonce_odr ptr @ijl_cstr_to_string(ptr %p) {
+  %n = call i64 @strlen(ptr %p)
+  %s = call ptr @ijl_pchar_to_string(ptr %p, i64 %n)
+  ret ptr %s
+}
+
+define linkonce_odr ptr @jl_cstr_to_string(ptr %p) {
+  %s = call ptr @ijl_cstr_to_string(ptr %p)
+  ret ptr %s
+}
+
 ; a Memory{UInt8} aliasing the data of a String
 define linkonce_odr ptr @jl_string_to_genericmemory(ptr %s) {
   %m = call ptr @gpu_gc_pool_alloc(i64 16)
+  %tagslot = getelementptr inbounds i8, ptr %m, i64 -8
+  store i64 {{TAG_MEMORY_UINT8}}, ptr %tagslot, align 8
   %len = load i64, ptr %s, align 8
   store i64 %len, ptr %m, align 8
   %d = getelementptr inbounds i8, ptr %s, i64 8
@@ -297,6 +322,21 @@ go:
 }
 """
 
+# The type tag of the objects of a type, as Julia writes it before them (in this process, where the
+# code that is compiled has been inferred, so the tags that it compares with are these as well)
+object_tag(x) = Int64(unsafe_load(Ptr{UInt}(UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), x)) - 8)) & ~UInt(15))
+
+# `RUNTIME_SHIM_IR`, with the type tags of the types of the objects that it makes
+function shim_ir()
+    ir = RUNTIME_SHIM_IR
+    for (token, example) in ("TAG_STRING" => "", "TAG_INT64" => 1, "TAG_UINT64" => UInt64(1),
+                             "TAG_INT32" => Int32(1), "TAG_UINT32" => UInt32(1),
+                             "TAG_MEMORY_UINT8" => Memory{UInt8}(undef, 1))
+        ir = replace(ir, "{{$token}}" => string(object_tag(example)))
+    end
+    return ir
+end
+
 # the runtime functions defined by `RUNTIME_SHIM_IR`, which override declarations in `mod`
 const RUNTIME_SHIM_FUNCTIONS = (
     "gpu_gc_pool_alloc", "gpu_unsupported_allocation", "jl_alloc_genericmemory_unchecked",
@@ -305,7 +345,7 @@ const RUNTIME_SHIM_FUNCTIONS = (
     "ijl_restore_excstack", "ijl_throw", "ijl_rethrow", "ijl_rethrow_other",
     "ijl_current_exception", "jl_current_exception",
     "ijl_box_int64", "ijl_box_uint64", "ijl_box_int32", "ijl_box_uint32",
-    "ijl_alloc_string", "ijl_pchar_to_string", "jl_pchar_to_string", "jl_string_to_genericmemory", "jl_genericmemory_to_string",
+    "ijl_alloc_string", "ijl_pchar_to_string", "jl_pchar_to_string", "ijl_cstr_to_string", "jl_cstr_to_string", "jl_string_to_genericmemory", "jl_genericmemory_to_string",
     "jl_genericmemory_copyto",
 )
 
@@ -318,8 +358,26 @@ function constant_cstring(g)
     return String(bytes[1:something(findfirst(==(0x00), bytes), length(bytes) + 1) - 1])
 end
 
-# Julia binds `ccall`s into libjulia lazily, through `ijl_load_and_lookup(lib, name, handle)`.
-# For the symbols the runtime shim implements, resolve the lookup statically instead.
+# Functions of the C library and of the math library, which every executable links to: a `ccall` to
+# these is a call to the function.
+const LIBC_FUNCTIONS = Set([
+    "strlen", "strnlen", "memcpy", "memmove", "memset", "memcmp", "memchr", "strcmp", "strncmp",
+    "strchr", "strrchr", "strstr", "malloc", "calloc", "realloc", "free", "abort", "exit", "getenv",
+    "atoi", "strtol", "strtoul", "strtoll", "strtoull", "strtod", "strtof", "qsort", "bsearch",
+    "write", "read", "puts", "putchar", "getchar", "fflush", "fputc", "fputs", "fwrite", "fread",
+    "usleep", "nanosleep", "clock_gettime", "time", "getentropy",
+    # libm
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "asinh", "acosh",
+    "atanh", "exp", "exp2", "expm1", "log", "log2", "log10", "log1p", "pow", "sqrt", "cbrt", "hypot",
+    "fabs", "floor", "ceil", "trunc", "round", "rint", "nearbyint", "fmod", "remainder", "ldexp",
+    "frexp", "modf", "erf", "erfc", "tgamma", "lgamma", "copysign", "fma", "fmin", "fmax",
+    ("$(f)f" for f in ("sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "exp",
+                       "exp2", "expm1", "log", "log2", "log10", "log1p", "pow", "sqrt", "cbrt", "hypot",
+                       "fabs", "floor", "ceil", "trunc", "round", "rint", "fmod", "ldexp", "copysign"))...,
+])
+
+# Julia binds `ccall`s lazily, through `ijl_load_and_lookup(lib, name, handle)`. For the symbols the
+# runtime shim implements, and those of the C library, resolve the lookup statically instead.
 function resolve_lazy_lookups!(mod::LLVM.Module)
     fns = LLVM.functions(mod)
     haskey(fns, "ijl_load_and_lookup") || return false
@@ -327,7 +385,7 @@ function resolve_lazy_lookups!(mod::LLVM.Module)
     for use in collect(LLVM.uses(fns["ijl_load_and_lookup"]))
         call = LLVM.user(use)::LLVM.CallInst
         name = constant_cstring(LLVM.operands(call)[2])
-        name in RUNTIME_SHIM_FUNCTIONS || continue
+        (name in RUNTIME_SHIM_FUNCTIONS || name in LIBC_FUNCTIONS) || continue
         target = haskey(fns, name) ? fns[name] :
                  LLVM.Function(mod, name, LLVM.FunctionType(LLVM.VoidType()))
         LLVM.replace_uses!(call, target)
@@ -430,6 +488,13 @@ function Base.showerror(io::IO, e::UnsupportedCodeError)
         end
         length(e.pointers) > 5 && print(io, "\n  ... and ", length(e.pointers) - 5, " more")
     end
+    # hints for what is likely to be the cause
+    if any(((_, inst),) -> occursin(r"%(stdout|stderr|stdin)\b", inst), e.pointers) ||
+       any(((name, callers),) -> any(c -> c in ("print", "println", "format"), callers) && name == "ijl_apply_generic", e.dynamic)
+        print(io, "\n\nHint: `stdout`, `stderr` and `stdin` of Base are globals of the abstract type `IO`, so what is done with them cannot be resolved when compiling. ",
+              "Use `print`, `println` and `show` without an `IO` (which write to the standard output), or `STDOUT`, `STDERR` and `STDIN` of StaticCompilerOverrides, as in `println(STDERR, \"message\")`. ",
+              "For `@printf`, which uses `stdout` if it has no `io`: `@printf(STDOUT, \"...\", x)`, or `printf(c\"...\", x)` of StaticTools.")
+    end
     print(io, "\n\nPass `strict = false` to compile it anyway: calls that need the runtime will then abort the program if they are reached, and the addresses will crash it.")
     print(io, " Use `allow = (\"function_name\", ...)` to allow specific runtime functions only.")
 end
@@ -471,9 +536,18 @@ function define_dynamic_stubs!(mod::LLVM.Module)
     end
 end
 
+# Runtime functions that are given pointers to objects (types, exceptions) which they don't look into
+const POINTER_ARGUMENTS_NOT_USED = Set([
+    "jl_alloc_genericmemory_unchecked", "ijl_alloc_genericmemory_unchecked", "ijl_type_error",
+    "ijl_undefined_var_error", "ijl_bounds_error_int", "ijl_bounds_error_unboxed_int", "ijl_bounds_error",
+    "ijl_throw", "ijl_rethrow_other", "jl_argument_error", "gpu_unsupported_allocation",
+    "julia.gc_alloc_bytes", "jl_f_throw_methoderror", "ijl_enter_handler", "ijl_pop_handler",
+    "ijl_pop_handler_noexcept", "ijl_excstack_state", "ijl_restore_excstack",
+])
+
 # The places where code reads, writes or calls through a pointer to a Julia object that is not
-# in the binary (an address from this process): these are certain to crash. Passing such a
-# pointer on as an argument, or comparing it, is common (type tags) and fine.
+# in the binary (an address from this process): these are certain to crash. Comparing such a
+# pointer is common (type tags) and fine; passing it as an argument is too only to a few functions.
 function unresolved_pointer_uses(mod::LLVM.Module)
     found = Tuple{String,String}[]
     seen = Set{Tuple{String,UInt}}()
@@ -483,7 +557,11 @@ function unresolved_pointer_uses(mod::LLVM.Module)
         elseif inst isa LLVM.StoreInst
             Tuple(LLVM.operands(inst)[1:2])
         elseif inst isa LLVM.CallInst
-            (LLVM.called_operand(inst),)
+            callee = LLVM.called_operand(inst)
+            # the arguments too, unless the function only takes a pointer to something that
+            # describes a type, or an error: those are not looked into
+            name = callee isa LLVM.Function ? LLVM.name(callee) : ""
+            name in POINTER_ARGUMENTS_NOT_USED ? (callee,) : (callee, LLVM.arguments(inst)...)
         elseif inst isa LLVM.GetElementPtrInst
             (LLVM.operands(inst)[1],)
         else
@@ -595,6 +673,7 @@ function define_well_known_objects!(mod::LLVM.Module)
         object = LLVM.GlobalVariable(mod, st, "static_$name")
         LLVM.initializer!(object, LLVM.ConstantStruct([LLVM.ConstantInt(Int64(tag)), LLVM.ConstantDataArray(LLVM.Int8Type(), payload)]; packed = true))
         LLVM.linkage!(object, LLVM.API.LLVMLinkOnceODRLinkage)
+        LLVM.visibility!(object, LLVM.API.LLVMHiddenVisibility)
         LLVM.alignment!(object, 16)
         ptrT = LLVM.PointerType()
         pointer_to_object = LLVM.const_gep(LLVM.Int8Type(), object, [LLVM.ConstantInt(Int64(8))])
@@ -628,7 +707,7 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = ())
         haskey(LLVM.functions(mod), name) && LLVM.isdeclaration(LLVM.functions(mod)[name])
     end
     isempty(needed) && return mod
-    shim = parse(LLVM.Module, RUNTIME_SHIM_IR)
+    shim = parse(LLVM.Module, shim_ir())
     LLVM.datalayout!(shim, LLVM.datalayout(mod))
     LLVM.triple!(shim, LLVM.triple(mod))
     LLVM.link!(mod, shim) # consumes `shim`
@@ -674,9 +753,10 @@ const DATATYPE_TAG = Ref{UInt}(0) # the tag of `DataType` objects
 # the type of the Julia object at `addr`, from its type tag, or `nothing` if it doesn't look
 # like an object.
 function object_type(addr::UInt)
-    # (all Julia objects are 16-byte aligned, which rules out many addresses that are not objects:
-    # in particular the data of strings and arrays, which is 8 bytes after the start of the object)
-    addr >= 0x10000 && addr % 16 == 0 || return nothing
+    # All Julia objects are 16-byte aligned, which rules out many addresses that are not objects: in
+    # particular the data of strings and arrays, which is 8 bytes after the start of the object. The
+    # exception is symbols, which are 8-byte aligned (see `is_symbol` for checking one).
+    addr >= 0x10000 && addr % 8 == 0 || return nothing
     DATATYPE_TAG[] == 0 && (DATATYPE_TAG[] = unsafe_load(Ptr{UInt}(UInt(pointer_from_objref(typeof(Int))) - 8)) & ~UInt(15))
     word = safe_load(addr - 8)
     word === nothing && return nothing
@@ -691,8 +771,39 @@ function object_type(addr::UInt)
     typetag = safe_load(UInt(ptr) - 8)
     (typetag === nothing || typetag & ~UInt(15) != DATATYPE_TAG[]) && return nothing
     T = unsafe_pointer_to_objref(ptr)
-    return T isa DataType && isconcretetype(T) && !(T <: Type) ? T : nothing
+    T isa DataType && isconcretetype(T) && !(T <: Type) || return nothing
+    addr % 16 == 0 && return T
+    return T === Symbol && is_symbol(addr) ? T : nothing
 end
+
+# Is the object at `addr`, of which the tag says that it is a symbol (and which is not aligned as
+# other objects), one? A symbol is { left, right, hash, name }, where `left` and `right` are links
+# to other symbols (or null), and the name is a C string, which we check to be reasonable, as
+# the right-looking tag of a symbol may also be the length of a string.
+function is_symbol(addr::UInt)
+    for offset in (0, 8)
+        link = safe_load(addr + offset)
+        link === nothing && return false
+        link == 0 && continue
+        link % 8 == 0 && link >= 0x10000 || return false
+        tag = safe_load(link - 8)
+        tag === nothing && return false
+        tag & ~UInt(15) == symbol_tag() || return false
+    end
+    safe_load(addr + 16) === nothing && return false
+    # the name: at least one character, up to its NUL, of the characters that are fine in a name
+    for i in 0:255
+        word = safe_load(addr + 24 + 8 * (i ÷ 8))
+        word === nothing && return false
+        byte = UInt8((word >> (8 * (i % 8))) & 0xff)
+        byte == 0x00 && return i > 0
+        byte >= 0x20 && byte != 0x7f || return false
+    end
+    return false
+end
+
+const SYMBOL_TAG = Ref{UInt}(0) # the tag of symbols
+symbol_tag() = (SYMBOL_TAG[] == 0 && (SYMBOL_TAG[] = unsafe_load(Ptr{UInt}(UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), :a)) - 8)) & ~UInt(15)); SYMBOL_TAG[])
 
 mutable struct ObjectEmbedder
     mod::LLVM.Module
@@ -722,7 +833,11 @@ function embed_global!(e::ObjectEmbedder, addr::UInt)
     types, values = object_pieces(e, T, addr)
     st = LLVM.StructType(types; packed=true)
     g = LLVM.GlobalVariable(e.mod, st, "static_object_$(string(addr, base=16))")
-    LLVM.linkage!(g, LLVM.API.LLVMPrivateLinkage)
+    # One object, whichever of the functions of a library refers to it: the functions are compiled
+    # (and their modules linked) separately, so the global has the same name (that has the address of
+    # the object in it) in each, and they are merged. It is hidden, so that two libraries don't share it.
+    LLVM.linkage!(g, LLVM.API.LLVMLinkOnceODRLinkage)
+    LLVM.visibility!(g, LLVM.API.LLVMHiddenVisibility)
     LLVM.alignment!(g, EMBED_ALIGN)
     e.globals[addr] = g
     try
@@ -743,8 +858,17 @@ function embed_ref!(e::ObjectEmbedder, addr::UInt, offset=0)
 end
 
 function object_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
-    if T === Symbol || T === Core.SimpleVector || T === Module
+    if T === Core.SimpleVector || T === Module
         throw(EmbedFailure()) # interned by the runtime
+    elseif T === Symbol
+        # { left, right (links of the table of symbols of the runtime), hash, name, NUL }: the name
+        # is what is used, and as global constants are one object each, symbols are still egal
+        check_readable(addr, 32)
+        name_length = Int(ccall(:strlen, Csize_t, (Ptr{UInt8},), Ptr{UInt8}(addr + 24)))
+        check_readable(addr, 24 + name_length + 1)
+        types = LLVM.LLVMType[LLVM.PointerType(), LLVM.PointerType(), LLVM.Int64Type(), LLVM.ArrayType(LLVM.Int8Type(), name_length + 1)]
+        hash = unsafe_load(Ptr{Int64}(addr + 16))
+        return types, g -> LLVM.Constant[nullptr(), nullptr(), i64(hash), bytes_piece(addr + 24, name_length + 1)]
     elseif T === String
         check_readable(addr, 8)
         n = 8 + unsafe_load(Ptr{Int}(addr)) + 1

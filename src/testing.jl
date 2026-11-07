@@ -35,27 +35,32 @@ function static_result(f; dir = mktempdir(), kwargs...)
     return parse(Int, readchomp(`$exe`))
 end
 
-# what `f()` prints to stdout in this process, followed by the line that the compiled `main` prints
+# what `f()` writes to stdout and to stderr in this process (the result, which the compiled `main`
+# prints as the last line of the standard output, is returned too)
 function expected_output(f)
-    path, io = mktemp()
+    out_path, out_io = mktemp()
+    err_path, err_io = mktemp()
     result = try
-        redirect_stdout(io) do
-            r = f()
-            flush(stdout)
-            r
+        redirect_stdout(out_io) do
+            redirect_stderr(err_io) do
+                r = f()
+                flush(stdout); flush(stderr)
+                Libc.flush_cstdio() # what was written with the streams of libc
+                r
+            end
         end
     finally
-        close(io)
+        close(out_io); close(err_io)
     end
-    return read(path, String) * string(as_int(result), "\n")
+    return read(out_path, String) * string(as_int(result), "\n"), read(err_path, String)
 end
 
 """
     static_status(f; kwargs...) -> (status::Symbol, detail)
 
 Classify how far `f()` gets as a standalone executable: `:compile_error`, `:link_error`,
-`:runtime_error`, `:mismatch` or `:ok`. What `f` prints to stdout, and what it returns, must match
-what it does in Julia.
+`:runtime_error`, `:mismatch` or `:ok`. What `f` writes to stdout and to stderr, and what it
+returns, must match what it does in Julia.
 """
 function static_status(f; kwargs...)
     dir = mktempdir()
@@ -68,14 +73,18 @@ function static_status(f; kwargs...)
                  :link_error : :compile_error
         return status, first(sprint(showerror, e), 300)
     end
+    err_path = tempname()
     out = try
-        read(pipeline(`$exe`; stderr = devnull), String)
+        read(pipeline(`$exe`; stderr = err_path), String)
     catch e
         return :runtime_error, first(sprint(showerror, e), 300)
     end
     # after compiling, which snapshots the state of any global data
-    expected = expected_output(f)
-    out == expected ? (:ok, "") : (:mismatch, "expected $(repr(expected)), got $(repr(out))")
+    expected, expected_err = expected_output(f)
+    err = read(err_path, String)
+    out == expected || return :mismatch, "stdout: expected $(repr(expected)), got $(repr(out))"
+    err == expected_err || return :mismatch, "stderr: expected $(repr(expected_err)), got $(repr(err))"
+    return :ok, ""
 end
 
 """
@@ -92,7 +101,9 @@ end
 
 const LIBC_SYMBOLS = Set(["malloc", "calloc", "free", "puts", "exit", "printf", "memcpy", "memmove",
                           "memset", "memcmp", "strlen", "fwrite", "fputs", "abort", "sigsetjmp", "siglongjmp",
-                          "getentropy"])
+                          "getentropy", "fopen", "fclose", "fread", "fputc", "fgetc", "ungetc", "fseek", "ftell",
+                          "fflush", "fprintf", "usleep", "getc", "putc", "__stdoutp", "__stderrp", "__stdinp", "stdout",
+                          "stderr", "stdin"])
 
 """
     undefined_symbols(f, types; allow = LIBC_SYMBOLS) -> Vector{String}

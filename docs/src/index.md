@@ -26,16 +26,107 @@ Julia 1.14 or later is required.
 ## What works
 
 Code that allocates (`Vector`, `Dict`, `Set`, `String`, closures that escape, boxed values),
+`print`/`println`/`show` of numbers, strings, characters and symbols, `readline` and friends,
 `rand`/`randn` on the default RNG, and `try`/`catch`/`finally`/`rethrow` (including for errors thrown by Base, like `BoundsError`), in addition to what
 StaticCompiler already handled (allocation-free numerical code, StaticTools types, and so on).
 The tests in `test/corpus.jl` are the up-to-date list of the idioms that we check, and which of
 them are known not to work yet.
 
-!!! note "Printing does not work yet"
-    `print`, `println`, `show`, `@printf` and the like are not supported yet, since there is no
-    `stdout` (and `show` needs type information at run time). They are rejected when compiling
-    (see strict mode). Use `printf` and `c"..."` from StaticTools in the meantime. Building strings
-    with `string`, interpolation-free `sprint`, and so on does work.
+See [Input and output](@ref) for printing and reading, and [Entry points](@ref) for how to get the
+arguments of the command line.
+
+## Input and output
+
+The standard streams of Julia are libuv streams, which need the Julia runtime. Compiled programs
+use those of libc, as [`StaticIO`](@ref)s: [`STDIN`](@ref), [`STDOUT`](@ref) and [`STDERR`](@ref).
+`StaticIO` implements the `IO` interface, so all of the code of Base for printing and reading works
+with it (`print`, `show`, `write`, `read`, `readline`, `eof`, `flush`, ...).
+
+`print`, `println` and `show` without an `IO` write to the standard output, as in Julia:
+
+```julia
+function main(args::Vector{String})
+    println("Hello, ", isempty(args) ? "world" : args[1], "! ", 1 + 1, " ", 2.5, " ", 'λ', " ", :sym)
+    println(STDERR, "this goes to the standard error")
+    line = readline(STDIN)
+    @show line
+end
+```
+
+!!! warning "`stdout`, `stderr` and `stdin` of Base can't be used: use `STDOUT`, `STDERR` and `STDIN`"
+    In Julia, `stdout` is a global variable of the abstract type `IO`, so a call like
+    `println(stdout, x)` can only be resolved when it is run, and a compiled program can't do that.
+    It is rejected when compiling (see strict mode), with a message that says what to use instead. Code
+    that uses `stdout` will work if it is written in a way that doesn't (`println(x)`, or `STDOUT`).
+
+### Formatted output: `printf` and `@printf`
+
+Two ways, which write the same bytes into the same buffer, so can be mixed freely with `print`:
+
+* **`printf` of StaticTools**: C's `printf`, with any number of arguments and a `c"..."` format. Its format
+  specifiers are those of C: for example an `Int64` is `%lld` (`%d` is for a 32-bit `int`).
+  It takes integers, floating-point numbers, pointers, and strings (`StaticString`s,
+  `MallocString`s and `String`s) for `%s`, and a stream first: `printf(STDERR, c"...", x)`.
+* **`Printf` of Julia**: `@sprintf` and `@printf(STDOUT, "...", x)` (or `STDERR`, or a file), with Julia's
+  own formats, which are the same as in Julia: `%d` is for any integer, and so on. This is Julia's `Printf`,
+  so what it writes is the same. A format with `*` (`%*d`) is not supported. The format has to be
+  made once, as `@printf` does: a `Printf.Format("...")` made when the program runs can't be compiled.
+
+```julia
+printf(c"%s: %d of %lld, %5.2f%%\n", c"progress", 3, 10^12, 12.345)   # C
+Printf.@printf(STDOUT, "%s: %d of %d, %5.2f%%\n", "progress", 3, 10^12, 12.345)   # Julia
+name = Printf.@sprintf("%s-%03d.txt", "run", 7)
+```
+
+### Files
+
+`open` opens a file with libc's `fopen`, as a [`StaticFile`](@ref), which is an `IO` like the standard streams,
+so what Base has for reading and writing an `IO` works: `open(f, path, mode)`, `read(path, String)`,
+`readlines`, `eachline`, `readline`, `write(path, x, y)`, `println(io, x)`, `eof`, `position`, `seek`,
+`filesize`, `close`, `@printf(io, ...)`, `printf(io, c"...", x)`, and numbers and arrays of numbers as binary data
+(`write(io, x)`, `read(io, Int32)`, `read!(io, array)`, `read(io, n)`). The mode is the one of `fopen` (`"r"`, `"w"`, `"a"`,
+`"r+"`, ...). The keyword arguments of `open`, `readline` and `eachline` (`read = true`, `keep = true`)
+are not supported; and so far there is nothing for the file system itself (`isfile`, `mkdir`, `rm`, `readdir`, ...).
+
+### What works, and what doesn't
+
+What works: numbers, strings, characters, symbols, `nothing`, `missing`, and anything built from
+those by `string`, interpolation, `sprint`, `@show` (of these)... and their `show` (with the quotes
+and escapes), Unicode text and its properties (`isletter`, `uppercase`, `textwidth`, ...), formatting,
+and files.
+
+What doesn't work yet:
+* `show` (so `println`, `repr`, `@show`) of **arrays, tuples, dictionaries** and other containers, and
+  of types: it needs information about types when the program is run. (Print the elements.)
+* **`@printf` without an `io`**, which uses `stdout`: write `@printf(STDOUT, ...)`.
+* The **file system** (`isfile`, `mkdir`, `readdir`, `rm`, ...). (`filesize(path)` works.) And memory-mapped
+  files, sockets, processes.
+
+The tables for the properties of characters are made when the package is compiled, with the Unicode
+data of the Julia that compiles it, and so are the same as in Julia.
+
+## Entry points
+
+`compile_executable(f, (Int, Ptr{Ptr{UInt8}}))` compiles `f(argc, argv)` to the `main` of a C program. For
+a program written like a Julia script, `(Vector{String},)` compiles `f(args)`, which gets the arguments
+of the command line like `ARGS` (which is also set), and the status of the program is its return value,
+if that is an integer. See [`compile_executable`](@ref).
+
+```julia
+main(args) = (println("got ", length(args), " arguments"); length(args))
+compile_executable(main, (Vector{String},))    # `./main a b c` prints "got 3 arguments" and exits with 3
+```
+
+## Writing overrides
+
+`@device_override` adds a method to the method table of this package (see below), which replaces
+the method of Base for the code that is compiled. One thing to know: **an override is used for every
+call that it covers entirely, instead of all of the methods of Base, including those that are more
+specific than it.** So an override `print(x1, x2) = print(STDOUT, x1, x2)` would also be used for
+`print(io, x)`, which must go to the methods of Base for printing to an `IO`: `print(io, 'c')`,
+`print(io, "string")`... Overrides therefore need to be written so that they don't cover calls that
+they should not: with the same signature as the method that they replace, with restricted argument
+types, or by doing for those calls what the method of Base does (see `src/io.jl`).
 
 ## Strict mode: unsupported code is rejected when compiling
 
