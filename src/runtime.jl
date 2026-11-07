@@ -540,6 +540,85 @@ function resolve_lazy_lookups!(mod::LLVM.Module)
     return changed
 end
 
+# `x isa T` for an `x` that is only known at run time, and a type `T` that is not concrete (`Number`, `Union{A,B}`,
+# `AbstractVector{Int}`), is `ijl_subtype(typeof(x), T)`: libjulia's subtyping, which is a large and complicated part
+# of it. The types that `T` is in the code are constants, though, and the types that the objects of the program can have are
+# those in the binary (the tags of the objects are those): so the answers can be had when compiling, from Julia's
+# `<:`, for each of the types in the binary and each type that is asked about. Written out as `ijl_subtype`: a
+# comparison of the second argument with each of those types, and of the first with the types that are subtypes of it.
+# A call with a type that was not one of those exits with a message, as does one of a type that is not in the binary
+# (which has no objects).
+
+# the addresses of the types that `ijl_subtype` is called with, or `nothing` if the function is used in any other way
+function subtype_queries(mod::LLVM.Module)
+    fns = LLVM.functions(mod)
+    haskey(fns, "ijl_subtype") && LLVM.isdeclaration(fns["ijl_subtype"]) || return UInt[]
+    addrs = Set{UInt}()
+    for use in LLVM.uses(fns["ijl_subtype"])
+        inst = LLVM.user(use)
+        inst isa LLVM.CallInst || return nothing
+        nodes = inttoptr_nodes(LLVM.operands(inst)[2])
+        length(nodes) == 1 || return nothing
+        addr = constant_address(nodes[1])
+        addr === nothing && return nothing
+        push!(addrs, UInt(addr))
+    end
+    return sort!(collect(addrs))
+end
+
+function define_subtype!(e, queries::Vector{UInt}) # (e::ObjectEmbedder, which is defined below)
+    mod = e.mod
+    haskey(LLVM.functions(mod), "ijl_subtype") && LLVM.isdeclaration(LLVM.functions(mod)["ijl_subtype"]) || return
+    fn = LLVM.functions(mod)["ijl_subtype"]
+    # the concrete types that are in the binary
+    concrete = Tuple{UInt,DataType}[]
+    for (addr, g) in e.globals
+        g === nothing && continue
+        object_type(addr) === DataType || continue
+        T = unsafe_pointer_to_objref(Ptr{Cvoid}(addr))
+        T isa DataType && isconcretetype(T) && push!(concrete, (addr, T))
+    end
+    sort!(concrete; by = first)
+    # (a type that was asked about but is not in the binary is left for the exit at the end)
+    asked = [(addr, unsafe_pointer_to_objref(Ptr{Cvoid}(addr))) for addr in queries if get(e.globals, addr, nothing) !== nothing]
+    ptrT = LLVM.PointerType()
+    fns = LLVM.functions(mod)
+    puts_t = LLVM.FunctionType(LLVM.Int32Type(), [ptrT])
+    exit_t = LLVM.FunctionType(LLVM.VoidType(), [LLVM.Int32Type()])
+    puts = haskey(fns, "puts") ? fns["puts"] : LLVM.Function(mod, "puts", puts_t)
+    exit = haskey(fns, "exit") ? fns["exit"] : LLVM.Function(mod, "exit", exit_t)
+    LLVM.linkage!(fn, LLVM.API.LLVMLinkOnceODRLinkage)
+    a, b = LLVM.parameters(fn)
+    @dispose builder = LLVM.IRBuilder() begin
+        entry = LLVM.BasicBlock(fn, "entry")
+        checks = [LLVM.BasicBlock(fn, "check$i") for i in eachindex(asked)]
+        unknown = LLVM.BasicBlock(fn, "unknown")
+        LLVM.position!(builder, LLVM.at_end(entry))
+        LLVM.br!(builder, isempty(checks) ? unknown : first(checks))
+        for (i, (addr, T)) in enumerate(asked)
+            hit = LLVM.BasicBlock(fn, "hit$i")
+            LLVM.position!(builder, LLVM.at_end(checks[i]))
+            is_it = LLVM.icmp!(builder, LLVM.API.LLVMIntEQ, b, embed_ref!(e, addr))
+            LLVM.br!(builder, is_it, hit, i < length(checks) ? checks[i + 1] : unknown)
+            LLVM.position!(builder, LLVM.at_end(hit))
+            subtypes = [taddr for (taddr, S) in concrete if S <: T]
+            result = nothing
+            for taddr in subtypes
+                same = LLVM.icmp!(builder, LLVM.API.LLVMIntEQ, a, embed_ref!(e, taddr))
+                result = result === nothing ? same : LLVM.or!(builder, result, same)
+            end
+            LLVM.ret!(builder, result === nothing ? LLVM.ConstantInt(Int32(0)) :
+                                                   LLVM.zext!(builder, result, LLVM.Int32Type()))
+        end
+        LLVM.position!(builder, LLVM.at_end(unknown))
+        msg = LLVM.globalstring_ptr!(builder, "isa with a type that is not known when compiling is not supported in standalone binaries")
+        LLVM.call!(builder, puts_t, puts, [msg])
+        LLVM.call!(builder, exit_t, exit, [LLVM.ConstantInt(Int32(1))])
+        LLVM.unreachable!(builder)
+    end
+    return
+end
+
 # Runtime functions that throw. Without unwinding, the best we can do is to report and exit.
 # Their bodies are generated from the declaration, since we don't care about the arguments.
 const ABORTING_RUNTIME_FUNCTIONS = (
@@ -850,7 +929,9 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = ())
     e = ObjectEmbedder(mod, Dict())
     define_well_known_objects!(e)
     lower_gc_frames!(mod)
+    queries = subtype_queries(mod)
     embed_constants!(e)
+    queries === nothing || define_subtype!(e, queries)
     resolve_lazy_lookups!(mod)
     define_aborting_functions!(mod)
     if strict

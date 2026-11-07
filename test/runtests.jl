@@ -68,14 +68,16 @@ end
     @test !isempty(err2.pointers) # references to Julia objects by their address are reported too
 
     # strict = false compiles code that has dynamic dispatch anyway (and the call aborts the program if
-    # it is reached); `allow` accepts specific runtime functions, which is not enough here as there are
-    # references to Julia objects too
+    # it is reached); `allow` accepts specific runtime functions, and keeps the check for the rest
     dynamic() = (x = Base.inferencebarrier(3); Int(x + 1))
     dyn_main = StaticCompilerOverrides.make_main(dynamic)
     compile_dynamic(; kwargs...) = Base.invokelatest(compile_executable, dyn_main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(dyn_main)); kwargs...)
     @test_throws UnsupportedCodeError compile_dynamic()
     @test isfile(compile_dynamic(strict = false))
-    @test_throws UnsupportedCodeError compile_dynamic(allow = ("ijl_apply_generic",))
+    @test isfile(compile_dynamic(allow = ("ijl_apply_generic",)))
+    # (not enough when there are other problems, here references to Julia objects by their address)
+    @test_throws UnsupportedCodeError Base.invokelatest(compile_executable, stderr_main, (Int, Ptr{Ptr{UInt8}}), mktempdir(),
+                                                        string(nameof(stderr_main)); allow = ("ijl_apply_generic",))
     # code that is supported is not affected
     ok() = 1
     ok_main = StaticCompilerOverrides.make_main(ok)

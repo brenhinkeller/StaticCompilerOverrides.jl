@@ -40,7 +40,7 @@ tag_all() = (c = 0; for i in 1:length(TAG_VALUES); c = 11 * c + tag_code(TAG_VAL
         # the constants are from Base's own objects: abstract `isa` reads the types, which are in the binary
         constants() = (c = 0; c += (3 isa Number) + 2 * ("s" isa AbstractString) + 4 * ((1, 2) isa Tuple) + 8 * (:a isa Symbol); c)
         @test static_result(constants) == constants()
-        @test_broken static_status(abstracts)[1] == :ok # `isa` of a runtime type with an abstract type: needs `jl_subtype`
+        @test static_result(abstracts) == abstracts()
     end
 
     @testset "type objects in the binary have the number of their fields" begin
@@ -48,6 +48,27 @@ tag_all() = (c = 0; for i in 1:length(TAG_VALUES); c = 11 * c + tag_code(TAG_VAL
         # index against the length of `types` of the type, which was null (a crash) when it was left out
         pairs_loop() = (n = 0; for (k, v) in (TAG_P, TAG_Q); n += v + length(k); end; n)
         @test static_result(pairs_loop) == pairs_loop()
+    end
+
+    @testset "isa with abstract types and Unions on values of types that are only known when run" begin
+        # (`ijl_subtype` of the runtime is a table, made when compiling, of which of the types in the binary are subtypes
+        # of the types that are asked about)
+        mixed(i) = Any[1, "a", :s, (1, 2), [1], 2.5, 'c', [1.0], nothing, 3 // 4, TagA(1), TagC(2)][i]
+        chain(x) = x isa Number ? 1 : x isa AbstractString ? 2 : x isa Union{Symbol,Char} ? 3 : x isa Tuple ? 4 :
+                   x isa AbstractVector{Int} ? 5 : x isa AbstractVector ? 6 : x isa Nothing ? 7 : x isa Union{TagA,TagB} ? 8 : 9
+        classes() = (c = 0; for i in 1:12; c = 10c + chain(mixed(i)); end; c)
+        @test static_result(classes) == classes()
+        numbers() = (c = 0; for i in 1:12; x = mixed(i); c += (x isa Real) + 10 * (x isa Integer) + 100 * (x isa AbstractFloat) + 1000 * (x isa Number); end; c)
+        @test static_result(numbers) == numbers()
+        # an abstract exception type in a `catch`
+        abstract_catch() = (c = 0; for i in 1:3
+            c = 10c + try; i == 1 ? throw(ArgumentError("a")) : i == 2 ? throw(DomainError(1.0)) : throw(BoundsError());
+                      catch e; e isa Exception ? (e isa ArgumentError ? 1 : 2) : 3; end
+        end; c)
+        @test static_result(abstract_catch) == abstract_catch()
+        # a type that is computed when the program runs can't be answered
+        mktype(i) = Any[Number, AbstractString][i]
+        @test static_status(() -> (isa(mixed(1), mktype(1)) ? 1 : 0))[1] == :compile_error
     end
 
     @testset "type of an exception that is caught" begin

@@ -265,8 +265,7 @@ Limitations, which are bugs rather than design choices:
 
 * `catch e; e isa T` works with concrete types, and with abstract ones for constants (objects have type
   tags, and the types that the code mentions are in the binary; see [Type tags](@ref)). `isa` with an abstract type
-  or a `Union` on a *boxed value whose type is only known at run time* needs `jl_subtype`, and is rejected when
-  compiling.
+  or a `Union` works on boxed values too; the answers come from a table that is made when compiling (see [Type tags](@ref)).
 * Code that needs dynamic dispatch, or other things from the Julia runtime, is rejected when
   compiling (see strict mode). With `strict = false`, it compiles and aborts with
   `Dynamic behavior is not supported in standalone binaries (...)` if the call is reached.
@@ -278,6 +277,37 @@ the built-in types and the address of the type object otherwise. `isa` with a co
 exception, and `show` of an `Any` element read this tag. The objects that the code refers to as constants
 (strings, tuples, types, ...) are copied into the binary with their tags, and so are the type objects that
 the tags and `isa` with abstract types read (names, parameters). Details are in `src/tags.jl` and `src/runtime.jl`.
+
+`x isa Number` for an `x` that is only known when the program runs is `ijl_subtype(typeof(x), Number)` in libjulia, whose
+subtyping algorithm is not in the binary. The types that it is asked about are constants of the code, and the types
+that an object can have are those in the binary, so the answers are worked out when compiling, with Julia's own `<:`, and
+written out as the function `ijl_subtype`: a table of which types in the binary are subtypes of each type that is asked
+about. A type that is computed when the program runs (`isa(x, types[i])`) is not a constant: it is rejected when compiling.
+
+## Binary size
+
+A program has the code it uses, and the Julia objects that it refers to, copied into the binary (strings, constant
+arrays and `Dict`s, and the type objects that the type tags and `isa` read). Measured on macOS (arm64, Julia 1.14.0-alpha2) from the
+`__text` and data sections of the executables (the file sizes are in 16 kB pages):
+
+| program                                  | code (`__text`) | data   |
+|:-----------------------------------------|----------------:|-------:|
+| `0`                                      |    56 B         |   5 B  |
+| `println("hello")`                       |   120 B         |  58 B  |
+| `println(42)`                            |   1.4 kB        | 17.9 kB |
+| `println([1, 2, 3])`                     |   2.3 kB        | 18.7 kB |
+| `println(Dict(1 => 2))`                  |   3.8 kB        | 21.6 kB |
+| `Dict` with struct keys, lookup          |   4.3 kB        | 15.0 kB |
+| `x isa Number` on boxed values           |   0.8 kB        | 33.4 kB |
+| `println(Any[1, "a", 2.5])`              |  36 kB          | 67 kB  |
+| `repr([1.5, 2.5])`                       |  14 kB          | 39 kB  |
+
+Most of the data is type objects (names, `DataType`s, `TypeName`s and their `Symbol`s), of which a program that can
+construct an error from a value of a type that is not known (an `InexactError` from a conversion, for example) has the
+~370 that the table `jl_small_typeof` refers to, about 17 kB, whatever else it does; the plans for `===` are about 14%
+of that. A program that never needs them (`println("hello")`) has none. `println(Any[...])` is larger because it has
+the code to show each of the types in `show_candidates`: add only the types that you need with
+[`add_show_candidates!`](@ref) (the defaults can't be removed yet).
 
 ## Method tables
 
