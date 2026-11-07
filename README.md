@@ -4,7 +4,11 @@
 [![CI][ci-img]][ci-url]
 [![Coverage][codecov-img]][codecov-url]
 
-Device overrides and other such glue to enable as much Julia code as possible to be compiled to standalone binaries as possible, using StaticCompiler.jl + StaticTools.jl
+Device overrides and other such glue to enable as much Julia code as possible to be compiled to standalone binaries as possible, using StaticCompiler.jl + StaticTools.jl.
+
+The code in this package is (unlike StaticCompiler.jl and StaticTools.jl themselves) almost entirely LLM-generated, 
+specifically via Claude code running Sonnet 5.5. I'm not yet sure how far we'll be able to get, but it's worth a try.
+
 
 ## Status
 
