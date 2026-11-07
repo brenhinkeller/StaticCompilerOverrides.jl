@@ -11,6 +11,9 @@
 # own error helpers (which throw) are used. The functions below are StaticCompiler's entry points,
 # defaulting to this table. Pass `method_table = StaticCompiler.method_table` for the old behavior.
 
+include("runtime.jl") # The runtime functions that compiled code needs: allocation, exceptions, ...
+using .Runtime: link_runtime!
+
 Base.Experimental.@MethodTable(method_table)
 
 """
@@ -25,16 +28,18 @@ macro device_override(ex)
     return esc(:($Base.Experimental.@overlay($(GlobalRef(@__MODULE__, :method_table)), $ex)))
 end
 
-# StaticCompiler's entry points, with our method table as the default
+# StaticCompiler's entry points, with our method table as the default, and the runtime of this
+# package installed in the code that they generate (`llvm_postprocess`)
 for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_typed,
           :static_code_native, :static_llvm_module)
     @eval begin
-        $f(args...; method_table = method_table, kwargs...) =
-            StaticCompiler.$f(args...; method_table, kwargs...)
+        $f(args...; method_table = method_table, llvm_postprocess = link_runtime!, kwargs...) =
+            StaticCompiler.$f(args...; method_table, llvm_postprocess, kwargs...)
         @doc """
-            $($f)(args...; method_table = StaticCompilerOverrides.method_table, kwargs...)
+            $($f)(args...; method_table = StaticCompilerOverrides.method_table, llvm_postprocess = link_runtime!, kwargs...)
 
-        `StaticCompiler.$($f)`, using the method table of StaticCompilerOverrides by default.
+        `StaticCompiler.$($f)`, using the method table of StaticCompilerOverrides by default, and with its
+        runtime (allocation, exceptions, ...) added to the code that is generated.
         """ $f
     end
 end

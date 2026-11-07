@@ -1,5 +1,6 @@
 using Test
 include("corpus.jl")
+include("testruntime.jl")
 
 # Idioms that must compile to a standalone executable giving the same result as Julia.
 # Known gaps, and what is needed. When one starts working, its `@test_broken` fails (as an
