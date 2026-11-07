@@ -37,14 +37,27 @@ function tag_allocations!(mod::LLVM.Module)
         call = LLVM.user(use)
         call isa LLVM.CallInst || continue
         typ = LLVM.operands(call)[3]
+        known = typ isa LLVM.ConstantExpr && isinttoptr(typ) && constant_address(typ) !== nothing
         @dispose builder = LLVM.IRBuilder() begin
-            LLVM.position!(builder, LLVM.after(call))
-            tag = if typ isa LLVM.ConstantExpr && isinttoptr(typ) && constant_address(typ) !== nothing
+            obj = call
+            # an object that can't refer to others is allocated as such (the lowering that would follow allocates them all alike)
+            if known && Runtime.object_type(UInt(constant_address(typ))) === DataType &&
+               Runtime.type_pointerfree(unsafe_pointer_to_objref(Ptr{Cvoid}(UInt(constant_address(typ)))))
+                ftype = LLVM.FunctionType(LLVM.value_type(call), [LLVM.Int64Type()])
+                atomic = get(LLVM.functions(mod), "gpu_gc_pool_alloc_atomic", nothing)
+                atomic === nothing && (atomic = LLVM.Function(mod, "gpu_gc_pool_alloc_atomic", ftype))
+                LLVM.position!(builder, LLVM.before(call))
+                obj = LLVM.call!(builder, ftype, atomic, [LLVM.operands(call)[2]])
+                LLVM.replace_uses!(call, obj)
+                LLVM.erase!(call)
+            end
+            LLVM.position!(builder, LLVM.after(obj))
+            tag = if known
                 LLVM.ConstantInt(type_tag(UInt(constant_address(typ))))
             else
                 LLVM.ptrtoint!(builder, typ, LLVM.Int64Type()) # a type that is only known when running
             end
-            slot = LLVM.gep!(builder, LLVM.Int8Type(), call, [LLVM.ConstantInt(Int64(-8))])
+            slot = LLVM.gep!(builder, LLVM.Int8Type(), obj, [LLVM.ConstantInt(Int64(-8))])
             LLVM.store!(builder, tag, slot)
         end
         changed = true

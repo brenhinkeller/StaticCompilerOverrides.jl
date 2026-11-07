@@ -6,6 +6,7 @@ include("testunicode.jl")
 include("testtags.jl")
 include("testobjectid.jl")
 include("testshow.jl")
+include("testheap.jl")
 
 # Idioms that must compile to a standalone executable giving the same result as Julia.
 # Known gaps, and what is needed. When one starts working, its `@test_broken` fails (as an

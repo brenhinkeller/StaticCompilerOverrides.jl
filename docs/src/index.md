@@ -195,37 +195,63 @@ a message and abort if they are ever called (and the addresses will crash the pr
 `allow = ("function_name", ...)` accepts specific runtime functions, and keeps the check for the rest.
 Run with `JULIA_DEBUG=StaticCompilerOverrides` to see which are defined this way.
 
-## Memory: there is no garbage collector, so allocations leak
+## Memory and the garbage collector
 
-!!! warning "Compiled programs never free heap memory unless you do it yourself"
-    A compiled program has no garbage collector. Everything that Julia would heap-allocate and
-    later collect is instead allocated with `calloc`, and **never freed** until the process exits
-    and the operating system reclaims it. This is fine for programs that run briefly or allocate a
-    bounded amount in total, but a program that allocates in a loop will grow without bound.
-
-What does and does not allocate:
-
-* **Leaks:** every array (`zeros(n)`, `collect(...)`, `[x for ...]`, a broadcast `a .+ b`), every
-  `Dict`/`Set`, every `String` built at run time (`string(i)`, `"a" * "b"`, `repr`, ...),
-  every escaping closure or mutable struct, every boxed value, and every thrown exception.
-* **Growing containers leak their old storage:** `push!` onto a `Vector` allocates a larger buffer
-  when it is full and abandons the old one. The total is about twice the final size, and a
-  container that is rebuilt in a loop leaks each time.
-* **Does not leak:** anything the compiler can keep on the stack or remove, for instance a small
-  `Ref` or tuple that does not escape, or an array that is only used locally and that Julia's
-  optimizer can eliminate. Isbits structs and `StackArray`s are always on the stack.
-
-For example, this leaks `8 * n` bytes per call, so `10^9` calls leak about 8 GB per element:
+Compiled programs have a garbage collector, so memory that the program is not using any more is freed, as in Julia. It is
+on by default (on macOS and Linux); `gc = false` in `compile_executable` (and the other entry points) leaves it out, and then
+**nothing is ever freed**, which suits a program that runs briefly or allocates a bounded amount in total, and is the
+simplest and fastest.
 
 ```julia
-total(n) = sum(collect(1:n))    # allocates a Vector on every call
+exe = compile_executable(main, (Vector{String},), "build", "program")                # with the collector
+exe = compile_executable(main, (Vector{String},), "build", "program"; gc = false)   # without it
 ```
 
-### Finding allocations
+The collector and the allocator it works with (`src/heap.jl`) are written in Julia, and compiled with StaticCompiler into every
+program that allocates. How it works:
 
-[`allocation_sites`](@ref) counts the places in the compiled code of a function that allocate. Zero
-means that nothing is allocated. This is an upper bound, since an allocation in a branch that is
-never taken (such as the construction of an exception) is counted too.
+* **Conservative and non-moving.** It doesn't need to know the types of what is in memory. Every word of the stack (and the
+  registers), of the data that the program has copied from the compiler (a `const` container that is changed to refer to new
+  objects, for instance), and of the objects that it reaches, that is the address of an object, or of anything inside it (or just
+  after the end of it, which is what a loop that has gone past the end of an array holds), keeps that object. A number that looks
+  like an address may keep an object that is not used, but can't make anything unsafe, and the objects don't move, so the addresses
+  that the code holds stay right.
+* **It knows what can't refer to anything.** Strings, arrays of numbers, boxed numbers and the like, which the compiler can tell
+  from their type, are not looked inside, so a large array of numbers costs nothing to collect.
+* **Small objects** are in blocks of 64 kB of one size class (23 of them, up to 2 kB), with a bitmap for the cells in use and
+  one for those reached; **large objects** have memory of their own. An allocation is a few instructions. Nothing is zeroed
+  twice: memory from the system is zero, and a cell is zeroed when it is reused.
+* **When:** a collection is made when as much has been allocated since the last as is alive after it (and at least 8 MB), so
+  the heap is at most about twice what the program uses, and a program that allocates less than 8 MB never collects.
+
+In a loop that makes two small objects each time, 10 million times, the collector keeps the program at 9 MB, from 764 MB
+without it, and it is faster as well (0.05 s, from 0.22 s), as the memory that is used again is in the cache.
+
+`GC.gc()` collects, and `GC.enable(false)` stops collections until `GC.enable(true)`. In a compiled program, `gc_heap_bytes()`,
+`gc_live_bytes()` and `gc_collections()` say how much memory the heap has from the system, how much was in use after the last
+collection, and how many collections there have been.
+
+!!! warning "What the collector can't see"
+    A reference that is not in the stack, the registers, or an object of the heap, or in the data that the compiler copied, is not
+    looked at, and what it refers to is freed if nothing else refers to it. That is the case for memory that the program gets by
+    itself: a `MallocArray` or `malloc` that holds the address of an object (they are for plain data, and don't normally), and a
+    `Ptr` that is hidden (made from a number that is changed). `pointer(x)` of an array or string is fine for as long as `x` is
+    alive, as in Julia (use `GC.@preserve` when `x` is not used after it), and an address of an object that is kept in the stack,
+    in a register, or in memory of the heap, is seen.
+
+### Without the collector (`gc = false`)
+
+Everything that Julia would heap-allocate and later collect is never freed. What allocates:
+
+* every array (`zeros(n)`, `collect(...)`, `[x for ...]`, a broadcast `a .+ b`), every `Dict`/`Set`, every `String` built at run
+  time (`string(i)`, `"a" * "b"`, `repr`, ...), every escaping closure or mutable struct, every boxed value, and every thrown exception;
+* and a container that grows (`push!` onto a `Vector` that is full) leaves its old storage: about twice the final size, and a
+  container that is rebuilt in a loop leaves that each time.
+
+What does not: anything the compiler can keep on the stack or remove, for instance a small `Ref` or tuple that does not escape, or
+an array that is only used locally and that Julia's optimizer can eliminate. Isbits structs and `StackArray`s are always on the
+stack. [`allocation_sites`](@ref) counts the places in the compiled code of a function that allocate (an upper bound, as an
+allocation in a branch that is never taken, such as the construction of an exception, is counted too):
 
 ```julia
 julia> allocation_sites(i -> sum(abs2, 1:i), (Int,))
@@ -235,22 +261,17 @@ julia> allocation_sites(i -> sum(collect(1:i)), (Int,))
 2
 ```
 
-### Avoiding leaks
+To avoid the growth in a program without the collector: allocate once, outside the loop, and reuse the memory (`resize!`, `fill!`,
+in-place `.=` and `mul!`, `empty!`); prefer `StackArray`s from StaticTools for small, fixed-size data; use `MallocArray`/`MallocString`
+and `free`, or `@no_escape`/`@alloc` from Bumper.jl, for memory with a clear lifetime; and write with `printf` or `print` instead
+of building strings in loops.
 
-* Allocate once, outside the loop, and reuse the memory (`resize!`, `fill!`, in-place `.=` and
-  `mul!`, `empty!`).
-* Prefer `StackArray`s (`StackVector`, `StackMatrix`) from StaticTools for small, fixed-size data.
-* For memory with a clear lifetime, use `MallocArray`/`MallocString` from StaticTools and `free`
-  them yourself, or `@no_escape`/`@alloc` from Bumper.jl, which release everything allocated in the
-  block when it ends.
-* Avoid building strings in loops; write with `printf` or `print` directly instead.
-* Do not use exceptions for ordinary control flow in a loop: each `throw` leaks the exception.
+### Testing the collector
 
-!!! note
-    Freeing is not just unimplemented: Julia code does not say when it is finished with an object,
-    so no allocator can free these objects automatically without a garbage collector or reference
-    counting. Neither is planned for now. Arena allocation (releasing a whole region at once) is the
-    likely first step.
+The collector is tested on the host against an oracle (random graphs of objects, of which what is reached is known), and by
+compiling programs with it. `gc = N` (a number) is a mode for finding mistakes: the collector also runs every `N` allocations,
+and what it frees is overwritten, so that a use of memory that was freed is seen at once. All of the tests can be run so with
+the environment variable `STATIC_COMPILER_OVERRIDES_GC` (`false`, `true`, or a number), which sets the default of `gc`.
 
 ## Exceptions
 
@@ -311,6 +332,8 @@ program that compares objects, are made only if the code calls `jl_egal__unboxed
 tags is made only if the code indexes it with something that is not a constant (`isa` on a boxed value does), and
 otherwise each of the types that the code names is the one object. The `isa` table (`ijl_subtype`) is as large as the
 number of types asked about times the number of types in the binary that are subtypes of them.
+The collector itself is about 12 kB of code and 6 to 10 kB of data in a program that allocates (so the sizes above, which are of programs
+without it, are that much smaller than a default build; `gc = false` leaves it out).
 `println(Any[...])` is larger because it has the code to show each of the types in `show_candidates`: add only the types
 that you need with [`add_show_candidates!`](@ref) (the defaults can't be removed yet).
 

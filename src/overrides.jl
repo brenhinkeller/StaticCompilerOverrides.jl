@@ -28,13 +28,25 @@ macro device_override(ex)
     return esc(:($Base.Experimental.@overlay($(GlobalRef(@__MODULE__, :method_table)), $ex)))
 end
 
+# the collector is on, where it can be (it needs to know where the stack of the program starts); the environment variable
+# `STATIC_COMPILER_OVERRIDES_GC` (`false`, `true`, or a number of allocations: see `gc`) is for running all the tests (or any
+# program that is compiled) with another, for finding bugs in the collector
+function default_gc()
+    setting = get(ENV, "STATIC_COMPILER_OVERRIDES_GC", "")
+    if !isempty(setting)
+        n = tryparse(Int, setting)
+        return n === nothing ? parse(Bool, setting) : n
+    end
+    return Sys.isapple() || Sys.islinux()
+end
+
 # StaticCompiler's entry points, with our method table as the default, and the runtime of this
 # package installed in the code that they generate (`llvm_postprocess`)
 for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_typed,
           :static_code_native, :static_llvm_module)
     @eval begin
-        $f(args...; method_table = method_table, strict::Bool = true, allow = (),
-           llvm_postprocess = mod -> link_runtime!(mod; strict, allow), kwargs...) =
+        $f(args...; method_table = method_table, strict::Bool = true, allow = (), gc = default_gc(),
+           llvm_postprocess = mod -> link_runtime!(mod; strict, allow, gc), kwargs...) =
             StaticCompiler.$f(args...; method_table, llvm_postprocess, kwargs...)
         @doc """
             $($f)(args...; method_table = StaticCompilerOverrides.method_table, strict = true, allow = (), kwargs...)
@@ -48,6 +60,11 @@ for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_t
         compiles it anyway, with calls that need the runtime aborting the program if they are reached.
         `allow` is a collection of names of runtime functions (as in the error message) to accept even
         in strict mode.
+
+        By default (`gc = true`, where the collector is available) the program has a garbage collector: memory that is not
+        used any more is freed (see the section on memory in the manual). `gc = false` never frees it. A number
+        (`gc = 100`) also collects every that many allocations and overwrites what it frees, which is for finding bugs
+        in the collector.
         """ $f
     end
 end

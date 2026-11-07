@@ -14,6 +14,7 @@ include("base.jl")     # Base methods that can be written to compile statically
 include("io.jl")       # Standard input and output
 include("show.jl")     # show of types and containers
 include("objectid.jl") # objectid, so that a struct can be the key of a Dict
+include("gc.jl")       # The garbage collector, from the program
 include("printf.jl")   # Printf, for formats without `*`
 include("unicode.jl")  # Properties of characters, without utf8proc
 include("files.jl")     # Files
@@ -25,5 +26,6 @@ export compile_executable, compile_shlib, static_code_llvm, static_code_typed, s
 export UnsupportedCodeError, add_show_candidates!
 export StaticIO, StaticFile, STDIN, STDOUT, STDERR
 export static_result, static_status, undefined_symbols, allocation_sites, @static_test
+export gc_live_bytes, gc_collections, gc_heap_bytes
 
 end # module StaticCompilerOverrides

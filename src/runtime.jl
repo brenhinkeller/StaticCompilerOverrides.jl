@@ -12,11 +12,14 @@
 
 module Runtime
 
+import StaticCompiler
 using LLVM: LLVM, @dispose, run!
 using LLVM.Passes: GlobalDCEPass
 using StaticCompiler: isinttoptr, constant_address # from the pointer check
 
 export link_runtime!, UnsupportedCodeError
+
+include("heap.jl") # the allocator, in Julia
 
 const RUNTIME_SHIM_IR = raw"""
 declare ptr @malloc(i64)
@@ -39,18 +42,19 @@ define internal void @_static_oom() noreturn {
 
 ; Objects have a header of 16 bytes before them, as in Julia: the type tag, in the 8 bytes before the
 ; object (which compiled code may write: see `julia.gc_alloc_bytes` below), and padding, so that the
-; object is aligned to 16 bytes. No GC: nothing is ever freed.
+; object is aligned to 16 bytes. The heap (`heap.jl`), written in Julia, is linked in (see `link_heap!`), and
+; has the function that allocates, with the kind of the object: 0 if it may hold references to other objects,
+; and 1 if it can't (a string, an array of numbers, a boxed number), which the collector doesn't look inside.
+declare ptr @static_alloc(i64, i64)
+
 define linkonce_odr ptr @gpu_gc_pool_alloc(i64 %sz) {
-  %total = add i64 %sz, 16
-  %p = call ptr @calloc(i64 1, i64 %total)
-  %isnull = icmp eq ptr %p, null
-  br i1 %isnull, label %oom, label %ok
-oom:
-  call void @_static_oom()
-  unreachable
-ok:
-  %obj = getelementptr inbounds i8, ptr %p, i64 16
-  ret ptr %obj
+  %p = call ptr @static_alloc(i64 %sz, i64 0)
+  ret ptr %p
+}
+
+define linkonce_odr ptr @gpu_gc_pool_alloc_atomic(i64 %sz) {
+  %p = call ptr @static_alloc(i64 %sz, i64 1)
+  ret ptr %p
 }
 
 ; Julia 1.14: allocation of an object of a known size: the caller writes the type tag, at `obj - 8`
@@ -69,6 +73,20 @@ define linkonce_odr void @gpu_unsupported_allocation(ptr %name) {
 define linkonce_odr ptr @jl_alloc_genericmemory_unchecked(ptr %ptls, i64 %nbytes, ptr %ty) {
   %total = add i64 %nbytes, 16
   %obj = call ptr @gpu_gc_pool_alloc(i64 %total)
+  %tagslot = getelementptr inbounds i8, ptr %obj, i64 -8
+  %tag = ptrtoint ptr %ty to i64
+  store i64 %tag, ptr %tagslot, align 8
+  %data = getelementptr inbounds i8, ptr %obj, i64 16
+  %slot = getelementptr inbounds i8, ptr %obj, i64 8
+  store ptr %data, ptr %slot, align 8
+  ret ptr %obj
+}
+
+; The same for the memory of elements that are not references (`jl_alloc_genericmemory_atomic`, which calls to the above are
+; made for by `classify_allocations!`), which the collector doesn't look inside
+define linkonce_odr ptr @jl_alloc_genericmemory_atomic(ptr %ptls, i64 %nbytes, ptr %ty) {
+  %total = add i64 %nbytes, 16
+  %obj = call ptr @gpu_gc_pool_alloc_atomic(i64 %total)
   %tagslot = getelementptr inbounds i8, ptr %obj, i64 -8
   %tag = ptrtoint ptr %ty to i64
   store i64 %tag, ptr %tagslot, align 8
@@ -227,28 +245,28 @@ define linkonce_odr void @jl_argument_error(ptr %msg) noreturn {
 
 ; boxed primitives
 define linkonce_odr ptr @ijl_box_int64(i64 %v) {
-  %p = call ptr @gpu_gc_pool_alloc(i64 8)
+  %p = call ptr @gpu_gc_pool_alloc_atomic(i64 8)
   %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
   store i64 {{TAG_INT64}}, ptr %tagslot, align 8
   store i64 %v, ptr %p, align 8
   ret ptr %p
 }
 define linkonce_odr ptr @ijl_box_uint64(i64 %v) {
-  %p = call ptr @gpu_gc_pool_alloc(i64 8)
+  %p = call ptr @gpu_gc_pool_alloc_atomic(i64 8)
   %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
   store i64 {{TAG_UINT64}}, ptr %tagslot, align 8
   store i64 %v, ptr %p, align 8
   ret ptr %p
 }
 define linkonce_odr ptr @ijl_box_int32(i32 %v) {
-  %p = call ptr @gpu_gc_pool_alloc(i64 8)
+  %p = call ptr @gpu_gc_pool_alloc_atomic(i64 8)
   %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
   store i64 {{TAG_INT32}}, ptr %tagslot, align 8
   store i32 %v, ptr %p, align 4
   ret ptr %p
 }
 define linkonce_odr ptr @ijl_box_uint32(i32 %v) {
-  %p = call ptr @gpu_gc_pool_alloc(i64 8)
+  %p = call ptr @gpu_gc_pool_alloc_atomic(i64 8)
   %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
   store i64 {{TAG_UINT32}}, ptr %tagslot, align 8
   store i32 %v, ptr %p, align 4
@@ -258,7 +276,7 @@ define linkonce_odr ptr @ijl_box_uint32(i32 %v) {
 ; String (Julia 1.11+): { length, data..., NUL }
 define linkonce_odr ptr @ijl_alloc_string(i64 %n) {
   %total = add i64 %n, 9
-  %p = call ptr @gpu_gc_pool_alloc(i64 %total)
+  %p = call ptr @gpu_gc_pool_alloc_atomic(i64 %total)
   %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
   store i64 {{TAG_STRING}}, ptr %tagslot, align 8
   store i64 %n, ptr %p, align 8
@@ -484,7 +502,8 @@ end
 
 # the runtime functions defined by `RUNTIME_SHIM_IR`, which override declarations in `mod`
 const RUNTIME_SHIM_FUNCTIONS = (
-    "gpu_gc_pool_alloc", "gpu_unsupported_allocation", "jl_alloc_genericmemory_unchecked",
+    "gpu_gc_pool_alloc", "gpu_gc_pool_alloc_atomic", "gpu_unsupported_allocation",
+    "jl_alloc_genericmemory_unchecked", "jl_alloc_genericmemory_atomic",
     "jl_argument_error", "jl_egal__unboxed", "julia.get_pgcstack", "julia.gc_alloc_bytes", "julia.safepoint", "julia.cancellation_point", "julia.get_pgcstack_or_new",
     "ijl_enter_handler", "ijl_pop_handler", "ijl_pop_handler_noexcept", "ijl_excstack_state",
     "ijl_restore_excstack", "ijl_throw", "ijl_rethrow", "ijl_rethrow_other",
@@ -928,10 +947,11 @@ function define_well_known_objects!(e::ObjectEmbedder)
 end
 
 # Define the runtime functions that `mod` calls but does not define.
-function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = ())
+function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux())
     e = ObjectEmbedder(mod, Dict())
     define_well_known_objects!(e)
     lower_gc_frames!(mod)
+    gc === false || classify_allocations!(mod)
     queries = subtype_queries(mod)
     embed_constants!(e)
     queries === nothing || define_subtype!(e, queries)
@@ -946,13 +966,180 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = ())
     needed = filter(RUNTIME_SHIM_FUNCTIONS) do name
         haskey(LLVM.functions(mod), name) && LLVM.isdeclaration(LLVM.functions(mod)[name])
     end
-    isempty(needed) && return mod
-    shim = parse(LLVM.Module, shim_ir())
-    LLVM.datalayout!(shim, LLVM.datalayout(mod))
-    LLVM.triple!(shim, LLVM.triple(mod))
-    LLVM.link!(mod, shim) # consumes `shim`
-    run!(GlobalDCEPass(), mod)
+    linked = !isempty(needed)
+    if linked
+        shim = parse(LLVM.Module, shim_ir())
+        LLVM.datalayout!(shim, LLVM.datalayout(mod))
+        LLVM.triple!(shim, LLVM.triple(mod))
+        LLVM.link!(mod, shim) # consumes `shim`
+    end
+    linked |= link_heap!(mod; gc) # (the shim, and the code, call `static_alloc`)
+    haskey(LLVM.functions(mod), "gpu_gc_pool_alloc") && inline_allocation!(mod, gc)
+    linked && run!(GlobalDCEPass(), mod)
     return mod
+end
+
+# The allocation functions are small and called from everywhere, and nothing optimizes the module after this: they are
+# inlined where they are called
+# The allocation functions are small and called from everywhere, and nothing optimizes the module after this: they are
+# inlined where they are called (the allocator itself too, without the collector: it is a few instructions)
+const INLINED_ALLOCATORS = ("gpu_gc_pool_alloc", "gpu_gc_pool_alloc_atomic", "julia.gc_alloc_bytes", "jl_alloc_genericmemory_unchecked",
+                            "jl_alloc_genericmemory_atomic", "ijl_alloc_string")
+function inline_allocation!(mod::LLVM.Module, gc)
+    fns = LLVM.functions(mod)
+    names = gc === false ? [INLINED_ALLOCATORS..., "static_alloc"] : collect(INLINED_ALLOCATORS)
+    for name in names
+        haskey(fns, name) && !LLVM.isdeclaration(fns[name]) || continue
+        push!(LLVM.function_attributes(fns[name]), LLVM.EnumAttribute("alwaysinline"))
+    end
+    run!(LLVM.Passes.AlwaysInlinerPass(), mod)
+    return
+end
+
+# the type that objects with the tag `tag` have (what `type_tag` is the inverse of), or `nothing` if it isn't one
+function tag_type(tag::UInt)
+    if tag < (64 << 4)
+        p = unsafe_load(cglobal(:jl_small_typeof, Ptr{Ptr{Cvoid}}), (tag >> 3) + 1)
+        return p == C_NULL ? nothing : unsafe_pointer_to_objref(p)
+    end
+    object_type(tag) === DataType || return nothing
+    return unsafe_pointer_to_objref(Ptr{Cvoid}(tag))
+end
+
+# Whether the objects of the concrete type `T` have no references to other objects: the collector doesn't look inside the
+# objects that can't, and so a type that is one by mistake would have what it refers to freed. (A `Memory` of elements
+# stored inline that are plain data: it has a pointer, to its own data; objects with a Union of such, which are a few
+# bytes more, are not claimed to be.)
+function type_pointerfree(T)
+    T isa DataType && isconcretetype(T) || return false
+    if T <: Core.GenericMemory
+        ET = eltype(T)
+        return ET isa DataType && Base.allocatedinline(ET) && Base.datatype_pointerfree(ET)
+    end
+    return Base.datatype_pointerfree(T)
+end
+
+# Allocations of objects that can't refer to others are made as such (the collector doesn't look inside them): a call
+# that is `julia.gc_alloc_bytes(ptls, size, type)` or `jl_alloc_genericmemory_unchecked(ptls, nbytes, type)` of a type that is a
+# constant. (Those of `julia.gc_alloc_obj` are made so by the pass that tags them, which sees the type: see `tags.jl`.)
+function classify_allocations!(mod::LLVM.Module)
+    fns = LLVM.functions(mod)
+    ptrT = LLVM.PointerType()
+    i64T = LLVM.Int64Type()
+    changed = false
+    function replace_call!(call, callee_name, ftype, args)
+        callee = get(LLVM.functions(mod), callee_name, nothing)
+        callee === nothing && (callee = LLVM.Function(mod, callee_name, ftype))
+        @dispose builder = LLVM.IRBuilder() begin
+            LLVM.position!(builder, LLVM.before(call))
+            new = LLVM.call!(builder, ftype, callee, args)
+            LLVM.replace_uses!(call, new)
+            LLVM.erase!(call)
+        end
+        return
+    end
+    if haskey(fns, "julia.gc_alloc_bytes")
+        for use in collect(LLVM.uses(fns["julia.gc_alloc_bytes"]))
+            call = LLVM.user(use)
+            call isa LLVM.CallInst || continue
+            tag = LLVM.operands(call)[3]
+            tag isa LLVM.ConstantInt || continue
+            type_pointerfree(tag_type(UInt(convert(UInt64, tag)))) || continue
+            replace_call!(call, "gpu_gc_pool_alloc_atomic", LLVM.FunctionType(ptrT, [i64T]), [LLVM.operands(call)[2]])
+            changed = true
+        end
+    end
+    if haskey(fns, "jl_alloc_genericmemory_unchecked")
+        ftype = LLVM.function_type(fns["jl_alloc_genericmemory_unchecked"])
+        for use in collect(LLVM.uses(fns["jl_alloc_genericmemory_unchecked"]))
+            call = LLVM.user(use)
+            call isa LLVM.CallInst || continue
+            ops = LLVM.operands(call)
+            nodes = inttoptr_nodes(ops[3])
+            length(nodes) == 1 || continue
+            addr = constant_address(nodes[1])
+            addr === nothing && continue
+            object_type(UInt(addr)) === DataType || continue
+            type_pointerfree(unsafe_pointer_to_objref(Ptr{Cvoid}(UInt(addr)))) || continue
+            replace_call!(call, "jl_alloc_genericmemory_atomic", ftype, collect(ops)[1:end-1])
+            changed = true
+        end
+    end
+    return changed
+end
+
+# The heap (`heap.jl`) is Julia code, compiled with StaticCompiler the first time that it is needed in the session,
+# and kept as IR: the module is made in the context that is active now (the one that the code that is compiled is
+# in, which the module of the heap is linked into), so what is kept is its text. Its functions other than the one that
+# the program calls, and its state, are internal to it, so that they can't clash with those of the program.
+const HEAP_IR = Dict{Bool,String}()
+
+function heap_ir(gc::Bool)
+    haskey(HEAP_IR, gc) && return HEAP_IR[gc]
+    alloc = gc ? Heap.alloc : Heap.alloc_nogc
+    heap = StaticCompiler.compile_llvm_module(alloc, (Int, Int), "static_alloc")
+    try
+        for fn in LLVM.functions(heap)
+            LLVM.isdeclaration(fn) || LLVM.name(fn) == "static_alloc" || LLVM.linkage!(fn, LLVM.API.LLVMInternalLinkage)
+        end
+        for g in LLVM.globals(heap)
+            LLVM.isdeclaration(g) || LLVM.linkage!(g, LLVM.API.LLVMInternalLinkage)
+        end
+        HEAP_IR[gc] = string(heap)
+    finally
+        LLVM.dispose(heap)
+    end
+    return HEAP_IR[gc]
+end
+
+# What the collector looks at besides the stack: the data of the program that can refer to objects of the heap, which are
+# the objects that were copied into the binary (a `const` that is a container may be changed to refer to anything) and the
+# state of the runtime (the exceptions that are being handled); as { count, (address, bytes)... }
+function define_gc_roots!(mod::LLVM.Module)
+    dl = LLVM.datalayout(mod)
+    words = LLVM.Constant[]
+    for g in LLVM.globals(mod)
+        # (`LLVM.isconstant` is whether it is an LLVM constant, which every global is: whether the program can change it is this)
+        (LLVM.isdeclaration(g) || LLVM.API.LLVMIsGlobalConstant(g) != 0) && continue
+        name = LLVM.name(g)
+        (startswith(name, "static_object_") || startswith(name, "_static_") || startswith(name, "jl_global_")) || continue
+        size = Int(LLVM.API.LLVMABISizeOfType(dl, LLVM.value_type(LLVM.initializer(g))))
+        push!(words, LLVM.const_ptrtoint(g, LLVM.Int64Type()), LLVM.ConstantInt(Int64(size)))
+    end
+    table = LLVM.ConstantArray(LLVM.Int64Type(), LLVM.Constant[LLVM.ConstantInt(Int64(length(words) ÷ 2)), words...])
+    g = LLVM.GlobalVariable(mod, LLVM.value_type(table), "_static_gc_roots")
+    LLVM.initializer!(g, table)
+    LLVM.constant!(g, true)
+    LLVM.visibility!(g, LLVM.API.LLVMHiddenVisibility)
+    return
+end
+
+# `gc` is `false` (memory is never freed), `true` (it is, by a collector), or a number of allocations (the collector
+# also runs that often, which is for finding what it frees by mistake, and what is freed is overwritten); the heap reads
+# this as a global that is always there (0 is not to), as a reference to a symbol that is not defined doesn't link
+function define_gc_stress!(mod::LLVM.Module, interval::Integer)
+    g = LLVM.GlobalVariable(mod, LLVM.Int64Type(), "_static_gc_stress")
+    LLVM.initializer!(g, LLVM.ConstantInt(Int64(interval)))
+    LLVM.constant!(g, true)
+    LLVM.visibility!(g, LLVM.API.LLVMHiddenVisibility)
+    return
+end
+
+# Define `static_alloc` (the allocation of the shim), if the code needs it; whether it did
+function link_heap!(mod::LLVM.Module; gc = false)
+    fns = LLVM.functions(mod)
+    haskey(fns, "static_alloc") && LLVM.isdeclaration(fns["static_alloc"]) || return false
+    collect_garbage = gc !== false
+    if collect_garbage
+        Sys.isapple() || Sys.islinux() || throw(ArgumentError("the garbage collector is not available on this system (use `gc = false`)"))
+        define_gc_roots!(mod)
+        define_gc_stress!(mod, !(gc isa Bool) && gc isa Integer && gc > 0 ? gc : 0) # (`true` is an `Integer` too)
+    end
+    heap = parse(LLVM.Module, heap_ir(collect_garbage))
+    LLVM.datalayout!(heap, LLVM.datalayout(mod))
+    LLVM.triple!(heap, LLVM.triple(mod))
+    LLVM.link!(mod, heap) # consumes `heap`
+    return true
 end
 
 # ---------------------------------------------------------------------------------------

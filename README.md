@@ -49,4 +49,4 @@ Allocating code (`Vector`, `Dict`, `String`, ...), `print`/`println`/`show` of n
 
 Code that can't work in a standalone binary is rejected when compiling, with an explanation (`strict = false` to compile it anyway).
 
-**Compiled programs have no garbage collector: heap allocations are never freed.** This is fine for short-running programs, but a program that allocates in a loop grows without bound. See the [manual](docs/src/index.md) for what leaks and how to avoid it.
+**Compiled programs have a garbage collector** (conservative and non-moving, written in Julia and compiled into the program), so memory is freed as in Julia; `gc = false` leaves it out, for programs that don't need it. See the [manual](docs/src/index.md) for how it works and what it can't see.
