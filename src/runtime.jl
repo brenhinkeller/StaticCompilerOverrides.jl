@@ -569,6 +569,39 @@ function resolve_lazy_lookups!(mod::LLVM.Module)
     return changed
 end
 
+# A call that has no method to run (`Core.throw_methoderror(f, args...)`: what union splitting leaves when the types that were
+# split on were all of them) aborts the program, and does not look at its arguments. The function and the types in them are
+# not needed, then: where the arguments are put (a frame on the stack), the addresses of objects are replaced by null.
+function null_methoderror_arguments!(mod::LLVM.Module)
+    fns = LLVM.functions(mod)
+    haskey(fns, "jl_f_throw_methoderror") || return false
+    changed = false
+    ptrT = LLVM.PointerType()
+    for use in collect(LLVM.uses(fns["jl_f_throw_methoderror"]))
+        call = LLVM.user(use)
+        call isa LLVM.CallInst || continue
+        frame = LLVM.operands(call)[2]
+        todo = Any[frame]
+        while !isempty(todo)
+            v = pop!(todo)
+            for u in LLVM.uses(v)
+                user = LLVM.user(u)
+                if user isa LLVM.StoreInst
+                    LLVM.operands(user)[2] == v || continue # (it is the pointer that is stored to)
+                    value = LLVM.operands(user)[1]
+                    if value isa LLVM.ConstantExpr && isinttoptr(value)
+                        LLVM.operands(user)[1] = LLVM.null(ptrT)
+                        changed = true
+                    end
+                elseif user isa LLVM.GetElementPtrInst
+                    push!(todo, user)
+                end
+            end
+        end
+    end
+    return changed
+end
+
 # `getfield(x, name)` with a name that is only known at run time (`getproperty(::QRPivoted, ::Symbol)` is, when it is not inlined) is
 # `ijl_field_index(T, name, 0)`, the number of the field of the type `T` of that name, or -1. `T` is a constant, so the names
 # of its fields are, and the answer is a comparison with each of them (as the symbols of the same name are the same object).
@@ -879,12 +912,17 @@ function unresolved_pointer_uses(mod::LLVM.Module)
             name in POINTER_ARGUMENTS_NOT_USED ? (callee,) : (callee, LLVM.arguments(inst)...)
         elseif inst isa LLVM.GetElementPtrInst
             (LLVM.operands(inst)[1],)
+        elseif inst isa LLVM.ICmpInst
+            LLVM.operands(inst) # (a type compared by the number of its address: see `type_number_constants`)
         else
             ()
         end
         for op in ops
-            addr = if op isa LLVM.ConstantExpr && isinttoptr(op)
+            addr = if op isa LLVM.ConstantExpr && isinttoptr(op) && !(inst isa LLVM.ICmpInst) # (a comparison of pointers: numbers)
                 constant_address(op)
+            elseif op isa LLVM.ConstantInt && inst isa LLVM.ICmpInst && LLVM.width(LLVM.value_type(op)) == 64
+                n = convert(UInt, op)
+                n >= 0x10000 && n % 16 == 0 && object_type(n) === DataType ? n : nothing
             elseif op isa LLVM.ConstantInt && inst isa LLVM.CallInst && LLVM.width(LLVM.value_type(op)) == 64
                 # an address that is passed as a number (see `embed_address_arguments!`), if it is that of an object
                 n = convert(UInt, op)
@@ -1032,6 +1070,7 @@ end
 function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux())
     blas = resolve_blas_lookups!(mod) # (before what they are given is embedded)
     define_field_index!(mod)
+    null_methoderror_arguments!(mod)
     stub_cancel_handlers!(mod)
     e = ObjectEmbedder(mod, Dict())
     define_well_known_objects!(e)

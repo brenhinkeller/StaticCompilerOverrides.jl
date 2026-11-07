@@ -195,6 +195,40 @@ a message and abort if they are ever called (and the addresses will crash the pr
 `allow = ("function_name", ...)` accepts specific runtime functions, and keeps the check for the rest.
 Run with `JULIA_DEBUG=StaticCompilerOverrides` to see which are defined this way.
 
+## Dynamic dispatch on abstract types
+
+A call whose argument has an abstract type, such as `area(x)` for an `x` from a `Vector{Shape}`, runs the method that fits the
+type that `x` has when the program is run. In Julia that is a lookup in the method tables, which a standalone binary does not
+have. Here it is resolved when compiling, by what Julia does for a `Union`: test which of the types the argument has, and call
+the method for that type. The union is that of the concrete subtypes of the abstract type that are defined when compiling,
+which are all of the types that an object of the program can have.
+
+```julia
+abstract type Shape end
+struct Circle <: Shape; r::Float64; end
+struct Rect <: Shape; w::Float64; h::Float64; end
+area(c::Circle) = pi * c.r^2
+area(r::Rect) = r.w * r.h
+
+shapes() = Shape[Circle(1.0), Rect(2.0, 3.0)]
+main(argc::Int, argv::Ptr{Ptr{UInt8}}) = (println(sum(area, shapes())); 0)
+compile_executable(main, (Int, Ptr{Ptr{UInt8}}), "build")      # works
+```
+
+It applies to a call that needs a dispatch (more than one method fits), when the type of an argument is abstract and has at
+most 16 concrete subtypes (`StaticCompilerOverrides.DISPATCH_LIMIT[]`), all of which can be listed. It does not apply, and the
+call is rejected as dynamic, for:
+
+* `Any`, and abstract types with too many subtypes (`Number`, `Function`, `AbstractArray`).
+* Abstract types with a parametric subtype whose instances are not known (`struct Box{T} <: Shape`): define the concrete ones
+  that you use (`struct IntBox <: Shape`), or use `Union{Circle,Rect}` for the type of the field.
+* Types and methods that are made after compiling (there is no `eval`).
+* Calls that compute a type from the types of the arguments at run time (`Dict(k => v)` of pairs with abstract values,
+  `typejoin`).
+
+The types that are loaded when compiling count: a package that defines more subtypes of `Shape` adds them to the union, and
+their methods to the code. An object of a type that was not there is a `MethodError`, as in Julia.
+
 ## Memory and the garbage collector
 
 Compiled programs have a garbage collector, so memory that the program is not using any more is freed, as in Julia. It is
