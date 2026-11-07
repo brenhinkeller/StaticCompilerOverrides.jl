@@ -569,6 +569,43 @@ function resolve_lazy_lookups!(mod::LLVM.Module)
     return changed
 end
 
+# `getfield(x, name)` with a name that is only known at run time (`getproperty(::QRPivoted, ::Symbol)` is, when it is not inlined) is
+# `ijl_field_index(T, name, 0)`, the number of the field of the type `T` of that name, or -1. `T` is a constant, so the names
+# of its fields are, and the answer is a comparison with each of them (as the symbols of the same name are the same object).
+function define_field_index!(mod::LLVM.Module)
+    fns = LLVM.functions(mod)
+    haskey(fns, "ijl_field_index") && LLVM.isdeclaration(fns["ijl_field_index"]) || return false
+    changed = false
+    i32 = LLVM.Int32Type()
+    i64 = LLVM.Int64Type()
+    ptrT = LLVM.PointerType()
+    for use in collect(LLVM.uses(fns["ijl_field_index"]))
+        call = LLVM.user(use)
+        call isa LLVM.CallInst || continue
+        ops = LLVM.operands(call)
+        (ops[3] isa LLVM.ConstantInt && convert(Int, ops[3]) == 0) || continue # (one that throws is not done)
+        nodes = inttoptr_nodes(ops[1])
+        length(nodes) == 1 || continue
+        addr = constant_address(nodes[1])
+        addr === nothing && continue
+        object_type(UInt(addr)) === DataType || continue
+        T = unsafe_pointer_to_objref(Ptr{Cvoid}(UInt(addr)))::DataType
+        LLVM.@dispose builder = LLVM.IRBuilder() begin
+            LLVM.position!(builder, LLVM.before(call))
+            result = LLVM.ConstantInt(i32, -1)
+            for (i, name) in reverse(collect(enumerate(fieldnames(T))))
+                sym = LLVM.const_inttoptr(LLVM.ConstantInt(i64, UInt64(ccall(:jl_value_ptr, UInt, (Any,), name))), ptrT)
+                same = LLVM.icmp!(builder, LLVM.API.LLVMIntEQ, ops[2], sym)
+                result = LLVM.select!(builder, same, LLVM.ConstantInt(i32, i - 1), result)
+            end
+            LLVM.replace_uses!(call, result)
+        end
+        LLVM.erase!(call)
+        changed = true
+    end
+    return changed
+end
+
 # `x isa T` for an `x` that is only known at run time, and a type `T` that is not concrete (`Number`, `Union{A,B}`,
 # `AbstractVector{Int}`), is `ijl_subtype(typeof(x), T)`: libjulia's subtyping, which is a large and complicated part
 # of it. The types that `T` is in the code are constants, though, and the types that the objects of the program can have are
@@ -657,6 +694,7 @@ const ABORTING_RUNTIME_FUNCTIONS = (
     "ijl_type_error" => "TypeError: type assertion failed",
     "ijl_undefined_var_error" => "UndefVarError: undefined variable",
     "jl_f_throw_methoderror" => "MethodError: no matching method",
+    "ijl_has_no_field_error" => "ErrorException: type has no field",
 )
 
 # Runtime functions for dynamic behavior (dispatch on types only known at run time, ...), which
@@ -774,8 +812,25 @@ function dynamic_runtime_calls(mod::LLVM.Module; allow = ())
         end
         isempty(callers) || push!(found, name => callers)
     end
+    # any other function of libjulia that is called, and that nothing here defines, is not in the binary either
+    for fn in fns
+        name = LLVM.name(fn)
+        is_libjulia_function(name) && LLVM.isdeclaration(fn) && !isempty(LLVM.uses(fn)) || continue
+        (name in allow || name in RUNTIME_SHIM_FUNCTIONS || any(==(name) ∘ first, DYNAMIC_RUNTIME_FUNCTIONS)) && continue
+        callers = String[]
+        for use in LLVM.uses(fn)
+            inst = LLVM.user(use)
+            inst isa LLVM.Instruction || continue
+            what = function_of(inst)
+            what in callers || push!(callers, what)
+        end
+        isempty(callers) || push!(found, name => callers)
+    end
     return found
 end
+
+# the names of the functions of libjulia (`ijl_` and `jl_`, but not the intrinsics of Julia's code generator, which are `julia.`)
+is_libjulia_function(name::AbstractString) = startswith(name, "ijl_") || startswith(name, "jl_")
 
 # Define the runtime functions for dynamic behavior as ones that abort, as the ones that are
 # still used, which is what happens if `strict = false`.
@@ -786,6 +841,13 @@ function define_dynamic_stubs!(mod::LLVM.Module)
         isempty(LLVM.uses(fns[name])) && continue
         @debug "Code calls a runtime function that is not supported, and will abort if it is reached" name
         define_aborting!(mod, fns[name], msg)
+    end
+    for fn in collect(fns) # (any other function of libjulia: see `dynamic_runtime_calls`)
+        name = LLVM.name(fn)
+        is_libjulia_function(name) && LLVM.isdeclaration(fn) && !isempty(LLVM.uses(fn)) || continue
+        name in RUNTIME_SHIM_FUNCTIONS && continue
+        @debug "Code calls a function of libjulia that is not in the binary, and will abort if it is reached" name
+        define_aborting!(mod, fn, "Dynamic behavior is not supported in standalone binaries ($name)")
     end
 end
 
@@ -961,6 +1023,9 @@ end
 
 # Define the runtime functions that `mod` calls but does not define.
 function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux())
+    blas = resolve_blas_lookups!(mod) # (before what they are given is embedded)
+    define_field_index!(mod)
+    stub_cancel_handlers!(mod)
     e = ObjectEmbedder(mod, Dict())
     define_well_known_objects!(e)
     lower_gc_frames!(mod)
@@ -986,6 +1051,7 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
         LLVM.triple!(shim, LLVM.triple(mod))
         LLVM.link!(mod, shim) # consumes `shim`
     end
+    linked |= link_blas!(mod, blas)
     linked |= link_heap!(mod; gc) # (the shim, and the code, call `static_alloc`)
     haskey(LLVM.functions(mod), "gpu_gc_pool_alloc") && inline_allocation!(mod, gc)
     linked && run!(GlobalDCEPass(), mod)
@@ -1912,5 +1978,7 @@ function embed_constants!(e::ObjectEmbedder)
     end
     return changed
 end
+
+include("blas.jl") # BLAS and LAPACK, through libblastrampoline
 
 end # module Runtime

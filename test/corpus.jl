@@ -1,6 +1,6 @@
 # Coverage corpus: idioms of increasing "dynamism", each a zero-argument function whose
 # result is compared between Julia and a compiled standalone executable.
-using Random, Printf
+using Random, Printf, LinearAlgebra
 if Base.find_package("StaticCompilerOverrides") === nothing
     include(joinpath(@__DIR__, "..", "src", "StaticCompilerOverrides.jl"))
     using .StaticCompilerOverrides
@@ -131,6 +131,19 @@ const CORPUS = [
     "Dict of split words"   => () -> (d = Dict{String,Int}(); for w in split("a b a c b a"); d[w] = get(d, w, 0) + 1; end; d["a"]),
     "time_ns/time"          => () -> (t = time_ns(); Int(time_ns() >= t) + Int(time() > 1e9)),
     "nthreads"              => () -> Threads.nthreads(),
+    # BLAS and LAPACK, through libblastrampoline (the binary needs it, and the library that backs it, when it is run)
+    "dot/norm"              => () -> round(Int, 100 * (dot([1.0, 2.0], [3.0, 4.0]) + norm([3.0, 4.0]))),
+    "matmul 100x100"        => () -> (a = [sin(i + 2j) for i in 1:100, j in 1:100]; b = [cos(i - j) for i in 1:100, j in 1:100]; round(Int, 1000 * sum(a * b))),
+    "mul! Float32"          => () -> (a = Float32[1 2; 3 4]; c = zeros(Float32, 2, 2); mul!(c, a, a); Int(sum(c))),
+    "matmul ComplexF64"     => () -> (a = [1.0+1im 2.0; 0.0 1.0-1im]; Int(real(sum(a * a)))),
+    "matvec"                => () -> (m = [1.0 2.0; 3.0 4.0]; Int(sum(m * [1.0, 1.0]))),
+    "det/inv"               => () -> (m = [2.0 1.0; 1.0 3.0]; round(Int, 100 * (det(m) + sum(inv(m))))),
+    "solve with \\"          => () -> (m = [2.0 1.0; 1.0 3.0]; round(Int, 100 * sum(m \ [1.0, 2.0]))),
+    "lu"                    => () -> round(Int, 100 * det(lu([2.0 1.0; 1.0 3.0]))),
+    "cholesky"              => () -> round(Int, 100 * sum(cholesky([4.0 2.0; 2.0 3.0]).L)),
+    "qr"                    => () -> round(Int, 100 * abs(det(qr([1.0 2.0; 3.0 4.0]).R))),
+    "svdvals"               => () -> round(Int, 100 * sum(svdvals([1.0 2.0; 3.0 4.0]))),
+    "eigvals Symmetric"     => () -> round(Int, 100 * sum(eigvals(Symmetric([2.0 1.0; 1.0 2.0])))),
 ]
 const GLOBAL_REF = Ref(0)
 const MIXED = Any[1, "str", 2.5, :sym, nothing, 'c', true, UInt8(7), (1, 2), [1, 2, 3]] # of different types

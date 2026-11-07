@@ -7,12 +7,12 @@ include("testtags.jl")
 include("testobjectid.jl")
 include("testshow.jl")
 include("testheap.jl")
+include("testblas.jl")
 
 # Idioms that must compile to a standalone executable giving the same result as Julia.
 # Known gaps, and what is needed. When one starts working, its `@test_broken` fails (as an
 # unexpected pass): remove it from here, and it will be tested as supported.
 const KNOWN_BROKEN = Dict(
-    "Matrix"          => "BLAS (`dgemm`) is not linked",
     # the globals `stdout` and `stderr` have the abstract type `IO`: use `STDOUT`, `STDERR`
     "stderr"          => "`stderr` is a global of the abstract type `IO`: use `STDERR`",
     "@printf"         => "`@printf` without an `io` uses `stdout`: use `@printf(STDOUT, ...)`",
