@@ -51,6 +51,17 @@ Code that can't work in a standalone binary is rejected when compiling, with an 
 
 **Compiled programs have a garbage collector** (conservative and non-moving, written in Julia and compiled into the program), so memory is freed as in Julia; `gc = false` leaves it out, for programs that don't need it. See the [manual](docs/src/index.md) for how it works and what it can't see.
 
+### Limitations
+
+This works for code whose types the compiler can work out, with the runtime that it needs added. The main limits, which the manual has in full:
+
+* **Dynamic behavior**: dispatch on `Any`, on abstract types with many subtypes, and on types that are only known when the program runs; `eval`; tasks, `Channel`s and threads; non-`const` globals. Dispatch on an abstract type with up to 16 concrete subtypes does work.
+* **Libraries that aren't in the binary**: no `BigInt`, `BigFloat` or `Regex`; BLAS and LAPACK need libblastrampoline and the library behind it at the same paths when the program is run.
+* **Platforms**: macOS and Linux for the collector, and Linux is not tested yet; the machine that compiles is the one that is targeted.
+* **Memory**: the collector is conservative and the heap is not thread-safe (a library called from several threads needs a lock; on a stack that is not its thread's it frees nothing).
+* **Runtime differences**: at most 256 nested `try` blocks, no stack overflow check (infinite recursion crashes), and uncaught exceptions exit with a short message and no backtrace.
+
+See [Known limitations](https://brenhinkeller.github.io/StaticCompilerOverrides.jl/dev/#Known-limitations) in the manual for the complete list and the reasons.
 
 [docs-dev-img]: https://img.shields.io/badge/docs-dev-blue.svg
 [docs-dev-url]: https://brenhinkeller.github.io/StaticCompilerOverrides.jl/dev/

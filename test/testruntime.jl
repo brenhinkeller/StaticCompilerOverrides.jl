@@ -47,7 +47,13 @@ end
         println(length(ARGS))
         return length(args)
     end
-    exe = Base.invokelatest(compile_executable, args_main, (Vector{String},), mktempdir())
+    # (the `ARGS` of the program must not have the arguments of the Julia that compiled it: its vector is embedded as it is)
+    push!(Base.ARGS, "an argument of the process that compiles")
+    exe = try
+        Base.invokelatest(compile_executable, args_main, (Vector{String},), mktempdir())
+    finally
+        pop!(Base.ARGS)
+    end
     @test read(`$exe`, String) == "0\n0\n"
     @test read(ignorestatus(`$exe one two three`), String) == "3\none\ntwo\nthree\n3\n"
     @test run(ignorestatus(pipeline(`$exe a b`; stdout = devnull))).exitcode == 2 # the return value

@@ -212,3 +212,38 @@ mutable struct HeapNode; v::Int; next::Union{HeapNode,Nothing}; end
         @test run_heap_program(disabled; gc = true) == "1 0 0"
     end
 end
+
+# A library (`compile_shlib`) is called from the stack that the caller has: a task that runs on another thread of Julia has one of
+# its own, where the references of the library are not found by looking at the stack of the thread that made the first allocation,
+# and what the collector would free would be in use. So it frees nothing there (and the program goes on). That needs a Julia
+# with threads, so it is done by one that is started with two.
+@testset "Heap: a library called from a task on another thread" begin
+    script = joinpath(mktempdir(), "shlib_thread.jl")
+    write(script, raw"""
+        using Libdl: dlopen, dlsym, dlext
+        using StaticCompilerOverrides
+        function churn_vectors(n::Int)
+            v = Vector{Vector{Int}}()
+            s = 0
+            for i in 1:n
+                push!(v, [i, i + 1, i + 2])
+                length(v) > 50 && (s += v[1][2]; popfirst!(v))
+            end
+            return s + length(v)
+        end
+        dir = mktempdir()
+        compile_shlib(churn_vectors, (Int,), dir, "libchurn"; gc = 3) # (the collector runs as often as it can)
+        f = dlsym(dlopen(joinpath(dir, "libchurn.$dlext")), "churn_vectors")
+        expected = churn_vectors(5_000)
+        results = Bool[ccall(f, Int, (Int,), 5_000) == expected] # (on the stack of the thread)
+        for _ in 1:3
+            push!(results, fetch(Threads.@spawn ccall(f, Int, (Int,), 5_000)) == expected) # (on that of a task, on another thread)
+        end
+        print(all(results) ? "ok" : "wrong")
+        """)
+    cmd = `$(Base.julia_cmd()) -t 2 --project=$(Base.active_project()) $script`
+    errors = tempname()
+    out = read(ignorestatus(pipeline(cmd; stderr = errors)), String)
+    isempty(out) && print(stderr, read(errors, String))
+    @test endswith(out, "ok")
+end

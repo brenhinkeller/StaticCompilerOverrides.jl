@@ -131,6 +131,8 @@ const CORPUS = [
     "Dict of split words"   => () -> (d = Dict{String,Int}(); for w in split("a b a c b a"); d[w] = get(d, w, 0) + 1; end; d["a"]),
     "time_ns/time"          => () -> (t = time_ns(); Int(time_ns() >= t) + Int(time() > 1e9)),
     "nthreads"              => () -> Threads.nthreads(),
+    "const Vector{Union{Int,Nothing}}" => () -> sum(x -> x === nothing ? 0 : x, UNION_VEC),
+    "const Union vector, shifted" => () -> (s = 0.0; for x in UNION_VEC_SHIFTED; s += x === nothing ? 100 : Float64(x); end; s),
     "ccall with a Cstring literal" => () -> Int(ccall(:strlen, Csize_t, (Cstring,), "hello")), # the address of the literal is passed as a number
     # BLAS and LAPACK, through libblastrampoline (the binary needs it, and the library that backs it, when it is run)
     "dot/norm"              => () -> round(Int, 100 * (dot([1.0, 2.0], [3.0, 4.0]) + norm([3.0, 4.0]))),
@@ -148,6 +150,8 @@ const CORPUS = [
 ]
 const GLOBAL_REF = Ref(0)
 const MIXED = Any[1, "str", 2.5, :sym, nothing, 'c', true, UInt8(7), (1, 2), [1, 2, 3]] # of different types
+const UNION_VEC = Union{Int,Nothing}[1, nothing, 2, 3] # (a union of types without references: a byte for the type of each)
+const UNION_VEC_SHIFTED = (v = Union{Int8,Float32,Nothing}[Int8(1), 2.5f0, nothing, Int8(4)]; popfirst!(v); v) # (its reference is an element number)
 struct Pt; x::Int; y::Float64; end
 StaticCompilerOverrides.add_show_candidates!(Pt, Tuple{Int,Float64})
 struct Other; s::String; end

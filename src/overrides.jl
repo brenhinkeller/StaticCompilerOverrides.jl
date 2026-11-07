@@ -90,6 +90,8 @@ end
 # and the result of `f` is the exit status of the program (if it is an integer)
 function run_entry(f, argc::Int, argv::Ptr{Ptr{UInt8}})
     args = command_line_arguments(argc, argv)
+    # (`ARGS` of the binary is the vector of the Julia that compiled it, with what that had in it: the arguments of the command line of that)
+    empty!(Base.ARGS)
     append!(Base.ARGS, args)
     status = f(args)
     return status isa Integer ? Int(status) : 0

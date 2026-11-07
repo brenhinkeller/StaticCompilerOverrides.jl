@@ -1506,6 +1506,11 @@ function memory_pieces(e::ObjectEmbedder, T, addr::UInt)
         check_readable(data, n)
         types = LLVM.LLVMType[LLVM.Int64Type(), ptrT, LLVM.ArrayType(LLVM.Int8Type(), n)]
         return types, g -> LLVM.Constant[i64(len), LLVM.const_gep(LLVM.Int8Type(), g, [i64(EMBED_HEADER + 16)]), something(bytes_piece(data, n), LLVM.null(types[3]))]
+    elseif ET isa Union && Base.isbitsunion(ET) # a union of types without references (`Union{Int,Nothing}`): the values, then a byte for each, of its type
+        n = len * Base.aligned_sizeof(ET) + len
+        check_readable(data, n)
+        types = LLVM.LLVMType[LLVM.Int64Type(), ptrT, LLVM.ArrayType(LLVM.Int8Type(), n)]
+        return types, g -> LLVM.Constant[i64(len), LLVM.const_gep(LLVM.Int8Type(), g, [i64(EMBED_HEADER + 16)]), something(bytes_piece(data, n), LLVM.null(types[3]))]
     elseif !isbitstype(ET) && !(ET isa Union) && Base.allocatedinline(ET) == false # boxed elements
         check_readable(data, 8 * len)
         refs = [unsafe_load(Ptr{UInt}(data + 8(i - 1))) for i in 1:len]
@@ -1667,7 +1672,12 @@ function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt; n::Int=1)
                 check_readable(mem, 16)
                 memdata = unsafe_load(Ptr{UInt}(mem + 8))
                 p = unsafe_load(Ptr{UInt}(base + off))
-                add!(LLVM.PointerType(), g -> embed_ref!(e, mem, 16 + Int(p) - Int(memdata)))
+                ET = T.parameters[2]
+                if ET isa Union && Base.isbitsunion(ET)
+                    add!(LLVM.Int64Type(), g -> i64(p)) # (for these it is the number of the element, and not a pointer)
+                else
+                    add!(LLVM.PointerType(), g -> embed_ref!(e, mem, 16 + Int(p) - Int(memdata)))
+                end
                 pos = off + sizeof(Ptr)
             elseif T <: Core.GenericMemoryRef && i == 2
                 mem = unsafe_load(Ptr{UInt}(base + off))

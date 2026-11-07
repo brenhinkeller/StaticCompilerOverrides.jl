@@ -130,6 +130,20 @@ else
     stack_base() = UInt(0) # (the stack is not known: the collector can't be used)
 end
 
+# how far below the base the stack of the thread can reach, which is known on macOS, and is assumed to be at most 1 GiB on Linux
+@static if Sys.isapple()
+    @inline stack_size() = Base.llvmcall(("""
+        declare ptr @pthread_self()
+        declare i64 @pthread_get_stacksize_np(ptr)
+        define i64 @size() alwaysinline {
+          %t = call ptr @pthread_self()
+          %n = call i64 @pthread_get_stacksize_np(ptr %t)
+          ret i64 %n
+        }""", "size"), UInt, Tuple{})
+else
+    stack_size() = UInt(1) << 30
+end
+
 @noinline function out_of_memory()
     msg = c"Out of memory error"
     GC.@preserve msg @symbolcall puts(pointer(msg)::Ptr{UInt8})::Int32
@@ -671,6 +685,17 @@ end
 # a test of the collector, which has the roots it chooses, does not).
 @noinline function collect(scan_stack::Bool)
     sget(S_INIT) == 0 && init!()
+    if scan_stack
+        # The stack is what is looked at, from where it is now to the base of that of this thread. Code that runs on another
+        # stack (a library called from a task of Julia, which has a stack of its own, or from a coroutine) has references there that
+        # can't be found, so nothing is freed: it is not known which of the objects are in use.
+        sp = stack_pointer()
+        base = stack_base()
+        if !(sp < base && base - sp <= stack_size())
+            sset(S_SINCE, UInt(0))
+            return
+        end
+    end
     sset(S_COLLECTING, UInt(1))
     scan_roots()
     if scan_stack
@@ -678,7 +703,7 @@ end
         buffer = state() + (S_REGS - 1) * 8
         save_registers(buffer)
         scan(buffer, buffer + 512)
-        scan(stack_pointer(), sget(S_STACK_BASE))
+        scan(stack_pointer(), stack_base()) # (the base of the stack of the thread that is collecting, where that is known: a library may be called from other threads than that of the first allocation)
     end
     drain()
     live = sweep()

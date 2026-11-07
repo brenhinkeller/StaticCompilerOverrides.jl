@@ -30,7 +30,7 @@ Code that allocates (`Vector`, `Dict`, `Set`, `String`, closures that escape, bo
 `rand`/`randn` on the default RNG, linear algebra (see [Linear algebra and BLAS](@ref)), and `try`/`catch`/`finally`/`rethrow` (including for errors thrown by Base, like `BoundsError`), in addition to what
 StaticCompiler already handled (allocation-free numerical code, StaticTools types, and so on).
 The tests in `test/corpus.jl` are the up-to-date list of the idioms that we check, and which of
-them are known not to work yet.
+them are known not to work yet. [Known limitations](@ref) gathers what does not work, or works differently.
 
 See [Input and output](@ref) for printing and reading, and [Entry points](@ref) for how to get the
 arguments of the command line.
@@ -273,6 +273,14 @@ collection, and how many collections there have been.
     alive, as in Julia (use `GC.@preserve` when `x` is not used after it), and an address of an object that is kept in the stack,
     in a register, or in memory of the heap, is seen.
 
+!!! warning "One thread"
+    The heap is not thread-safe: a compiled program, or a library made with `compile_shlib`, must allocate from one thread at a
+    time (a library that is called from several needs a lock around its calls: `gc = false` does not help, that allocator is not
+    thread-safe either). The collector looks at the stack of the thread that calls it, from the base of that stack (on Linux, that
+    of the main thread). If the library is called on a stack that is not that, for instance from a task of Julia running on another
+    thread, it does not know where the references are, so it **frees nothing** in that call (the memory grows until the program
+    is called from a thread that it can collect from).
+
 ### Without the collector (`gc = false`)
 
 Everything that Julia would heap-allocate and later collect is never freed. What allocates:
@@ -426,6 +434,66 @@ exist in compiled programs. It is replaced by a global xoshiro256++ state, seede
 operating system (`getentropy`) when first used, like Julia seeds a new process. `Random.seed!(rng,
 seed)` works for explicitly constructed generators. The default generator is not thread-safe, as
 there are no threads. `Random.seed!(seed)` on the default generator does not work yet.
+
+## Known limitations
+
+What does not work yet, or works differently from Julia, gathered in one place. The sections above say more about each.
+
+**Platforms**
+
+* **macOS and Linux** only for the collector (`gc = true`); elsewhere it is off by default, and `gc = true` is an error. **Linux is
+  not tested yet** (only macOS on ARM): the collector depends on the layout of the stack and `setjmp` of the C library, and BLAS on `dlopen`.
+* **The host is the target.** The heap and the runtime are made for the machine that compiles, so cross-compiling (a `target` that is
+  not the host) is not supported.
+* BLAS and LAPACK need LBT and the libraries that back it **at the same paths when the program is run** (see
+  [Linear algebra and BLAS](@ref)); they are not in the binary.
+
+**Threads, tasks and `eval`**
+
+* There are **no tasks, `Channel`s, `@async` or `Threads.@spawn`**, no `eval` or `invokelatest`, and no `Regex`, `BigInt` or `BigFloat` (they
+  need libraries that are not there: PCRE, GMP and MPFR).
+* **The heap is not thread-safe.** A program, or a library from `compile_shlib`, allocates from one thread at a time. A library that
+  is called on a stack that is not that of the thread (a task of Julia running on another thread) **frees nothing** in that call
+  (see [Memory and the garbage collector](@ref)).
+
+**What is dynamic**
+
+* **Dynamic dispatch** is resolved for abstract types with at most 16 concrete subtypes that can be listed (see
+  [Dynamic dispatch on abstract types](@ref)); not for `Any`, `Number`, `Function` or other types with many subtypes, nor for parametric
+  subtypes whose instances are not known. These, `Core.Box` variables (a closure that changes a variable that it captures: use a `Ref`),
+  **non-`const` globals**, splatting a collection whose length is not known when compiling (`f(v...)`), and calls that compute a type at
+  run time (`typejoin`, a `Dict` made from pairs with abstract values, `sort(rev = true)`, `isprime`) are rejected when compiling
+  (`UnsupportedCodeError`), or abort the program if compiled with `strict = false`.
+* **Values that are only known at run time** (an element of a `Vector{Any}`) can't be the argument of `objectid`, `hash`, or `===` of
+  types and unions, and `show` of one is limited to a closed set of types (see [`show` of containers, types and structs](@ref)).
+* **Symbols from strings** (`Symbol("a", "b")`) and `deepcopy` (an `IdDict`), `titlecase` (it needs the grapheme breaks of utf8proc),
+  the `MersenneTwister` generator, and `Random.seed!(seed)` of the default generator need things of libjulia that are not there.
+
+**What a binary starts with**
+
+* **What the compiling Julia has is copied.** A `const` container, a `Ref`, a string, ... is in the binary as it was when compiling, and
+  the program changes its own copy (so `ARGS` is set by the program, from its command line; and a global that the program changes
+  does not change the Julia that compiled it). Only what is of a type that can be reproduced is copied: not a `Module`, a function
+  with captured state, a `Task`, ...
+* **The collector is conservative:** it finds references by what looks like an address, so a number can keep an object that is not
+  used, and a reference that is hidden (not in the stack, the registers, the data copied from the compiler, or an object of the heap)
+  is not found. Memory that is allocated with `malloc` is not looked at (see [Memory and the garbage collector](@ref)). **The blocks of small objects
+  are not returned to the system** once the heap has them (though they are used again); large objects are.
+
+**Differences from Julia when the program runs**
+
+* **At most 256 `try` blocks are active at once** (and 256 exceptions being handled): more prints `fatal: exception handler stack overflow`
+  and exits. An exception that nothing catches prints `fatal: uncaught exception (no handler to catch it)` and exits with status 1,
+  without a backtrace or the message of the exception.
+* **There is no stack overflow check:** infinite recursion crashes (segmentation fault) instead of throwing `StackOverflowError`.
+* **Locks do nothing** (there is one thread), `islocked` is `false`, and `yield` returns at once.
+* **Files** are libc streams: `eachline` of a file closes it only when the loop reaches the end (not on `break`), `seek` and
+  `skip` don't report errors, `open` takes only a C `fopen` mode, and the keyword arguments of `readline` and `eachline` (`keep = true`)
+  are not supported. The file system (`isfile`, `mkdir`, `readdir`, ...) and sockets are not available.
+* **`rand` without a seed** gets its state from the operating system (`getentropy`); if that fails, from fixed words, so then it is
+  always the same stream.
+* The output is **unbuffered beyond libc's**: `print` and `println` write through `FILE*`, which libc flushes when the program exits
+  (not if it crashes).
 
 ## Testing that something compiles
 
