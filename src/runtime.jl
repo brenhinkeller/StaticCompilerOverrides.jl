@@ -883,8 +883,15 @@ function unresolved_pointer_uses(mod::LLVM.Module)
             ()
         end
         for op in ops
-            op isa LLVM.ConstantExpr && isinttoptr(op) || continue
-            addr = constant_address(op)
+            addr = if op isa LLVM.ConstantExpr && isinttoptr(op)
+                constant_address(op)
+            elseif op isa LLVM.ConstantInt && inst isa LLVM.CallInst && LLVM.width(LLVM.value_type(op)) == 64
+                # an address that is passed as a number (see `embed_address_arguments!`), if it is that of an object
+                n = convert(UInt, op)
+                n >= 0x10000 && !isempty(find_objects(n)) ? n : nothing
+            else
+                nothing
+            end
             (addr === nothing || addr < 0x10000) && continue
             key = (LLVM.name(fn), UInt(addr))
             key in seen && continue
@@ -1720,6 +1727,46 @@ function find_objects(addr::UInt)
     return candidates
 end
 
+# An address that a call is given as a number (`i64`): a `ccall` passes the `Cstring` of a literal to a C function like that
+# (`ccall(:strlen, Csize_t, (Cstring,), "hello")`), as the number of the address of the string. The object is in the binary, and the
+# number is that of its address there.
+function embed_address_arguments!(e::ObjectEmbedder)
+    mod = e.mod
+    found = Dict{UInt,Vector{Tuple{LLVM.Instruction,Int}}}()
+    for fn in LLVM.functions(mod), bb in LLVM.blocks(fn), inst in LLVM.instructions(bb)
+        inst isa LLVM.CallInst || continue
+        ops = LLVM.operands(inst)
+        for i in 1:length(ops)-1 # (the last is the function that is called)
+            op = ops[i]
+            op isa LLVM.ConstantInt && LLVM.width(LLVM.value_type(op)) == 64 || continue
+            n = convert(UInt, op)
+            n >= 0x10000 || continue
+            isempty(find_objects(n)) && continue
+            push!(get!(Vector{Tuple{LLVM.Instruction,Int}}, found, n), (inst, i))
+        end
+    end
+    changed = false
+    for (addr, uses) in found
+        replacement = nothing
+        for (base, delta) in find_objects(addr)
+            replacement = try
+                embed_ref!(e, base, delta)
+            catch err
+                err isa EmbedFailure || rethrow()
+                nothing
+            end
+            replacement === nothing || break
+        end
+        replacement === nothing && continue
+        number = LLVM.const_ptrtoint(replacement, LLVM.Int64Type())
+        for (inst, i) in uses
+            LLVM.operands(inst)[i] = number
+        end
+        changed = true
+    end
+    return changed
+end
+
 # The constants that are the numbers (`i64`) of the addresses of type objects: code compares and stores the
 # type tags of objects (which are those), as numbers. As (operand number, instruction) of a pair.
 function type_number_constants(mod::LLVM.Module)
@@ -1970,6 +2017,7 @@ function embed_constants!(e::ObjectEmbedder)
         changed = true
     end
     changed |= type_number_globals!(e)
+    changed |= embed_address_arguments!(e)
     # drop the globals of objects that failed, and of objects only they referred to
     while true
         dead = [g for g in LLVM.globals(mod) if startswith(LLVM.name(g), "static_object_") && isempty(LLVM.uses(g))]

@@ -131,6 +131,7 @@ const CORPUS = [
     "Dict of split words"   => () -> (d = Dict{String,Int}(); for w in split("a b a c b a"); d[w] = get(d, w, 0) + 1; end; d["a"]),
     "time_ns/time"          => () -> (t = time_ns(); Int(time_ns() >= t) + Int(time() > 1e9)),
     "nthreads"              => () -> Threads.nthreads(),
+    "ccall with a Cstring literal" => () -> Int(ccall(:strlen, Csize_t, (Cstring,), "hello")), # the address of the literal is passed as a number
     # BLAS and LAPACK, through libblastrampoline (the binary needs it, and the library that backs it, when it is run)
     "dot/norm"              => () -> round(Int, 100 * (dot([1.0, 2.0], [3.0, 4.0]) + norm([3.0, 4.0]))),
     "matmul 100x100"        => () -> (a = [sin(i + 2j) for i in 1:100, j in 1:100]; b = [cos(i - j) for i in 1:100, j in 1:100]; round(Int, 1000 * sum(a * b))),
