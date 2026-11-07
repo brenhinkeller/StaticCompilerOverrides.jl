@@ -15,6 +15,12 @@ include("runtime.jl") # The runtime functions that compiled code needs: allocati
 using .Runtime: link_runtime!, UnsupportedCodeError
 
 Base.Experimental.@MethodTable(method_table)
+@doc """
+    StaticCompilerOverrides.method_table
+
+The overlay method table of this package, which `@device_override` adds methods to, and which the functions
+that compile (`compile_executable` and the others) use by default.
+""" method_table
 
 """
     @device_override old_bad_method(args...) = new_good_method(args...)

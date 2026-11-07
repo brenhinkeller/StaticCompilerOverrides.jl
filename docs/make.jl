@@ -4,7 +4,7 @@ using Documenter
 DocMeta.setdocmeta!(StaticCompilerOverrides, :DocTestSetup, :(using StaticCompilerOverrides); recursive=true)
 
 makedocs(;
-    modules=[StaticCompilerOverrides],
+    modules=[StaticCompilerOverrides, StaticCompilerOverrides.Runtime],
     authors="C. Brenhin Keller",
     repo="https://github.com/brenhinkeller/StaticCompilerOverrides.jl/blob/{commit}{path}#{line}",
     sitename="StaticCompilerOverrides.jl",

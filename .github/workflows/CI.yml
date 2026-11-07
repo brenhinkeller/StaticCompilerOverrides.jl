@@ -67,6 +67,8 @@ jobs:
   docs:
     name: Documentation
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # to deploy to the gh-pages branch with GITHUB_TOKEN
     steps:
       - uses: actions/checkout@v2
       - uses: julia-actions/setup-julia@v2

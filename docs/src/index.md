@@ -27,7 +27,7 @@ Julia 1.14 or later is required.
 
 Code that allocates (`Vector`, `Dict`, `Set`, `String`, closures that escape, boxed values),
 `print`/`println`/`show` of numbers, strings, characters, symbols, arrays, tuples, pairs and types, `readline` and friends,
-`rand`/`randn` on the default RNG, and `try`/`catch`/`finally`/`rethrow` (including for errors thrown by Base, like `BoundsError`), in addition to what
+`rand`/`randn` on the default RNG, linear algebra (see [Linear algebra and BLAS](@ref)), and `try`/`catch`/`finally`/`rethrow` (including for errors thrown by Base, like `BoundsError`), in addition to what
 StaticCompiler already handled (allocation-free numerical code, StaticTools types, and so on).
 The tests in `test/corpus.jl` are the up-to-date list of the idioms that we check, and which of
 them are known not to work yet.
@@ -97,7 +97,7 @@ and escapes), **arrays** (also nested, and of `Any`), **tuples**, **pairs**, **d
 `textwidth`, ...), formatting, and files.
 
 What doesn't work yet:
-* `show` of matrices (`Matrix`, which also needs BLAS), and of containers that are not arrays, tuples, pairs,
+* `show` of matrices, and of containers that are not arrays, tuples, pairs,
   dictionaries or sets. (Print the elements.)
 * **`Dict{K,Any}` or `Dict{Any,Any}` built from pairs** (`Dict{String,Any}("a" => 1)`), and iterating a `Pair` of two
   different types (`for x in "a" => 1`): both are dynamic. Fill a `Dict{K,Any}()` with `d[k] = v`.
@@ -354,6 +354,37 @@ replace the functions of the same name in StaticCompiler, so load only one of th
 with `using`. To compile with StaticCompiler's table instead, pass
 `method_table = StaticCompiler.method_table`.
 
+## Linear algebra and BLAS
+
+Matrix products, `dot`, `norm`, `\`, `inv`, `det`, `lu`, `qr`, `cholesky`, `eigvals`, `svdvals` and so on work, for the
+element types that BLAS and LAPACK have. `LinearAlgebra` does these by calls of [libblastrampoline](https://github.com/JuliaLinearAlgebra/libblastrampoline)
+(LBT), which passes each on to the library that backs it: OpenBLAS by default, and another when a package such as
+[AppleAccelerate.jl](https://github.com/JuliaLinearAlgebra/AppleAccelerate.jl) or [MKL.jl](https://github.com/JuliaLinearAlgebra/MKL.jl) forwards to it
+(`BLAS.lbt_forward`). A program does the same: **it uses the libraries that were in use when it was compiled.**
+
+```julia
+using StaticCompilerOverrides, LinearAlgebra
+using AppleAccelerate; AppleAccelerate.load_accelerate()    # (or `using MKL`: any library that LBT forwards to)
+compile_executable(main, (Int, Ptr{Ptr{UInt8}}), "build")   # the program calls Accelerate
+```
+
+How it works: LBT, and the libraries that it forwards to (those of `BLAS.get_config()` that something is forwarded to, in the
+order that they were loaded, with their suffixes), are not in the binary. Their paths are, and the first time that
+the program calls a function of BLAS or LAPACK it loads LBT (`dlopen`), forwards to those libraries as `lbt_forward` does, and looks the function up
+(`dlsym`), as Julia does for a `ccall` that is made the first time. A program that does not call BLAS loads nothing. So:
+
+* The libraries must be at the same paths when the program is run as when it was compiled (for the ones that come with
+  Julia, that is the `lib` directory of the Julia that was used, and the artifacts of its packages). A program that is run
+  elsewhere says `Cannot load libblastrampoline (for BLAS)` and exits.
+* The program can use more than one thread, if the library does.
+* Large calls of BLAS can't be cancelled (there are no tasks to cancel).
+* This is tested with OpenBLAS and Accelerate. MKL is not available for the machines that we test on (macOS on ARM), but it is
+  a library that LBT forwards to like the others.
+
+The element types and sizes are the ones that BLAS and LAPACK take (`Float64`, `Float32`, `ComplexF64`, `ComplexF32`): other
+types use generic Julia code, which compiles like any other. Functions of other packages that call into their own
+libraries (SuiteSparse, Arpack, ...) need those libraries, and don't work yet.
+
 ## Random numbers
 
 `Random.default_rng()` (a `TaskLocalRNG`) keeps its state in the current task, which does not
@@ -384,5 +415,5 @@ needs besides libc.
 ```
 
 ```@autodocs
-Modules = [StaticCompilerOverrides]
+Modules = [StaticCompilerOverrides, StaticCompilerOverrides.Runtime]
 ```

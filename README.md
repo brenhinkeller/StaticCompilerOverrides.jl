@@ -45,7 +45,7 @@ Their mean is 12.9
 
 ## Status
 
-Allocating code (`Vector`, `Dict`, `String`, ...), `print`/`println`/`show` of numbers, strings, characters, arrays, tuples and types, `printf` and `@printf(STDOUT, ...)`, files (`open`, `read`, `readlines`, ...), reading from the standard input, `rand`, and `try`/`catch` compile to standalone binaries, which also get the arguments of the command line; see `test/corpus.jl` for what is checked, and what is known not to work yet (for instance `show` of dictionaries and `Matrix`).
+Allocating code (`Vector`, `Dict`, `String`, ...), `print`/`println`/`show` of numbers, strings, characters, arrays, tuples and types, `printf` and `@printf(STDOUT, ...)`, files (`open`, `read`, `readlines`, ...), reading from the standard input, `rand`, linear algebra (through BLAS, with the library that is in use when compiling), and `try`/`catch` compile to standalone binaries, which also get the arguments of the command line; see `test/corpus.jl` for what is checked, and what is known not to work yet (for instance `show` of matrices).
 
 Code that can't work in a standalone binary is rejected when compiling, with an explanation (`strict = false` to compile it anyway).
 

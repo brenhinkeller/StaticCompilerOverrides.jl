@@ -28,8 +28,12 @@ const STDOUT = StaticIO{:stdout}()
 "The standard error of libc, an [`StaticIO`](@ref); use instead of `stderr`."
 const STDERR = StaticIO{:stderr}()
 
-# A file opened with `open` (see `files.jl`): like the standard streams, it is a `FILE*` of libc, so the
-# methods that read and write are the same for the two
+"""
+    StaticFile
+
+A file opened with `open` (see `files.jl`). Like the standard streams, it is a `FILE*` of libc, so the
+methods that read and write are the same for the two.
+"""
 mutable struct StaticFile <: IO
     fp::Ptr{FILE}
 end
