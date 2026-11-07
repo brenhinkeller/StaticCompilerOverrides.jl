@@ -50,3 +50,11 @@ Allocating code (`Vector`, `Dict`, `String`, ...), `print`/`println`/`show` of n
 Code that can't work in a standalone binary is rejected when compiling, with an explanation (`strict = false` to compile it anyway).
 
 **Compiled programs have a garbage collector** (conservative and non-moving, written in Julia and compiled into the program), so memory is freed as in Julia; `gc = false` leaves it out, for programs that don't need it. See the [manual](docs/src/index.md) for how it works and what it can't see.
+
+
+[docs-dev-img]: https://img.shields.io/badge/docs-dev-blue.svg
+[docs-dev-url]: https://brenhinkeller.github.io/StaticCompilerOverrides.jl/dev/
+[ci-img]: https://github.com/brenhinkeller/StaticCompilerOverrides.jl/workflows/CI/badge.svg
+[ci-url]: https://github.com/brenhinkeller/StaticCompilerOverrides.jl/actions/workflows/CI.yml
+[codecov-img]: http://codecov.io/github/brenhinkeller/StaticCompilerOverrides.jl/coverage.svg?branch=main
+[codecov-url]: http://app.codecov.io/github/brenhinkeller/StaticCompilerOverrides.jl?branch=main

@@ -332,9 +332,19 @@ define linkonce_odr ptr @jl_genericmemory_to_string(ptr %m, i64 %n) {
   ret ptr %s
 }
 
-; only reached for non-isbits element types, i.e. boxed (pointer-sized) elements
+; only reached for elements that are not `isbits`: references (pointer-sized), and structs that contain references, stored
+; inline. The size of an element is in the layout of the type of the memory (its first field), which is there when the
+; code has what it needs of the types for `===` (see `egal_layout!`: it is for this as well)
 define linkonce_odr void @jl_genericmemory_copyto(ptr %dm, ptr %dd, ptr %sm, ptr %sd, i64 %n) {
-  %bytes = mul i64 %n, 8
+  %tagp = getelementptr inbounds i8, ptr %dm, i64 -8
+  %tag = load i64, ptr %tagp, align 8
+  %dtag = and i64 %tag, -16
+  %dt = inttoptr i64 %dtag to ptr
+  %lp = getelementptr inbounds i8, ptr %dt, i64 {{LAYOUT_OFFSET}}
+  %layout = load ptr, ptr %lp, align 8
+  %elsz32 = load i32, ptr %layout, align 4
+  %elsz = zext i32 %elsz32 to i64
+  %bytes = mul i64 %n, %elsz
   call void @llvm.memmove.p0.p0.i64(ptr %dd, ptr %sd, i64 %bytes, i1 false)
   ret void
 }
@@ -875,7 +885,10 @@ mutable struct ObjectEmbedder
     egal::Bool # whether the code compares objects with `jl_egal__unboxed`, and so needs the plans of the types for it
 end
 # (the plans are not made if nothing uses them: see `egal_layout!`)
-ObjectEmbedder(mod::LLVM.Module, globals) = ObjectEmbedder(mod, globals, haskey(LLVM.functions(mod), "jl_egal__unboxed"))
+# (`jl_genericmemory_copyto` is called through a stub, which is a global, until the lookups of functions are resolved)
+calls_genericmemory_copyto(mod::LLVM.Module) = any(g -> startswith(LLVM.name(g), "jlplt_jl_genericmemory_copyto"), LLVM.globals(mod))
+ObjectEmbedder(mod::LLVM.Module, globals) =
+    ObjectEmbedder(mod, globals, haskey(LLVM.functions(mod), "jl_egal__unboxed") || calls_genericmemory_copyto(mod))
 
 # an object we can't reproduce, and why
 struct EmbedFailure <: Exception
@@ -1631,7 +1644,7 @@ end
 # embedded: their contents are not valid.)
 function find_objects(addr::UInt)
     candidates = Tuple{UInt,Int}[]
-    for delta in 0:8:256
+    for delta in Int(addr % 8):8:256 # (objects are aligned: `addr` may be in the middle of the data of one)
         base = addr - delta
         T = object_type(base)
         T === nothing && continue

@@ -123,6 +123,14 @@ const CORPUS = [
     "unicode"               => () -> (println("héllo ∑ 日本"); println('λ'); 1),
     "big output"            => () -> (for i in 1:2000; print(i, ' '); end; println(); 1),
     "Vector{Any}"           => () -> length(Any[1, "a", 2.0]),
+    # found by surveying ordinary Base code
+    "findfirst String"      => () -> first(findfirst("lo", "hello")), # a pointer into the middle of a string
+    "SubString"             => () -> (s = SubString("hello world", 7, 11); length(s) + (s == "world")),
+    "parse Float64"         => () -> round(Int, parse(Float64, "3.14159") * 1000),
+    "split loop"            => () -> (n = 0; for w in split("a b a c b a"); n += length(w); end; n), # a vector of structs with references, grown
+    "Dict of split words"   => () -> (d = Dict{String,Int}(); for w in split("a b a c b a"); d[w] = get(d, w, 0) + 1; end; d["a"]),
+    "time_ns/time"          => () -> (t = time_ns(); Int(time_ns() >= t) + Int(time() > 1e9)),
+    "nthreads"              => () -> Threads.nthreads(),
 ]
 const GLOBAL_REF = Ref(0)
 const MIXED = Any[1, "str", 2.5, :sym, nothing, 'c', true, UInt8(7), (1, 2), [1, 2, 3]] # of different types

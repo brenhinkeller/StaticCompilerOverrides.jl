@@ -88,3 +88,20 @@ end
         return string_fill!(out, offs, rest...)
     end
 end
+
+# The clocks of libc (`jl_hrtime` and `jl_clock_now` are libjulia's, which is not there)
+function clock_nanoseconds(id::Int32)
+    ts = Ref((Int64(0), Int64(0))) # `struct timespec`: seconds and nanoseconds
+    GC.@preserve ts begin
+        @symbolcall clock_gettime(id::Int32, Base.unsafe_convert(Ptr{NTuple{2,Int64}}, ts)::Ptr{NTuple{2,Int64}})::Int32
+    end
+    sec, nsec = ts[]
+    return UInt64(sec) * UInt64(1_000_000_000) + UInt64(nsec)
+end
+const CLOCK_REALTIME = Int32(0)
+const CLOCK_MONOTONIC = Sys.isapple() ? Int32(6) : Int32(1)
+@device_override Base.time_ns() = clock_nanoseconds(CLOCK_MONOTONIC)
+@device_override Base.time() = clock_nanoseconds(CLOCK_REALTIME) / 1e9
+
+# There is one thread
+@device_override Base.Threads.nthreads() = 1
