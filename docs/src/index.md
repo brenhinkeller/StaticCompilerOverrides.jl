@@ -290,24 +290,29 @@ A program has the code it uses, and the Julia objects that it refers to, copied 
 arrays and `Dict`s, and the type objects that the type tags and `isa` read). Measured on macOS (arm64, Julia 1.14.0-alpha2) from the
 `__text` and data sections of the executables (the file sizes are in 16 kB pages):
 
-| program                                  | code (`__text`) | data   |
-|:-----------------------------------------|----------------:|-------:|
-| `0`                                      |    56 B         |   5 B  |
-| `println("hello")`                       |   120 B         |  58 B  |
-| `println(42)`                            |   1.4 kB        | 17.9 kB |
-| `println([1, 2, 3])`                     |   2.3 kB        | 18.7 kB |
-| `println(Dict(1 => 2))`                  |   3.8 kB        | 21.6 kB |
+| program                                  | code (`__text`) | data    |
+|:-----------------------------------------|----------------:|--------:|
+| `0`                                      |    56 B         |   5 B   |
+| `println("hello")`                       |   120 B         |  62 B   |
+| `println(42)`                            |   1.4 kB        | 17.2 kB |
+| `println([1, 2, 3])`                     |   2.3 kB        | 17.9 kB |
+| `println(Dict(1 => 2))`                  |   3.8 kB        | 20.7 kB |
 | `Dict` with struct keys, lookup          |   4.3 kB        | 15.0 kB |
-| `x isa Number` on boxed values           |   0.8 kB        | 33.4 kB |
-| `println(Any[1, "a", 2.5])`              |  36 kB          | 67 kB  |
-| `repr([1.5, 2.5])`                       |  14 kB          | 39 kB  |
+| `x isa Number` on boxed values           |   0.8 kB        | 30.9 kB |
+| `println(Any[1, "a", 2.5])`              |  36 kB          | 65 kB   |
+| `repr([1.5, 2.5])`                       |  14 kB          | 37 kB   |
 
-Most of the data is type objects (names, `DataType`s, `TypeName`s and their `Symbol`s), of which a program that can
-construct an error from a value of a type that is not known (an `InexactError` from a conversion, for example) has the
-~370 that the table `jl_small_typeof` refers to, about 17 kB, whatever else it does; the plans for `===` are about 14%
-of that. A program that never needs them (`println("hello")`) has none. `println(Any[...])` is larger because it has
-the code to show each of the types in `show_candidates`: add only the types that you need with
-[`add_show_candidates!`](@ref) (the defaults can't be removed yet).
+What is in the data of a program that prints a number is mostly two things: about 12 kB of objects, the type of `Int64`
+that the error for a conversion that fails (an `InexactError`) holds, with the types that it refers to (its supertypes, the names of
+the types and of their fields), and 5 kB that is zero at the start (the stack of the exception handlers and the task that
+the runtime stands in for). A program without any code that can throw (`println("hello")`) has neither.
+What the program does not use is not there: the plans for `===` of the types, which are about 14% of the objects of a
+program that compares objects, are made only if the code calls `jl_egal__unboxed`; and the table of the types of the small
+tags is made only if the code indexes it with something that is not a constant (`isa` on a boxed value does), and
+otherwise each of the types that the code names is the one object. The `isa` table (`ijl_subtype`) is as large as the
+number of types asked about times the number of types in the binary that are subtypes of them.
+`println(Any[...])` is larger because it has the code to show each of the types in `show_candidates`: add only the types
+that you need with [`add_show_candidates!`](@ref) (the defaults can't be removed yet).
 
 ## Method tables
 

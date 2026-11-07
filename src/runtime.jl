@@ -853,7 +853,10 @@ end
 mutable struct ObjectEmbedder
     mod::LLVM.Module
     globals::Dict{UInt,Union{LLVM.GlobalVariable,Nothing}} # object address => its global
+    egal::Bool # whether the code compares objects with `jl_egal__unboxed`, and so needs the plans of the types for it
 end
+# (the plans are not made if nothing uses them: see `egal_layout!`)
+ObjectEmbedder(mod::LLVM.Module, globals) = ObjectEmbedder(mod, globals, haskey(LLVM.functions(mod), "jl_egal__unboxed"))
 
 # an object we can't reproduce, and why
 struct EmbedFailure <: Exception
@@ -1294,6 +1297,7 @@ end
 
 # The `layout` of the type at `addr` for the binary: a global with its plan (see `egal_plan`) and the layout
 function egal_layout!(e::ObjectEmbedder, dt::DataType, addr::UInt)
+    e.egal || return nullptr() # nothing compares objects: the type is not looked at
     plan = egal_plan(dt)
     plan === nothing && return nullptr()
     bytes, layout_offset = plan
@@ -1468,6 +1472,56 @@ function type_number_constants(mod::LLVM.Module)
     return consts
 end
 
+# Code names a builtin type (the `Int64` in an `InexactError`, for instance) by loading its entry of the table of the
+# types of the small tags, `jl_small_typeof`, at a fixed offset. When that is all that the code does with the table, each
+# such load is the object of that one type, and the table itself (of which the objects of all of the types, and what they
+# refer to, would be in the binary) is not needed.
+function fold_small_typeof_loads!(e::ObjectEmbedder)
+    mod = e.mod
+    globals = LLVM.globals(mod)
+    haskey(globals, "jl_small_typeof") && LLVM.isdeclaration(globals["jl_small_typeof"]) || return false
+    g = globals["jl_small_typeof"]
+    n = (64 << 4) ÷ sizeof(Ptr)
+    loads = Tuple{LLVM.Instruction,Int}[] # each load, and the index of the entry that it loads
+    function add!(inst, offset)
+        offset % sizeof(Ptr) == 0 && 0 <= offset ÷ sizeof(Ptr) < n || return false
+        push!(loads, (inst, offset ÷ sizeof(Ptr)))
+        return true
+    end
+    for use in LLVM.uses(g)
+        user = LLVM.user(use)
+        if user isa LLVM.LoadInst
+            add!(user, 0) || return false
+        elseif user isa LLVM.ConstantExpr && LLVM.API.LLVMGetConstOpcode(user) == LLVM.API.LLVMGetElementPtr
+            ops = LLVM.operands(user)
+            length(ops) == 2 && ops[2] isa LLVM.ConstantInt || return false
+            offset = convert(Int, ops[2])
+            for use2 in LLVM.uses(user)
+                load = LLVM.user(use2)
+                load isa LLVM.LoadInst || return false
+                add!(load, offset) || return false
+            end
+        else
+            return false # (an index that is not known: the whole table is needed)
+        end
+    end
+    isempty(loads) && return false
+    table = cglobal(:jl_small_typeof, Ptr{Ptr{Cvoid}})
+    ptrT = LLVM.PointerType()
+    for (load, i) in loads
+        p = UInt(unsafe_load(table, i + 1))
+        ref = p == 0 ? nullptr() : try
+            embed_ref!(e, p)
+        catch err
+            err isa EmbedFailure || rethrow()
+            LLVM.const_inttoptr(LLVM.ConstantInt(Int64(16 * (i + 1))), ptrT)
+        end
+        LLVM.replace_uses!(load, ref)
+        LLVM.erase!(load)
+    end
+    return true
+end
+
 # The table of the types of the small tags, with the types: their objects in the binary where there are
 # any, and if not, an unlikely number
 function define_small_typeof!(e::ObjectEmbedder)
@@ -1610,7 +1664,7 @@ function embed_constants!(e::ObjectEmbedder)
     mod = e.mod
     # as comparisons, so that the types in them can be replaced (see `type_number_constants`)
     foreach(lower_switch!, type_switches(mod))
-    changed = define_small_typeof!(e)
+    changed = fold_small_typeof_loads!(e) || define_small_typeof!(e)
     consts = inttoptr_constants(mod)
     for (addr, ops) in consts
         replacement = nothing

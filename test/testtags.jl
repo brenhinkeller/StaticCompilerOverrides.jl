@@ -167,3 +167,28 @@ end
         @test bytes[off+1:end] == unsafe_wrap(Array, layout, length(bytes) - off)
     end
 end
+
+# What is in the binary depends on what the program uses (see "Binary size" in the manual): the plans for `===` of the types
+# only if something compares objects, and the table of the types of the small tags only if an index into it is not known
+@testset "Only what is used is in the binary" begin
+    ir(f) = (main = StaticCompilerOverrides.make_main(f);
+             GPUCompiler = StaticCompilerOverrides.StaticCompiler.GPUCompiler;
+             GPUCompiler.JuliaContext() do ctx
+                 mod = Base.invokelatest(static_llvm_module, main, Tuple{Int,Ptr{Ptr{UInt8}}})
+                 text = string(mod)
+                 LLVM.dispose(mod)
+                 text
+             end)
+    keys_of(i) = Dict("a" * string(i) => 1)
+    @testset "plans for ===" begin
+        @test !occursin("static_egal_", ir(() -> (println(42); 0)))
+        @test occursin("static_egal_", ir(() -> (d = keys_of(1); get(d, "a" * string(1), 0))))
+    end
+    @testset "table of the types of the small tags" begin
+        # the types that code names are loaded one by one: no table
+        @test !occursin("@jl_small_typeof = linkonce_odr", ir(() -> (println(42); 0)))
+        # an index that is only known when run (the type of a boxed value) needs it
+        boxed(i) = Any[1, "a", :s][i]
+        @test occursin("@jl_small_typeof = linkonce_odr", ir(() -> (c = 0; for i in 1:3; c += (boxed(i) isa Number); end; c)))
+    end
+end
