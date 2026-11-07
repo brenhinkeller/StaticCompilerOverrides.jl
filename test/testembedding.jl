@@ -33,7 +33,7 @@ using LLVM: LLVM, @dispose
                 offset = if op isa LLVM.ConstantExpr && (m = match(r"i64 (\d+)\)$", text)) !== nothing
                     parse(Int, m.captures[1])
                 else
-                    0
+                    0 # (not possible now: there is always the header)
                 end
                 return name === nothing ? nothing : (name.captures[1], offset)
             finally
@@ -52,7 +52,7 @@ using LLVM: LLVM, @dispose
         for offset in (0, 8, 16, 24)
             offset == 0 || len >= offset - 8 + 1 || continue
             got = embedded(base + offset)
-            expected = ("static_object_" * string(base, base = 16), offset)
+            expected = ("static_object_" * string(base, base = 16), StaticCompilerOverrides.Runtime.EMBED_HEADER + offset)
             got == expected || push!(failures, "length $len, offset $offset: got $got, expected $expected")
         end
     end
@@ -67,7 +67,7 @@ using LLVM: LLVM, @dispose
         for offset in (0, 16, 24)
             offset == 0 || len > offset - 16 || continue
             got = embedded(base + offset)
-            expected = ("static_object_" * string(base, base = 16), offset)
+            expected = ("static_object_" * string(base, base = 16), StaticCompilerOverrides.Runtime.EMBED_HEADER + offset)
             got == expected || push!(failures, "Memory{UInt8} of length $len, offset $offset: got $got, expected $expected")
         end
     end

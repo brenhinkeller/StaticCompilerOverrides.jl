@@ -9,6 +9,7 @@ else
 end
 
 @noinline thrower(x::Int) = x > 0 ? throw(ArgumentError("boom")) : x
+@noinline thrower3(x::Int) = x == 1 ? throw(ArgumentError("a")) : x == 2 ? throw(DomainError(x, "b")) : [1, 2, 3][x + 10]
 @noinline thrower2(x::Int) = x == 1 ? throw(ArgumentError("a")) : throw(DomainError(x, "b"))
 @noinline deep(n::Int) = n == 0 ? thrower(1) : [n; deep(n - 1)...][1] # allocates on the way
 mutable struct MutS; x::Int; end
@@ -44,6 +45,10 @@ const CORPUS = [
     "nested try"            => () -> (try; try; thrower(Base.inferencebarrier(1)); catch; thrower(Base.inferencebarrier(2)); end; catch; 9; end),
     "throw through frames"  => () -> (try; deep(Base.inferencebarrier(5)); catch; -1; end),
     "catch in loop"         => () -> (s = 0; for i in 1:5; try; thrower(Base.inferencebarrier(i % 2)); catch; s += i; end; end; s),
+    "isa on constants"      => () -> sum(classify, MIXED),
+    "isa on boxed values"   => () -> (v = Any[]; push!(v, length(MIXED)); push!(v, "s" * "t"); push!(v, 2.5 * length(MIXED)); push!(v, Pt(1, 2.0)); push!(v, Other("o")); sum(x -> x isa Int ? 1 : x isa String ? 10 : x isa Float64 ? 100 : x isa Pt ? 1000 : x isa Other ? 10_000 : 100_000, v)),
+    "isa Union"             => () -> (v = Union{Int,String,Nothing}[1, "a", nothing, 2]; sum(x -> x isa Int ? 1 : x isa String ? 10 : 100, v)),
+    "catch typed 3 types"   => () -> (s = 0; for i in 1:3; s += try; thrower3(Base.inferencebarrier(i)); 0; catch e; e isa ArgumentError ? 1 : e isa DomainError ? 10 : e isa BoundsError ? 100 : 1000; end; end; s),
     "catch typed"           => () -> (try; thrower2(Base.inferencebarrier(2)); catch e; e isa DomainError ? 2 : 1; end),
     "BoundsError caught"    => () -> (try; [1, 2, 3][Base.inferencebarrier(5)::Int]; catch; 3; end),
     "InexactError caught"   => () -> (try; Int8(Base.inferencebarrier(300)::Int); catch; 4; end),
@@ -103,6 +108,11 @@ const CORPUS = [
     "Vector{Any}"           => () -> length(Any[1, "a", 2.0]),
 ]
 const GLOBAL_REF = Ref(0)
+const MIXED = Any[1, "str", 2.5, :sym, nothing, 'c', true, UInt8(7), (1, 2), [1, 2, 3]] # of different types
+struct Pt; x::Int; y::Float64; end
+struct Other; s::String; end
+classify(x) = x isa Int ? 1 : x isa String ? 10 : x isa Float64 ? 100 : x isa Symbol ? 1000 : x isa Nothing ? 10_000 :
+              x isa Char ? 100_000 : x isa Bool ? 1_000_000 : x isa UInt8 ? 10_000_000 : x isa Tuple ? 100_000_000 : 1_000_000_000
 const FORMAT = Printf.Format("%s=%08.3f\n") # made once, as `@printf` does
 
 function run_corpus(; kwargs...)

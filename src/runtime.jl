@@ -625,28 +625,17 @@ function lower_gc_frames!(mod::LLVM.Module)
     return changed
 end
 
-# `jl_small_typeof` is a table of the type objects of the most common types, indexed by their
-# (small) type tag, which compiled code reads when it needs the type of an object it allocates.
-# There are no type objects in a standalone binary, so the entries only serve as distinct,
-# non-null tokens that identify the type.
-function define_small_typeof!(mod::LLVM.Module)
-    globals = LLVM.globals(mod)
-    haskey(globals, "jl_small_typeof") || return false
-    old = globals["jl_small_typeof"]
-    LLVM.isdeclaration(old) || return false
-    n = (64 << 4) ÷ sizeof(Ptr)
-    ptrT = LLVM.PointerType()
-    entries = [LLVM.const_inttoptr(LLVM.ConstantInt(Int64(16i)), ptrT) for i in 1:n]
-    init = LLVM.ConstantArray(ptrT, entries)
-    LLVM.name!(old, "jl_small_typeof.declaration")
-    new = LLVM.GlobalVariable(mod, LLVM.ArrayType(ptrT, n), "jl_small_typeof")
-    LLVM.initializer!(new, init)
-    LLVM.constant!(new, true)
-    LLVM.linkage!(new, LLVM.API.LLVMLinkOnceODRLinkage)
-    LLVM.replace_uses!(old, new)
-    LLVM.erase!(old)
-    return true
+# (the objects of the program that are in the binary, by the address that they have in this process)
+mutable struct ObjectEmbedder
+    mod::LLVM.Module
+    globals::Dict{UInt,Union{LLVM.GlobalVariable,Nothing}} # object address => its global
 end
+
+# an object we can't reproduce, and why
+struct EmbedFailure <: Exception
+    reason::String
+end
+EmbedFailure() = EmbedFailure("")
 
 # Globals of the Julia runtime that hold a pointer to a well-known object (compiled code loads
 # the pointer from the global). We make each point to a copy of the object in the binary.
@@ -657,28 +646,50 @@ const WELL_KNOWN_OBJECTS = (
     "jl_readonlymemory_exception" => ReadOnlyMemoryError(), "jl_interrupt_exception" => InterruptException(),
 )
 
-function define_well_known_objects!(mod::LLVM.Module)
+# The object in the binary that is the well-known object `obj` (which is one object, so that it is the one
+# everything refers to, whether by its global, or by its address, as for any constant object, see
+# `embed_global!`). It is preceded by its type tag as it is in this process.
+function well_known_object!(e::ObjectEmbedder, name::AbstractString, obj)
+    mod = e.mod
+    globals = LLVM.globals(mod)
+    haskey(globals, "static_$name") && return globals["static_$name"]
+    addr = UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), obj))
+    tag = unsafe_load(Ptr{UInt}(addr - 8)) & ~UInt(15)
+    n = max(sizeof(typeof(obj)), 8) # room for at least a word, so that the address is a valid one
+    payload = zeros(UInt8, n)
+    sizeof(typeof(obj)) > 0 && unsafe_copyto!(pointer(payload), Ptr{UInt8}(addr), sizeof(typeof(obj)))
+    st = LLVM.StructType([LLVM.Int64Type(), LLVM.Int64Type(), LLVM.ArrayType(LLVM.Int8Type(), n)]; packed = true)
+    object = LLVM.GlobalVariable(mod, st, "static_$name")
+    LLVM.linkage!(object, LLVM.API.LLVMLinkOnceODRLinkage)
+    LLVM.visibility!(object, LLVM.API.LLVMHiddenVisibility)
+    LLVM.alignment!(object, 16)
+    # (the tag is of a type that may refer to this object: so after the global exists)
+    LLVM.initializer!(object, LLVM.ConstantStruct(LLVM.Constant[LLVM.ConstantInt(Int64(0)), tag_piece(e, tag), LLVM.ConstantDataArray(LLVM.Int8Type(), payload)]; packed = true))
+    return object
+end
+
+# which of the well-known objects is at an address, in this process
+const WELL_KNOWN_ADDRESSES = Dict{UInt,Pair{String,Any}}()
+function well_known_at(addr::UInt)
+    if isempty(WELL_KNOWN_ADDRESSES)
+        for (name, obj) in WELL_KNOWN_OBJECTS
+            WELL_KNOWN_ADDRESSES[UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), obj))] = name => obj
+        end
+    end
+    return get(WELL_KNOWN_ADDRESSES, addr, nothing)
+end
+
+function define_well_known_objects!(e::ObjectEmbedder)
+    mod = e.mod
     changed = false
     for (name, obj) in WELL_KNOWN_OBJECTS
         globals = LLVM.globals(mod)
         haskey(globals, name) && LLVM.isdeclaration(globals[name]) || continue
         old = globals[name]
-        # the object, preceded by its type tag as it is in this process
-        addr = UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), obj))
-        tag = unsafe_load(Ptr{UInt}(addr - 8))
-        n = max(sizeof(typeof(obj)), 8) # room for at least a word, so that the address is a valid one
-        payload = zeros(UInt8, n)
-        sizeof(typeof(obj)) > 0 && unsafe_copyto!(pointer(payload), Ptr{UInt8}(addr), sizeof(typeof(obj)))
-        st = LLVM.StructType([LLVM.Int64Type(), LLVM.ArrayType(LLVM.Int8Type(), n)]; packed = true)
-        object = LLVM.GlobalVariable(mod, st, "static_$name")
-        LLVM.initializer!(object, LLVM.ConstantStruct([LLVM.ConstantInt(Int64(tag)), LLVM.ConstantDataArray(LLVM.Int8Type(), payload)]; packed = true))
-        LLVM.linkage!(object, LLVM.API.LLVMLinkOnceODRLinkage)
-        LLVM.visibility!(object, LLVM.API.LLVMHiddenVisibility)
-        LLVM.alignment!(object, 16)
-        ptrT = LLVM.PointerType()
-        pointer_to_object = LLVM.const_gep(LLVM.Int8Type(), object, [LLVM.ConstantInt(Int64(8))])
+        object = well_known_object!(e, name, obj)
+        pointer_to_object = LLVM.const_gep(LLVM.Int8Type(), object, [LLVM.ConstantInt(Int64(16))])
         LLVM.name!(old, name * ".declaration")
-        new = LLVM.GlobalVariable(mod, ptrT, name)
+        new = LLVM.GlobalVariable(mod, LLVM.PointerType(), name)
         LLVM.initializer!(new, pointer_to_object)
         LLVM.constant!(new, true)
         LLVM.linkage!(new, LLVM.API.LLVMLinkOnceODRLinkage)
@@ -691,10 +702,10 @@ end
 
 # Define the runtime functions that `mod` calls but does not define.
 function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = ())
-    define_small_typeof!(mod)
-    define_well_known_objects!(mod)
+    e = ObjectEmbedder(mod, Dict())
+    define_well_known_objects!(e)
     lower_gc_frames!(mod)
-    embed_constants!(mod)
+    embed_constants!(e)
     resolve_lazy_lookups!(mod)
     define_aborting_functions!(mod)
     if strict
@@ -739,12 +750,12 @@ end
 
 # throw `EmbedFailure` unless the `n` bytes at `addr` can be read
 function check_readable(addr::UInt, n::Integer)
-    n >= 0 && n < (1 << 28) || throw(EmbedFailure())
+    n >= 0 && n < (1 << 28) || throw(EmbedFailure("implausible size"))
     n == 0 && return
     for off in 0:4096:(n - 1)
-        safe_load(addr + off) === nothing && throw(EmbedFailure())
+        safe_load(addr + off) === nothing && throw(EmbedFailure("unreadable memory"))
     end
-    safe_load(addr + max(n - 8, 0)) === nothing && throw(EmbedFailure())
+    safe_load(addr + max(n - 8, 0)) === nothing && throw(EmbedFailure("unreadable memory"))
     return
 end
 
@@ -771,7 +782,9 @@ function object_type(addr::UInt)
     typetag = safe_load(UInt(ptr) - 8)
     (typetag === nothing || typetag & ~UInt(15) != DATATYPE_TAG[]) && return nothing
     T = unsafe_pointer_to_objref(ptr)
-    T isa DataType && isconcretetype(T) && !(T <: Type) || return nothing
+    T isa DataType && isconcretetype(T) || return nothing
+    # the objects that are types (`typeof(Int)` is `DataType`) are objects as well, those of these kinds (the last is `Union{}`)
+    (T <: Type) && !(T === DataType || T === UnionAll || T === Union || T === Core.TypeofBottom) && return nothing
     addr % 16 == 0 && return T
     return T === Symbol && is_symbol(addr) ? T : nothing
 end
@@ -805,14 +818,10 @@ end
 const SYMBOL_TAG = Ref{UInt}(0) # the tag of symbols
 symbol_tag() = (SYMBOL_TAG[] == 0 && (SYMBOL_TAG[] = unsafe_load(Ptr{UInt}(UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), :a)) - 8)) & ~UInt(15)); SYMBOL_TAG[])
 
-mutable struct ObjectEmbedder
-    mod::LLVM.Module
-    globals::Dict{UInt,Union{LLVM.GlobalVariable,Nothing}} # object address => its global
-end
 
-struct EmbedFailure <: Exception end # an object we can't reproduce
 
 const EMBED_ALIGN = 16
+const EMBED_HEADER = 16 # the padding and the type tag before an object
 
 # `LLVM` constants for the pieces of a global, to be laid out contiguously (packed)
 bytes_piece(addr, n) = n == 0 ? nothing :
@@ -823,14 +832,40 @@ i64(x) = LLVM.ConstantInt(Int64(x))
 function embed_global!(e::ObjectEmbedder, addr::UInt)
     if haskey(e.globals, addr)
         g = e.globals[addr]
-        g === nothing && throw(EmbedFailure())
+        g === nothing && throw(EmbedFailure("an object that failed, or that it refers to"))
+        return g
+    end
+    wk = well_known_at(addr)
+    if wk !== nothing
+        g = well_known_object!(e, first(wk), last(wk))
+        e.globals[addr] = g
         return g
     end
     e.globals[addr] = nothing # failed, or in progress
+    try
+        return embed_new_global!(e, addr)
+    catch err
+        if err isa EmbedFailure && !isempty(err.reason)
+            # (the path, from the object that can't be reproduced to the one we wanted)
+            path = count("\n  <- ", err.reason) < 12 ? string(err.reason, "\n  <- ", object_type(addr), " at ", string(addr, base = 16)) : err.reason
+            err = EmbedFailure(path)
+            e.globals[addr] = nothing
+            throw(err)
+        end
+        rethrow()
+    end
+end
+
+function embed_new_global!(e::ObjectEmbedder, addr::UInt)
     T = object_type(addr)
-    T === nothing && throw(EmbedFailure())
+    T === nothing && throw(EmbedFailure("not an object, at $(string(addr, base = 16)): tag word $(repr(safe_load(addr - 8)))"))
     # `values` needs the global, since objects may refer to themselves or to each other
     types, values = object_pieces(e, T, addr)
+    # Before the object, as in Julia: its type tag (as it is in this process: the code that was compiled compares
+    # with these), preceded by padding that makes the object aligned to 16 bytes
+    tag = safe_load(addr - 8)
+    tag === nothing && throw(EmbedFailure("no tag"))
+    types = LLVM.LLVMType[LLVM.Int64Type(), LLVM.Int64Type(), types...]
     st = LLVM.StructType(types; packed=true)
     g = LLVM.GlobalVariable(e.mod, st, "static_object_$(string(addr, base=16))")
     # One object, whichever of the functions of a library refers to it: the functions are compiled
@@ -841,7 +876,7 @@ function embed_global!(e::ObjectEmbedder, addr::UInt)
     LLVM.alignment!(g, EMBED_ALIGN)
     e.globals[addr] = g
     try
-        LLVM.initializer!(g, LLVM.ConstantStruct(values(g); packed=true))
+        LLVM.initializer!(g, LLVM.ConstantStruct(LLVM.Constant[i64(0), tag_piece(e, tag & ~UInt(15)), values(g)...]; packed=true))
     catch
         e.globals[addr] = nothing
         LLVM.initializer!(g, LLVM.null(st))
@@ -850,16 +885,40 @@ function embed_global!(e::ObjectEmbedder, addr::UInt)
     return g
 end
 
+# The tag of an object as the header of an embedded one: the small number of a builtin type, or the type: its
+# address in the binary if it is one of those that are embedded (so that `isa` and `typeof` of the
+# object have something to look at), and else its number in this process
+function tag_piece(e::ObjectEmbedder, tag::UInt)
+    tag < (64 << 4) && return i64(tag)
+    ref = try
+        embed_ref!(e, tag)
+    catch err
+        err isa EmbedFailure || rethrow()
+        @debug "The type of an object is not in the binary, so its tag is a number" type = object_type(tag) reason = err.reason
+        return i64(tag)
+    end
+    return LLVM.const_ptrtoint(ref, LLVM.Int64Type())
+end
+
 # a reference to the object at `addr` (or null), as an LLVM constant
 function embed_ref!(e::ObjectEmbedder, addr::UInt, offset=0)
     addr == 0 && return nullptr()
     g = embed_global!(e, addr)
-    return offset == 0 ? g : LLVM.const_gep(LLVM.Int8Type(), g, [i64(offset)])
+    return LLVM.const_gep(LLVM.Int8Type(), g, [i64(EMBED_HEADER + offset)])
 end
 
 function object_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
-    if T === Core.SimpleVector || T === Module
-        throw(EmbedFailure()) # interned by the runtime
+    if T === Module
+        throw(EmbedFailure("a Module: a C struct of the runtime"))
+    elseif T === Core.SimpleVector
+        # { length, elements... }
+        check_readable(addr, 8)
+        n = unsafe_load(Ptr{Int}(addr))
+        (0 <= n <= 100_000) || throw(EmbedFailure("implausible length of a svec"))
+        check_readable(addr, 8 + 8n)
+        refs = [unsafe_load(Ptr{UInt}(addr + 8 + 8(i - 1))) for i in 1:n]
+        types = LLVM.LLVMType[LLVM.Int64Type(), (LLVM.PointerType() for _ in 1:n)...]
+        return types, g -> LLVM.Constant[i64(n), (embed_ref!(e, r) for r in refs)...]
     elseif T === Symbol
         # { left, right (links of the table of symbols of the runtime), hash, name, NUL }: the name
         # is what is used, and as global constants are one object each, symbols are still egal
@@ -876,10 +935,19 @@ function object_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
         return [LLVM.ArrayType(LLVM.Int8Type(), n)], g -> [bytes_piece(addr, n)]
     elseif T <: Core.GenericMemory
         return memory_pieces(e, T, addr)
+    elseif isprimitivetype(T)
+        # a boxed number, character, ...: its bytes
+        n = sizeof(T)
+        check_readable(addr, n)
+        return LLVM.LLVMType[LLVM.ArrayType(LLVM.Int8Type(), n)], g -> LLVM.Constant[bytes_piece(addr, n)]
     elseif fieldcount(T) > 0
         return struct_pieces(e, T, addr)
+    elseif Base.issingletontype(T)
+        # the one instance of the type (a function, ...), which has no contents: padding, so that the object has an address
+        pad = LLVM.ArrayType(LLVM.Int8Type(), 8)
+        return LLVM.LLVMType[pad], g -> LLVM.Constant[LLVM.null(pad)]
     end
-    throw(EmbedFailure())
+    throw(EmbedFailure("objects of type $T are not supported"))
 end
 
 # { length, data pointer, data... } with the data inline, as for the memory Julia allocates
@@ -893,17 +961,33 @@ function memory_pieces(e::ObjectEmbedder, T, addr::UInt)
         n = len * Base.aligned_sizeof(ET)
         check_readable(data, n)
         types = LLVM.LLVMType[LLVM.Int64Type(), ptrT, LLVM.ArrayType(LLVM.Int8Type(), n)]
-        return types, g -> LLVM.Constant[i64(len), LLVM.const_gep(LLVM.Int8Type(), g, [i64(16)]), something(bytes_piece(data, n), LLVM.null(types[3]))]
+        return types, g -> LLVM.Constant[i64(len), LLVM.const_gep(LLVM.Int8Type(), g, [i64(EMBED_HEADER + 16)]), something(bytes_piece(data, n), LLVM.null(types[3]))]
     elseif !isbitstype(ET) && !(ET isa Union) && Base.allocatedinline(ET) == false # boxed elements
         check_readable(data, 8 * len)
         refs = [unsafe_load(Ptr{UInt}(data + 8(i - 1))) for i in 1:len]
         types = LLVM.LLVMType[LLVM.Int64Type(), ptrT, (ptrT for _ in 1:len)...]
-        return types, g -> LLVM.Constant[i64(len), LLVM.const_gep(LLVM.Int8Type(), g, [i64(16)]), (embed_ref!(e, r) for r in refs)...]
+        return types, g -> LLVM.Constant[i64(len), LLVM.const_gep(LLVM.Int8Type(), g, [i64(EMBED_HEADER + 16)]), (embed_ref!(e, r) for r in refs)...]
     end
-    throw(EmbedFailure())
+    throw(EmbedFailure("memory of $ET"))
 end
 
 # the fields of a struct, in memory order, with padding copied as is
+# Fields of the objects that are types, which are not reproduced, as they are the runtime's own and refer to
+# most of what there is: a type refers to the types of its fields (`types`), a type name to the types
+# that were made of it (`cache`), ... Code that reads these in a program that is run gets null, or an
+# empty list, instead.
+const EMPTY_SVEC = Ref{UInt}(0) # the address of the empty `svec()`
+function field_cut(T::Type, name)
+    EMPTY_SVEC[] == 0 && (EMPTY_SVEC[] = UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), Core.svec())))
+    if T === DataType
+        return name in (:layout, :types) ? :null : nothing
+    elseif T === Core.TypeName
+        name in (:module, :atomicfields, :constfields, :partial, :Typeofwrapper, :mt) && return :null
+        name in (:cache, :linearcache) && return :emptysvec
+    end
+    return nothing
+end
+
 function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
     types = LLVM.LLVMType[]
     thunks = Function[]
@@ -916,7 +1000,14 @@ function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
         for i in 1:fieldcount(T)
             off, ft = fieldoffset(T, i), fieldtype(T, i)
             add_bytes!(base + pos, off - pos)
-            if T <: Core.GenericMemoryRef && i == 1
+            cut = field_cut(T, fieldname(T, i))
+            if cut === :null
+                add!(LLVM.PointerType(), g -> nullptr())
+                pos = off + sizeof(Ptr)
+            elseif cut === :emptysvec
+                add!(LLVM.PointerType(), g -> embed_ref!(e, EMPTY_SVEC[]))
+                pos = off + sizeof(Ptr)
+            elseif T <: Core.GenericMemoryRef && i == 1
                 # a pointer into the data of the memory, which is the second field
                 mem = unsafe_load(Ptr{UInt}(base + fieldoffset(T, 2)))
                 check_readable(mem, 16)
@@ -945,7 +1036,7 @@ function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
     end
     check_readable(addr, sizeof(T))
     add_fields!(T, addr)
-    isempty(types) && throw(EmbedFailure())
+    isempty(types) && throw(EmbedFailure("no fields"))
     # values are created after the global, but the references they hold must exist before
     # it is (to compute the global's type), so they are created here and handed out later
     return types, g -> LLVM.Constant[thunk(g) for thunk in thunks]
@@ -954,13 +1045,33 @@ end
 # all `inttoptr (i64 N to ptr)` constants used by instructions of `mod`, by address
 function inttoptr_constants(mod::LLVM.Module)
     consts = Dict{UInt,Vector{LLVM.Value}}()
+    seen = Set{Ptr{Cvoid}}() # (constants are shared by all their uses)
     for fn in LLVM.functions(mod), bb in LLVM.blocks(fn), inst in LLVM.instructions(bb), op in LLVM.operands(inst)
-        op isa LLVM.ConstantExpr && isinttoptr(op) || continue
-        addr = constant_address(op)
-        (addr === nothing || addr < 0x10000) && continue
-        push!(get!(Vector{LLVM.Value}, consts, UInt(addr)), op)
+        for node in inttoptr_nodes(op)
+            Ptr{Cvoid}(node.ref) in seen && continue
+            push!(seen, Ptr{Cvoid}(node.ref))
+            addr = constant_address(node)
+            (addr === nothing || addr < 0x10000) && continue
+            push!(get!(Vector{LLVM.Value}, consts, UInt(addr)), node)
+        end
     end
     return consts
+end
+
+# The `inttoptr` constants in an operand: it is one, or has them in it, when it is an address that is an offset
+# from one (`getelementptr (i8, inttoptr (...), -8)`: the tag of an object is 8 bytes before it). Replacing
+# the `inttoptr` itself, and not the expression it is a part of, keeps the arithmetic as it is.
+function inttoptr_nodes(op, found = LLVM.ConstantExpr[])
+    op isa LLVM.ConstantExpr || return found
+    occursin("inttoptr", string(op)) || return found
+    if LLVM.API.LLVMGetConstOpcode(op) == LLVM.API.LLVMIntToPtr
+        push!(found, op)
+    else
+        for sub in LLVM.operands(op)
+            inttoptr_nodes(sub, found)
+        end
+    end
+    return found
 end
 
 # The object that `addr` points into, with the offset of `addr` in it: constants can point
@@ -995,11 +1106,168 @@ function find_objects(addr::UInt)
     return candidates
 end
 
-function embed_constants!(mod::LLVM.Module)
-    consts = inttoptr_constants(mod)
-    isempty(consts) && return false
-    e = ObjectEmbedder(mod, Dict())
+# The constants that are the numbers (`i64`) of the addresses of type objects: code compares and stores the
+# type tags of objects (which are those), as numbers. As (operand number, instruction) of a pair.
+function type_number_constants(mod::LLVM.Module)
+    consts = Dict{UInt,Vector{Tuple{LLVM.Instruction,Int}}}()
+    for fn in LLVM.functions(mod), bb in LLVM.blocks(fn), inst in LLVM.instructions(bb)
+        inst isa LLVM.SwitchInst && continue # (a case of a switch must be an integer)
+        for (i, op) in enumerate(LLVM.operands(inst))
+            op isa LLVM.ConstantInt || continue
+            LLVM.width(LLVM.value_type(op)) == 64 || continue
+            n = convert(UInt, op)
+            (n >= (64 << 4) && n % 16 == 0) || continue
+            object_type(n) === DataType || continue # the address of a type object
+            push!(get!(Vector{Tuple{LLVM.Instruction,Int}}, consts, n), (inst, i))
+        end
+    end
+    return consts
+end
+
+# The table of the types of the small tags, with the types: their objects in the binary where there are
+# any, and if not, an unlikely number
+function define_small_typeof!(e::ObjectEmbedder)
+    mod = e.mod
+    globals = LLVM.globals(mod)
+    haskey(globals, "jl_small_typeof") || return false
+    old = globals["jl_small_typeof"]
+    LLVM.isdeclaration(old) || return false
+    n = (64 << 4) ÷ sizeof(Ptr)
+    ptrT = LLVM.PointerType()
+    table = cglobal(:jl_small_typeof, Ptr{Ptr{Cvoid}})
+    entries = LLVM.Constant[]
+    for i in 0:n-1
+        p = UInt(unsafe_load(table, i + 1))
+        push!(entries, p == 0 ? nullptr() : try
+            embed_ref!(e, p)
+        catch err
+            err isa EmbedFailure || rethrow()
+            LLVM.const_inttoptr(LLVM.ConstantInt(Int64(16 * (i + 1))), ptrT) # not an object, but not null
+        end)
+    end
+    LLVM.name!(old, "jl_small_typeof.declaration")
+    new = LLVM.GlobalVariable(mod, LLVM.ArrayType(ptrT, n), "jl_small_typeof")
+    LLVM.initializer!(new, LLVM.ConstantArray(ptrT, entries))
+    LLVM.constant!(new, true)
+    LLVM.linkage!(new, LLVM.API.LLVMLinkOnceODRLinkage)
+    LLVM.replace_uses!(old, new)
+    LLVM.erase!(old)
+    return true
+end
+
+# The `switch`es on a type tag. (LLVM makes one of a chain of comparisons of the tag of an object with
+# types, which is `tag & -16`.) The cases of a switch are numbers, which can't be the addresses of the
+# types in the binary, so the switch has to become the comparisons again: one after another, and not by
+# `LowerSwitchPass`, which makes a search of the cases in the order of their values, which, for the
+# types in the binary, is not that of the cases.
+function type_switches(mod::LLVM.Module)
+    found = LLVM.SwitchInst[]
+    for fn in LLVM.functions(mod), bb in LLVM.blocks(fn), inst in LLVM.instructions(bb)
+        inst isa LLVM.SwitchInst || continue
+        condition = first(LLVM.operands(inst))
+        condition isa LLVM.AndInst || continue
+        any(op -> op isa LLVM.ConstantInt && convert(Int, op) == -16, LLVM.operands(condition)) && push!(found, inst)
+    end
+    return found
+end
+
+# Replace a `switch` by the comparisons of its condition with each case, one after another. The values of
+# the cases are not operands of the instruction (the condition, the default block and the blocks of the
+# cases are), and reading them with the C API doesn't work in the LLVM of Julia 1.14, but they are in what
+# the instruction prints as.
+function lower_switch!(sw::LLVM.SwitchInst)
+    bb = LLVM.parent(sw)
+    fn = LLVM.parent(bb)
+    ops = collect(LLVM.operands(sw))
+    condition, default, destinations = ops[1], ops[2], ops[3:end]
+    values = [parse(Int64, m.captures[1]) for m in eachmatch(r"\bi64 (-?\d+), label", string(sw))]
+    length(values) == length(destinations) || error("could not read the cases of a switch: $(string(sw))")
+    n = length(destinations)
+
+    # the block that tests each case: the first is the block of the switch
+    blocks = LLVM.BasicBlock[bb]
+    for i in 2:n
+        push!(blocks, LLVM.BasicBlock(LLVM.after(blocks[end]), "typecase$i"))
+    end
+    # where each of the blocks that jumps to a block comes from (once for each jump)
+    edges = Dict{Ptr{Cvoid},Vector{LLVM.BasicBlock}}()
+    addedge!(to, from) = push!(get!(Vector{LLVM.BasicBlock}, edges, Ptr{Cvoid}(to.ref)), from)
+    for i in 1:n
+        addedge!(destinations[i], blocks[i])
+    end
+    addedge!(default, blocks[end])
+
+    # the phis of the blocks that were jumped to from the switch had the block of the switch for it
+    for (_, froms) in edges
+    end
+    successors = unique(Ptr{Cvoid}(b.ref) for b in vcat(destinations, [default]))
+    LLVM.erase!(sw)
+    @dispose builder = LLVM.IRBuilder() begin
+        for (i, (value, destination)) in enumerate(zip(values, destinations))
+            LLVM.position!(builder, LLVM.at_end(blocks[i]))
+            test = LLVM.icmp!(builder, LLVM.API.LLVMIntEQ, condition, LLVM.ConstantInt(LLVM.Int64Type(), reinterpret(UInt64, value)))
+            LLVM.br!(builder, test, destination, i < n ? blocks[i+1] : default)
+        end
+        n == 0 && (LLVM.position!(builder, LLVM.at_end(bb)); LLVM.br!(builder, default))
+        for successor in unique(vcat(destinations, [default]))
+            froms = edges[Ptr{Cvoid}(successor.ref)]
+            for phi in collect(LLVM.instructions(successor))
+                phi isa LLVM.PHIInst || break
+                entries = collect(LLVM.incoming(phi))
+                kept = [(v, b) for (v, b) in entries if b != bb]
+                from_switch = [v for (v, b) in entries if b == bb]
+                isempty(from_switch) && continue
+                LLVM.position!(builder, LLVM.before(phi))
+                new = LLVM.phi!(builder, LLVM.value_type(phi))
+                append!(LLVM.incoming(new), vcat(kept, [(first(from_switch), b) for b in froms]))
+                LLVM.replace_uses!(phi, new)
+                LLVM.erase!(phi)
+            end
+        end
+    end
+    return
+end
+
+# Julia makes the objects of the constants that are numbers, characters, ... itself, as globals that have the
+# type tag in them (`@jl_global_N_box = constant { tag, bytes }`), and the tag is the number of the address of
+# the type, in the initializer: as in the code, it has to be the type in the binary.
+function type_number_globals!(e::ObjectEmbedder)
     changed = false
+    for g in LLVM.globals(e.mod)
+        init = LLVM.initializer(g)
+        init isa LLVM.ConstantStruct || continue
+        elements = LLVM.Constant[x for x in LLVM.operands(init)]
+        replaced = false
+        for (i, el) in enumerate(elements)
+            el isa LLVM.ConstantInt && LLVM.width(LLVM.value_type(el)) == 64 || continue
+            n = convert(UInt, el)
+            (n >= (64 << 4) && n % 16 == 0) || continue
+            object_type(n) === DataType || continue
+            ref = try
+                embed_ref!(e, n)
+            catch err
+                err isa EmbedFailure || rethrow()
+                continue
+            end
+            elements[i] = LLVM.const_ptrtoint(ref, LLVM.Int64Type())
+            replaced = true
+        end
+        if replaced
+            LLVM.initializer!(g, LLVM.ConstantStruct(LLVM.value_type(init), elements))
+            changed = true
+        end
+    end
+    return changed
+end
+
+embed_constants!(mod::LLVM.Module) = embed_constants!(ObjectEmbedder(mod, Dict()))
+
+function embed_constants!(e::ObjectEmbedder)
+    mod = e.mod
+    # as comparisons, so that the types in them can be replaced (see `type_number_constants`)
+    foreach(lower_switch!, type_switches(mod))
+    changed = define_small_typeof!(e)
+    consts = inttoptr_constants(mod)
     for (addr, ops) in consts
         replacement = nothing
         for (base, delta) in find_objects(addr)
@@ -1007,17 +1275,37 @@ function embed_constants!(mod::LLVM.Module)
             replacement = try
                 embed_ref!(e, base, delta)
             catch err
-                err isa EmbedFailure || @debug "Could not embed object" address=base type=object_type(base) exception=(err, catch_backtrace())
+                if err isa EmbedFailure
+                    isempty(err.reason) || @debug "Cannot embed an object" reason = err.reason
+                else
+                    @debug "Could not embed object" address=base type=object_type(base) exception=(err, catch_backtrace())
+                end
                 nothing
             end
             replacement === nothing || break
         end
         replacement === nothing && continue
+        @debug "Embedded the object of an address constant" address = string(addr, base = 16) objects = [(string(b, base = 16), d, object_type(b)) for (b, d) in find_objects(addr)]
         for op in ops
             LLVM.replace_uses!(op, replacement)
         end
         changed = true
     end
+    # the numbers of the addresses of types: the objects of the types are in the binary
+    for (addr, uses) in type_number_constants(mod)
+        ref = try
+            embed_ref!(e, addr)
+        catch err
+            err isa EmbedFailure || rethrow()
+            continue
+        end
+        number = LLVM.const_ptrtoint(ref, LLVM.Int64Type())
+        for (inst, i) in uses
+            LLVM.operands(inst)[i] = number
+        end
+        changed = true
+    end
+    changed |= type_number_globals!(e)
     # drop the globals of objects that failed, and of objects only they referred to
     while true
         dead = [g for g in LLVM.globals(mod) if startswith(LLVM.name(g), "static_object_") && isempty(LLVM.uses(g))]

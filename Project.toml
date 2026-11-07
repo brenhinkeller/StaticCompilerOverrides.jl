@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["C. Brenhin Keller and contributors"]
 
 [deps]
+GPUCompiler = "61eb1bfa-7361-4325-ad38-22787b887f55"
 LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
@@ -13,6 +14,7 @@ StaticTools = "86c06d3c-3f03-46de-9781-57580aa96d0a"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [compat]
+GPUCompiler = "2"
 LLVM = "10"
 Printf = "1"
 Random = "1"

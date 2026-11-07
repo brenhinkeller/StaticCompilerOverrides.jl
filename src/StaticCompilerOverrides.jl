@@ -9,6 +9,7 @@ using StaticCompiler: StaticCompiler
 
 include("overrides.jl") # Our method table, `@device_override`, and the entry points that use it
 
+include("tags.jl")     # The type tags of objects
 include("base.jl")     # Base methods that can be written to compile statically
 include("io.jl")       # Standard input and output
 include("printf.jl")   # Printf, for formats without `*`

@@ -9,7 +9,6 @@ include("testunicode.jl")
 # unexpected pass): remove it from here, and it will be tested as supported.
 const KNOWN_BROKEN = Dict(
     "Matrix"          => "BLAS (`dgemm`) is not linked",
-    "catch typed"     => "objects have no type tag, so `isa` on a caught exception is wrong",
     # `show` of containers builds an `IOContext` (an `ImmutableDict` of type objects) and prints type names
     "println Vector"  => "`show` of containers needs type objects at run time (type descriptors)",
     "println tuple"   => "`show` of containers needs type objects at run time (type descriptors)",
