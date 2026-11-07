@@ -35,11 +35,27 @@ function static_result(f; dir = mktempdir(), kwargs...)
     return parse(Int, readchomp(`$exe`))
 end
 
+# what `f()` prints to stdout in this process, followed by the line that the compiled `main` prints
+function expected_output(f)
+    path, io = mktemp()
+    result = try
+        redirect_stdout(io) do
+            r = f()
+            flush(stdout)
+            r
+        end
+    finally
+        close(io)
+    end
+    return read(path, String) * string(as_int(result), "\n")
+end
+
 """
     static_status(f; kwargs...) -> (status::Symbol, detail)
 
 Classify how far `f()` gets as a standalone executable: `:compile_error`, `:link_error`,
-`:runtime_error`, `:mismatch` or `:ok`.
+`:runtime_error`, `:mismatch` or `:ok`. What `f` prints to stdout, and what it returns, must match
+what it does in Julia.
 """
 function static_status(f; kwargs...)
     dir = mktempdir()
@@ -53,14 +69,13 @@ function static_status(f; kwargs...)
         return status, first(sprint(showerror, e), 300)
     end
     out = try
-        readchomp(pipeline(`$exe`; stderr = devnull))
+        read(pipeline(`$exe`; stderr = devnull), String)
     catch e
         return :runtime_error, first(sprint(showerror, e), 300)
     end
     # after compiling, which snapshots the state of any global data
-    expected = as_int(f())
-    got = tryparse(Int, out)
-    got == expected ? (:ok, "") : (:mismatch, "expected $expected, got $out")
+    expected = expected_output(f)
+    out == expected ? (:ok, "") : (:mismatch, "expected $(repr(expected)), got $(repr(out))")
 end
 
 """
@@ -88,16 +103,24 @@ depends on something other than libc, such as libjulia, and will not link or run
 """
 function undefined_symbols(f, types; allow = LIBC_SYMBOLS, kwargs...)
     LLVM = StaticCompiler.LLVM
-    Base.invokelatest() do
-        StaticCompiler.GPUCompiler.JuliaContext() do ctx
-            mod = static_llvm_module(f, Base.to_tuple_type(types); kwargs...)
-            try
-                names = [LLVM.name(x) for x in Iterators.flatten((LLVM.functions(mod), LLVM.globals(mod))) if LLVM.isdeclaration(x)]
-                return sort!(filter(n -> !startswith(n, "llvm.") && n ∉ allow, names))
-            finally
-                LLVM.dispose(mod)
+    try
+        Base.invokelatest() do
+            StaticCompiler.GPUCompiler.JuliaContext() do ctx
+                mod = static_llvm_module(f, Base.to_tuple_type(types); kwargs...)
+                try
+                    names = [LLVM.name(x) for x in Iterators.flatten((LLVM.functions(mod), LLVM.globals(mod))) if LLVM.isdeclaration(x)]
+                    return sort!(filter(n -> !startswith(n, "llvm.") && n ∉ allow, names))
+                finally
+                    LLVM.dispose(mod)
+                end
             end
         end
+    catch e
+        e isa UnsupportedCodeError || rethrow()
+        # what strict mode rejects
+        names = String[first(d) for d in e.dynamic]
+        isempty(e.pointers) || push!(names, "<$(length(e.pointers)) reference(s) to Julia objects by address>")
+        return sort!(names)
     end
 end
 
@@ -123,7 +146,7 @@ function allocation_sites(f, types; kwargs...)
     LLVM = StaticCompiler.LLVM
     Base.invokelatest() do
         StaticCompiler.GPUCompiler.JuliaContext() do ctx
-            mod = static_llvm_module(f, Base.to_tuple_type(types); kwargs...)
+            mod = static_llvm_module(f, Base.to_tuple_type(types); strict = false, kwargs...)
             try
                 n = 0
                 for fn in LLVM.functions(mod), bb in LLVM.blocks(fn), inst in LLVM.instructions(bb)

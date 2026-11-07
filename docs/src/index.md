@@ -31,6 +31,42 @@ StaticCompiler already handled (allocation-free numerical code, StaticTools type
 The tests in `test/corpus.jl` are the up-to-date list of the idioms that we check, and which of
 them are known not to work yet.
 
+!!! note "Printing does not work yet"
+    `print`, `println`, `show`, `@printf` and the like are not supported yet, since there is no
+    `stdout` (and `show` needs type information at run time). They are rejected when compiling
+    (see strict mode). Use `printf` and `c"..."` from StaticTools in the meantime. Building strings
+    with `string`, interpolation-free `sprint`, and so on does work.
+
+## Strict mode: unsupported code is rejected when compiling
+
+A lot of Julia code can't work in a standalone binary because it needs the Julia runtime: most
+often *dynamic dispatch* (a call whose argument types are not known when compiling), but also
+anything that refers to a Julia object by its address in the compiling process. Left alone, such
+code compiles and links, and then crashes (or, worse, misbehaves) when it is run. So by default
+(`strict = true`) the functions of this package reject it when compiling, naming what is wrong:
+
+```julia
+julia> compile_executable(main_that_prints, (Int, Ptr{Ptr{UInt8}}))
+ERROR: UnsupportedCodeError: the code cannot run as a standalone binary
+
+It needs the Julia runtime (e.g. for dynamic dispatch, which means that the types in some call are not known at compile time):
+  ijl_apply_generic, called from show, print
+  ijl_get_nth_field_checked, called from print
+
+It refers to Julia objects by their address in this process, which are not in the binary:
+  in static_main: %stdout.checked = load atomic ptr, ptr inttoptr (i64 5043311736 to ptr), ...
+```
+
+The names are those of the functions of the Julia runtime that the code needs, and of the Julia
+functions that call them. For a `ccall` into a library that could not be resolved, it says which function.
+(`undefined_symbols` lists the same things for a function, without compiling it.)
+
+Often, the code involved is only reached on a path that fails, for instance to build the message
+of an error. `strict = false` compiles such code anyway, defining those runtime functions to print
+a message and abort if they are ever called (and the addresses will crash the program if used).
+`allow = ("function_name", ...)` accepts specific runtime functions, and keeps the check for the rest.
+Run with `JULIA_DEBUG=StaticCompilerOverrides` to see which are defined this way.
+
 ## Memory: there is no garbage collector, so allocations leak
 
 !!! warning "Compiled programs never free heap memory unless you do it yourself"
@@ -104,10 +140,9 @@ Limitations, which are bugs rather than design choices:
   a `catch` (so that the type is only known at run time), `isa`/dispatch on `e` gives wrong
   answers instead of failing. Catching without looking at the exception, or where only one type
   can be thrown, is fine. This test is recorded as broken in `test/runtests.jl`.
-* A call that needs dynamic dispatch, or other things that need the Julia runtime, links but
-  aborts with `Dynamic behavior is not supported in standalone binaries (...)` if it is reached.
-  Most of these are on error paths. Run with `JULIA_DEBUG=StaticCompiler` to see which of these a
-  program contains, and see [`undefined_symbols`](@ref).
+* Code that needs dynamic dispatch, or other things from the Julia runtime, is rejected when
+  compiling (see strict mode). With `strict = false`, it compiles and aborts with
+  `Dynamic behavior is not supported in standalone binaries (...)` if the call is reached.
 
 ## Method tables
 

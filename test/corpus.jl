@@ -1,6 +1,6 @@
 # Coverage corpus: idioms of increasing "dynamism", each a zero-argument function whose
 # result is compared between Julia and a compiled standalone executable.
-using Random
+using Random, Printf
 if Base.find_package("StaticCompilerOverrides") === nothing
     include(joinpath(@__DIR__, "..", "src", "StaticCompilerOverrides.jl"))
     using .StaticCompilerOverrides
@@ -51,6 +51,23 @@ const CORPUS = [
     "error() caught"        => () -> (try; error("x"); catch; 7; end),
     "throw caught"          => () -> (try; throw(ArgumentError("x")); catch e; e isa ArgumentError ? 1 : 0; end),
     "global const Ref"      => () -> (GLOBAL_REF[] += 1),
+    # printing
+    "println Int"           => () -> (println(42); 1),
+    "println String"        => () -> (println("hello"); 1),
+    "print Float64"         => () -> (print(1.5); print(" "); println(2.0); 1),
+    "println Bool/Char"     => () -> (println(true); println('x'); 1),
+    "println mixed"         => () -> (println("a", 1, 'b', 2.5); 1),
+    "interpolation"         => () -> (x = 3; println("x = $x, y = $(2x)"); 1),
+    "println Vector"        => () -> (println([1, 2, 3]); 1),
+    "println tuple"         => () -> (println((1, "a")); 1),
+    "show"                  => () -> (show(7); println(); 1),
+    "@show"                 => () -> (x = 5; @show x; 1),
+    "print in loop"         => () -> (for i in 1:3; println(i); end; 1),
+    "repr"                  => () -> length(repr([1, 2])),
+    "string mixed"          => () -> length(string("a", 1, 'b', 2.5)),
+    "sprint"                => () -> length(sprint(print, 12345)),
+    "@printf"               => () -> (Printf.@printf("%d %.2f\n", 3, 2.5); 1),
+    "stderr"                => () -> (println(stderr, "to stderr"); 1),
     "Vector{Any}"           => () -> length(Any[1, "a", 2.0]),
 ]
 const GLOBAL_REF = Ref(0)

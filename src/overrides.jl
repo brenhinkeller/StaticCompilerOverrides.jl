@@ -12,7 +12,7 @@
 # defaulting to this table. Pass `method_table = StaticCompiler.method_table` for the old behavior.
 
 include("runtime.jl") # The runtime functions that compiled code needs: allocation, exceptions, ...
-using .Runtime: link_runtime!
+using .Runtime: link_runtime!, UnsupportedCodeError
 
 Base.Experimental.@MethodTable(method_table)
 
@@ -33,13 +33,21 @@ end
 for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_typed,
           :static_code_native, :static_llvm_module)
     @eval begin
-        $f(args...; method_table = method_table, llvm_postprocess = link_runtime!, kwargs...) =
+        $f(args...; method_table = method_table, strict::Bool = true, allow = (),
+           llvm_postprocess = mod -> link_runtime!(mod; strict, allow), kwargs...) =
             StaticCompiler.$f(args...; method_table, llvm_postprocess, kwargs...)
         @doc """
-            $($f)(args...; method_table = StaticCompilerOverrides.method_table, llvm_postprocess = link_runtime!, kwargs...)
+            $($f)(args...; method_table = StaticCompilerOverrides.method_table, strict = true, allow = (), kwargs...)
 
         `StaticCompiler.$($f)`, using the method table of StaticCompilerOverrides by default, and with its
         runtime (allocation, exceptions, ...) added to the code that is generated.
+
+        By default (`strict = true`) the code is rejected with an [`UnsupportedCodeError`](@ref) if
+        it contains something that can't work in a standalone binary: calls that need the Julia runtime
+        (most often, dynamic dispatch), or references to Julia objects by their address. `strict = false`
+        compiles it anyway, with calls that need the runtime aborting the program if they are reached.
+        `allow` is a collection of names of runtime functions (as in the error message) to accept even
+        in strict mode.
         """ $f
     end
 end
