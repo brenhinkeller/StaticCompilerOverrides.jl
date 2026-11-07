@@ -1,0 +1,11 @@
+.DS_Store
+Manifest.toml
+testfile.*
+*.jl.*.cov
+*.jl.cov
+*.jl.mem
+/docs/build/
+*.o
+*.c
+*.ll
+/graveyard
