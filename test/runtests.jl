@@ -4,6 +4,7 @@ include("testruntime.jl")
 include("testembedding.jl")
 include("testunicode.jl")
 include("testtags.jl")
+include("testobjectid.jl")
 include("testshow.jl")
 
 # Idioms that must compile to a standalone executable giving the same result as Julia.

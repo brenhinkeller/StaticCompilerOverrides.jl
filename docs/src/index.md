@@ -101,9 +101,13 @@ What doesn't work yet:
   dictionaries or sets. (Print the elements.)
 * **`Dict{K,Any}` or `Dict{Any,Any}` built from pairs** (`Dict{String,Any}("a" => 1)`), and iterating a `Pair` of two
   different types (`for x in "a" => 1`): both are dynamic. Fill a `Dict{K,Any}()` with `d[k] = v`.
-* **`===`, and so `Dict`/`Set` lookups, of objects other than `String`s and the same object** (a key that is a
-  tuple of Strings, for instance) report and exit when run: the comparison of the contents of a struct needs the
-  layout of its type. Keys that are numbers, symbols and Strings are fine.
+* **`===` of unions and of types**: `===` of two objects that are not the same one (so `Dict` and `Set` lookups)
+  compares Strings, numbers, tuples and immutable structs (with Strings, Symbols, or other structs in them) by
+  their contents, as in Julia. A struct with a field that is a `Union` of types stored inline
+  (`Union{Int,Nothing}`), types, and `svec`s report and exit when run, instead.
+* **`objectid` and `hash` of a value whose type is not known when compiling** (an element of a `Vector{Any}`, a field of
+  an abstract type that is not a Union): they need the type when the program is run, and are rejected. Structs,
+  tuples, Strings and the like are fine as keys of a `Dict` or `Set`, with the same `objectid` as Julia's.
 * **`@printf` without an `io`**, which uses `stdout`: write `@printf(STDOUT, ...)`.
 * The **file system** (`isfile`, `mkdir`, `readdir`, `rm`, ...). (`filesize(path)` works.) And memory-mapped
   files, sockets, processes.

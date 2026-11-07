@@ -78,19 +78,29 @@ define linkonce_odr ptr @jl_alloc_genericmemory_unchecked(ptr %ptls, i64 %nbytes
   ret ptr %obj
 }
 
-; `===` of two objects that are not the same one and are not compared inline (a `String`, for instance, is
-; egal to another with the same text). `dtag` is the type tag of both. Only Strings are compared here: anything
-; else would need the layout of its type, and is not supported (it reports and exits, rather than being wrong)
+; `===` of two objects that are not the same one and are not compared inline, of the same type (`dtag` is its type
+; tag): a `String`, a boxed number, and an immutable struct or tuple (egal to another with the same contents). The
+; type of a struct says how to compare it in the memory before its `layout` (see `egal_plan`): a number of operations
+; (negative for a mutable type, which is egal only to itself), each of 16 bytes: a kind (0: the bytes at an offset
+; are the same, 1: the objects that the field at the offset refers to are egal, 2: not supported), the offset, and
+; the number of bytes. Other objects (types, `svec`s, ...) are not supported: it reports and exits, rather than being wrong.
 declare i32 @memcmp(ptr, ptr, i64)
 @_static_egal_msg = private unnamed_addr constant [75 x i8] c"=== of objects of this type is not supported in standalone binaries (egal)\00"
-define linkonce_odr i32 @jl_egal__unboxed(ptr %a, ptr %b, i64 %dtag) {
+define linkonce_odr i32 @jl_egal__unboxed(ptr %a, ptr %b, i64 %dtag0) {
 entry:
   %same = icmp eq ptr %a, %b
   br i1 %same, label %yes, label %check
 check:
-  %tag = and i64 %dtag, -16
-  %isstring = icmp eq i64 %tag, {{TAG_STRING}}
-  br i1 %isstring, label %string, label %other
+  %dtag = and i64 %dtag0, -16
+  %issymbol = icmp eq i64 %dtag, {{TAG_SYMBOL}}
+  %isbool = icmp eq i64 %dtag, {{TAG_BOOL}}
+  %isnothing = icmp eq i64 %dtag, {{TAG_NOTHING}}
+  %singleton0 = or i1 %issymbol, %isbool
+  %singleton = or i1 %singleton0, %isnothing
+  br i1 %singleton, label %no, label %checkstring
+checkstring:
+  %isstring = icmp eq i64 %dtag, {{TAG_STRING}}
+  br i1 %isstring, label %string, label %numbers
 string:
   %la = load i64, ptr %a, align 8
   %lb = load i64, ptr %b, align 8
@@ -103,7 +113,103 @@ compare:
   %zero = icmp eq i32 %r, 0
   %result = zext i1 %zero to i32
   ret i32 %result
+numbers:
+  %i8a = icmp eq i64 %dtag, {{TAG_INT8}}
+  %i8b = icmp eq i64 %dtag, {{TAG_UINT8}}
+  %i16a = icmp eq i64 %dtag, {{TAG_INT16}}
+  %i16b = icmp eq i64 %dtag, {{TAG_UINT16}}
+  %i32a = icmp eq i64 %dtag, {{TAG_INT32}}
+  %i32b = icmp eq i64 %dtag, {{TAG_UINT32}}
+  %i32c = icmp eq i64 %dtag, {{TAG_CHAR}}
+  %i64a = icmp eq i64 %dtag, {{TAG_INT64}}
+  %i64b = icmp eq i64 %dtag, {{TAG_UINT64}}
+  %c1 = or i1 %i8a, %i8b
+  %c2 = or i1 %i16a, %i16b
+  %c4a = or i1 %i32a, %i32b
+  %c4 = or i1 %c4a, %i32c
+  %c8 = or i1 %i64a, %i64b
+  %s8 = select i1 %c8, i64 8, i64 0
+  %s4 = select i1 %c4, i64 4, i64 %s8
+  %s2 = select i1 %c2, i64 2, i64 %s4
+  %nbytes = select i1 %c1, i64 1, i64 %s2
+  %isnumber = icmp ne i64 %nbytes, 0
+  br i1 %isnumber, label %number, label %other
+number:
+  %nr = call i32 @memcmp(ptr %a, ptr %b, i64 %nbytes)
+  %nz = icmp eq i32 %nr, 0
+  %nresult = zext i1 %nz to i32
+  ret i32 %nresult
 other:
+  %small = icmp ult i64 %dtag, 1024
+  br i1 %small, label %unsupported, label %datatype
+datatype:
+  %dt = inttoptr i64 %dtag to ptr
+  %lp = getelementptr inbounds i8, ptr %dt, i64 {{LAYOUT_OFFSET}}
+  %layout = load ptr, ptr %lp, align 8
+  %nolayout = icmp eq ptr %layout, null
+  br i1 %nolayout, label %unsupported, label %plan
+plan:
+  %hp = getelementptr inbounds i8, ptr %layout, i64 -8
+  %n = load i64, ptr %hp, align 8
+  %mutable = icmp slt i64 %n, 0
+  br i1 %mutable, label %no, label %plan_ops
+plan_ops:
+  %opbytes = shl i64 %n, 4
+  %opoffset = sub i64 -8, %opbytes
+  %ops = getelementptr inbounds i8, ptr %layout, i64 %opoffset
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %plan_ops ], [ %inext, %next ]
+  %done = icmp eq i64 %i, %n
+  br i1 %done, label %yes, label %op
+op:
+  %o = shl i64 %i, 4
+  %opp = getelementptr inbounds i8, ptr %ops, i64 %o
+  %kind = load i32, ptr %opp, align 4
+  %offp = getelementptr inbounds i8, ptr %opp, i64 4
+  %off32 = load i32, ptr %offp, align 4
+  %off = zext i32 %off32 to i64
+  %szp = getelementptr inbounds i8, ptr %opp, i64 8
+  %sz32 = load i32, ptr %szp, align 4
+  %sz = zext i32 %sz32 to i64
+  %pa = getelementptr inbounds i8, ptr %a, i64 %off
+  %pb = getelementptr inbounds i8, ptr %b, i64 %off
+  %ismem = icmp eq i32 %kind, 0
+  br i1 %ismem, label %memop, label %notmem
+memop:
+  %mr = call i32 @memcmp(ptr %pa, ptr %pb, i64 %sz)
+  %meq = icmp eq i32 %mr, 0
+  br i1 %meq, label %next, label %no
+notmem:
+  %isref = icmp eq i32 %kind, 1
+  br i1 %isref, label %refop, label %unsupported
+refop:
+  %ra = load ptr, ptr %pa, align 8
+  %rb = load ptr, ptr %pb, align 8
+  %sameref = icmp eq ptr %ra, %rb
+  br i1 %sameref, label %next, label %refs
+refs:
+  %anull = icmp eq ptr %ra, null
+  %bnull = icmp eq ptr %rb, null
+  %eithernull = or i1 %anull, %bnull
+  br i1 %eithernull, label %no, label %reftags
+reftags:
+  %tpa = getelementptr inbounds i8, ptr %ra, i64 -8
+  %tpb = getelementptr inbounds i8, ptr %rb, i64 -8
+  %ta0 = load i64, ptr %tpa, align 8
+  %tb0 = load i64, ptr %tpb, align 8
+  %ta = and i64 %ta0, -16
+  %tb = and i64 %tb0, -16
+  %sametype = icmp eq i64 %ta, %tb
+  br i1 %sametype, label %recurse, label %no
+recurse:
+  %rr = call i32 @jl_egal__unboxed(ptr %ra, ptr %rb, i64 %ta)
+  %rok = icmp ne i32 %rr, 0
+  br i1 %rok, label %next, label %no
+next:
+  %inext = add i64 %i, 1
+  br label %loop
+unsupported:
   %s = call i32 @puts(ptr @_static_egal_msg)
   call void @exit(i32 1)
   unreachable
@@ -364,8 +470,12 @@ object_tag(x) = Int64(unsafe_load(Ptr{UInt}(UInt(ccall(:jl_value_ptr, Ptr{Cvoid}
 # `RUNTIME_SHIM_IR`, with the type tags of the types of the objects that it makes
 function shim_ir()
     ir = RUNTIME_SHIM_IR
+    ir = replace(ir, "{{LAYOUT_OFFSET}}" => string(fieldoffset(DataType, findfirst(==(:layout), fieldnames(DataType)))))
     for (token, example) in ("TAG_STRING" => "", "TAG_INT64" => 1, "TAG_UINT64" => UInt64(1),
                              "TAG_INT32" => Int32(1), "TAG_UINT32" => UInt32(1),
+                             "TAG_INT8" => Int8(1), "TAG_UINT8" => UInt8(1), "TAG_INT16" => Int16(1),
+                             "TAG_UINT16" => UInt16(1), "TAG_CHAR" => 'a',
+                             "TAG_SYMBOL" => :a, "TAG_BOOL" => true, "TAG_NOTHING" => nothing,
                              "TAG_MEMORY_UINT8" => Memory{UInt8}(undef, 1))
         ir = replace(ir, "{{$token}}" => string(object_tag(example)))
     end
@@ -450,7 +560,7 @@ const DYNAMIC_RUNTIME_FUNCTIONS = [
         "ijl_apply_generic", "jl_apply_generic", "jl_f__apply_iterate", "jl_f_apply_type",
         "ijl_get_nth_field_checked", "jl_f_fieldtype", "jl_f_tuple", "ijl_new_structv",
         "jl_f__task", "jl_f__svec_ref", "ijl_subtype",
-        "jl_get_abi_converter", "ijl_load_and_lookup", "ijl_lazy_load_and_lookup", "jl_f_getfield",
+        "ijl_object_id_", "jl_object_id_", "ijl_object_id", "jl_object_id", "jl_get_abi_converter", "ijl_load_and_lookup", "ijl_lazy_load_and_lookup", "jl_f_getfield",
         "jl_f_isa", "jl_f_typeassert", "jl_f_issubtype", "ijl_new_task",
     )
 ]
@@ -992,7 +1102,10 @@ function memory_pieces(e::ObjectEmbedder, T, addr::UInt)
     len = unsafe_load(Ptr{Int}(addr))
     data = unsafe_load(Ptr{UInt}(addr + 8))
     ptrT = LLVM.PointerType()
-    if isbitstype(ET) && Base.datatype_pointerfree(ET) # plain data
+    if len == 0 # nothing in it, of whatever type its elements are
+        types = LLVM.LLVMType[LLVM.Int64Type(), ptrT]
+        return types, g -> LLVM.Constant[i64(0), LLVM.const_gep(LLVM.Int8Type(), g, [i64(EMBED_HEADER + 16)])]
+    elseif isbitstype(ET) && Base.datatype_pointerfree(ET) # plain data
         n = len * Base.aligned_sizeof(ET)
         check_readable(data, n)
         types = LLVM.LLVMType[LLVM.Int64Type(), ptrT, LLVM.ArrayType(LLVM.Int8Type(), n)]
@@ -1002,6 +1115,12 @@ function memory_pieces(e::ObjectEmbedder, T, addr::UInt)
         refs = [unsafe_load(Ptr{UInt}(data + 8(i - 1))) for i in 1:len]
         types = LLVM.LLVMType[LLVM.Int64Type(), ptrT, (ptrT for _ in 1:len)...]
         return types, g -> LLVM.Constant[i64(len), LLVM.const_gep(LLVM.Int8Type(), g, [i64(EMBED_HEADER + 16)]), (embed_ref!(e, r) for r in refs)...]
+    end
+    if ET isa DataType && Base.allocatedinline(ET) # structs with references in them, stored in it
+        check_readable(data, len * sizeof(ET))
+        element_types, element_values = struct_pieces(e, ET, data; n=len)
+        types = LLVM.LLVMType[LLVM.Int64Type(), ptrT, element_types...]
+        return types, g -> LLVM.Constant[i64(len), LLVM.const_gep(LLVM.Int8Type(), g, [i64(EMBED_HEADER + 16)]), element_values(g)...]
     end
     throw(EmbedFailure("memory of $ET"))
 end
@@ -1016,12 +1135,94 @@ function field_cut(T::Type, name)
     EMPTY_SVEC[] == 0 && (EMPTY_SVEC[] = UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), Core.svec())))
     if T === DataType
         name === :types && return :sizedsvec
-        return name === :layout ? :null : nothing
+        return name === :layout ? :egalplan : nothing
     elseif T === Core.TypeName
         name in (:module, :atomicfields, :constfields, :partial, :Typeofwrapper, :mt) && return :null
         name in (:cache, :linearcache) && return :emptysvec
     end
     return nothing
+end
+
+# How `===` compares two objects of an immutable type, from the type, as the operations that the code for
+# `jl_egal__unboxed` in the shim does (see there): comparing the contents of the fields in order, and the objects
+# that the fields refer to. Julia's own `compare_fields` does this with the layout of the type and the types of its
+# fields, which are not in the binary; this is what that comes to, for each type.
+const EGAL_BYTES, EGAL_REF, EGAL_UNSUPPORTED = UInt32(0), UInt32(1), UInt32(2)
+
+function egal_operations!(ops, dt::DataType, base::Int)
+    for i in 1:fieldcount(dt)
+        off = base + Int(fieldoffset(dt, i))
+        ft = fieldtype(dt, i)
+        if !Base.allocatedinline(ft)
+            push!(ops, (EGAL_REF, off, 0))
+        elseif !(ft isa DataType) || (fieldcount(ft) == 0 && Base.datatype_haspadding(ft))
+            # (a field of a Union of types that are stored inline has a selector byte, and padding of the
+            # types that have it is not compared)
+            push!(ops, (EGAL_UNSUPPORTED, off, 0))
+        elseif fieldcount(ft) == 0
+            sizeof(ft) > 0 && push!(ops, (EGAL_BYTES, off, sizeof(ft)))
+        else
+            egal_operations!(ops, ft, off) # a struct that is stored inline in this one
+        end
+    end
+    return ops
+end
+
+# the bytes of the memory before the `layout` of a type that has what `jl_egal__unboxed` needs: the operations,
+# the number of them (negative for a mutable type), and then the layout as Julia has it. Its address is that of
+# the layout. `nothing` for a type without a layout (an abstract one)
+function egal_plan(dt::DataType)
+    layout = unsafe_load(Ptr{Ptr{UInt8}}(pointer_from_objref(dt) + fieldoffset(DataType, findfirst(==(:layout), fieldnames(DataType)))))
+    (layout == C_NULL || !isconcretetype(dt)) && return nothing
+    # the size of the layout: its header, and the descriptions of the fields and the offsets of the pointers
+    nfields, npointers = unsafe_load(Ptr{UInt32}(layout + 4)), unsafe_load(Ptr{UInt32}(layout + 8))
+    fieldkind = Base.datatype_fielddesc_type(dt) + 1 # (8, 16 or 32 bit)
+    layout_size = 20 + nfields * (2, 4, 8)[fieldkind] + npointers * (1, 2, 4)[fieldkind]
+    ops = Tuple{UInt32,Int,Int}[]
+    if ismutabletype(dt)
+        count = -1
+    else
+        if fieldcount(dt) == 0 # a primitive type, or one without fields
+            if sizeof(dt) > 0
+                push!(ops, Base.datatype_haspadding(dt) ? (EGAL_UNSUPPORTED, 0, 0) : (EGAL_BYTES, 0, sizeof(dt)))
+            end
+        else
+            egal_operations!(ops, dt, 0)
+        end
+        # (neighbors that are compared by bytes are one comparison)
+        merged = Tuple{UInt32,Int,Int}[]
+        for op in ops
+            if !isempty(merged) && op[1] == EGAL_BYTES && merged[end][1] == EGAL_BYTES && merged[end][2] + merged[end][3] == op[2]
+                merged[end] = (EGAL_BYTES, merged[end][2], merged[end][3] + op[3])
+            else
+                push!(merged, op)
+            end
+        end
+        ops = merged
+        count = length(ops)
+    end
+    io = IOBuffer()
+    for (kind, off, size) in (count < 0 ? () : ops)
+        write(io, kind, UInt32(off), UInt32(size), UInt32(0))
+    end
+    write(io, Int64(count))
+    layout_offset = position(io)
+    write(io, unsafe_wrap(Array, layout, layout_size))
+    return take!(io), layout_offset
+end
+
+# The `layout` of the type at `addr` for the binary: a global with its plan (see `egal_plan`) and the layout
+function egal_layout!(e::ObjectEmbedder, dt::DataType, addr::UInt)
+    plan = egal_plan(dt)
+    plan === nothing && return nullptr()
+    bytes, layout_offset = plan
+    contents = LLVM.ConstantDataArray(LLVM.Int8Type(), bytes)
+    g = LLVM.GlobalVariable(e.mod, LLVM.value_type(contents), "static_egal_$(string(addr, base=16))")
+    LLVM.linkage!(g, LLVM.API.LLVMLinkOnceODRLinkage)
+    LLVM.visibility!(g, LLVM.API.LLVMHiddenVisibility)
+    LLVM.alignment!(g, EMBED_ALIGN)
+    LLVM.initializer!(g, contents)
+    return LLVM.const_gep(LLVM.Int8Type(), g, [i64(layout_offset)])
 end
 
 # The `types` of a type is a list that is as long as the type has fields (the code that checks an index against the
@@ -1034,7 +1235,8 @@ function sized_svec(n::Int)
     return UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), sv))
 end
 
-function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
+# (`n` structs of the type, one after the other, as the elements of a `Memory` are)
+function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt; n::Int=1)
     types = LLVM.LLVMType[]
     thunks = Function[]
     function add!(t, thunk)
@@ -1053,6 +1255,10 @@ function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
             elseif cut === :emptysvec
                 add!(LLVM.PointerType(), g -> embed_ref!(e, EMPTY_SVEC[]))
                 pos = off + sizeof(Ptr)
+            elseif cut === :egalplan
+                dt = unsafe_pointer_to_objref(Ptr{Cvoid}(addr))::DataType
+                add!(LLVM.PointerType(), g -> egal_layout!(e, dt, addr))
+                pos = off + sizeof(Ptr)
             elseif cut === :sizedsvec
                 types_addr = unsafe_load(Ptr{UInt}(base + off))
                 n = types_addr == 0 ? 0 : (check_readable(types_addr, 8); Int(unsafe_load(Ptr{Int}(types_addr))))
@@ -1070,6 +1276,10 @@ function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
                 mem = unsafe_load(Ptr{UInt}(base + off))
                 add!(LLVM.PointerType(), g -> embed_ref!(e, mem))
                 pos = off + sizeof(Ptr)
+            elseif Base.allocatedinline(ft) && ft isa Union # a Union of types without pointers, and a byte that says which
+                stop = i < fieldcount(T) ? Int(fieldoffset(T, i + 1)) : sizeof(T)
+                add_bytes!(base + off, stop - off)
+                pos = stop
             elseif Base.allocatedinline(ft)
                 if Base.datatype_pointerfree(ft)
                     add_bytes!(base + off, sizeof(ft))
@@ -1085,9 +1295,11 @@ function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
         end
         add_bytes!(base + pos, sizeof(T) - pos)
     end
-    check_readable(addr, sizeof(T))
-    add_fields!(T, addr)
-    isempty(types) && throw(EmbedFailure("no fields"))
+    for k in 0:n-1
+        check_readable(addr + k * sizeof(T), sizeof(T))
+        add_fields!(T, addr + k * sizeof(T))
+    end
+    isempty(types) && n > 0 && throw(EmbedFailure("no fields"))
     # values are created after the global, but the references they hold must exist before
     # it is (to compute the global's type), so they are created here and handed out later
     return types, g -> LLVM.Constant[thunk(g) for thunk in thunks]

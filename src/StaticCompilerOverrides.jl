@@ -13,6 +13,7 @@ include("tags.jl")     # The type tags of objects
 include("base.jl")     # Base methods that can be written to compile statically
 include("io.jl")       # Standard input and output
 include("show.jl")     # show of types and containers
+include("objectid.jl") # objectid, so that a struct can be the key of a Dict
 include("printf.jl")   # Printf, for formats without `*`
 include("unicode.jl")  # Properties of characters, without utf8proc
 include("files.jl")     # Files

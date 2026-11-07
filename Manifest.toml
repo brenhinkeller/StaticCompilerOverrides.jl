@@ -4,7 +4,7 @@ environment_id = "d747b762-a330-4f6e-bc20-fedef305c130"
 environment_name = "StaticCompilerOverrides"
 julia_version = "1.14.0-alpha2"
 manifest_format = "2.2"
-project_hash = "675425b139fd43f428ebc70148499b0fe50b7f43"
+project_hash = "10bba93deb4436bc5b9d340b52a6c4cf332b9a69"
 
 [[deps.Artifacts]]
 uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
@@ -313,6 +313,15 @@ version = "1.11.0"
     [deps.Random.syntax]
     julia_version = "1.14.0"
 
+[[deps.Reexport]]
+git-tree-sha1 = "45e428421666073eab6f2da5c9d310d99bb12f9b"
+registries = "General"
+uuid = "189a3867-3050-52da-a836-e630ba90ab69"
+version = "1.2.2"
+
+    [deps.Reexport.syntax]
+    julia_version = "1.0.0"
+
 [[deps.SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 version = "1.13.0"
@@ -356,8 +365,9 @@ version = "1.11.0"
 
 [[deps.StaticCompiler]]
 deps = ["Clang_jll", "GPUCompiler", "InteractiveUtils", "LLD_jll", "LLVM", "Libdl", "MacroTools", "Serialization", "StaticTools"]
-git-tree-sha1 = "8c50cb1f54ceca6a59ee03d3cfa0595240eaa221"
-registries = "General"
+git-tree-sha1 = "4a0db8057b39df9f48a09296c5890cfd255432b7"
+repo-rev = "postprocess"
+repo-url = "https://github.com/tshort/StaticCompiler.jl"
 uuid = "81625895-6c0f-48fc-b932-11a18313743c"
 version = "0.7.5"
 
@@ -365,20 +375,21 @@ version = "0.7.5"
     julia_version = "1.11.0"
 
 [[deps.StaticCompilerOverrides]]
-deps = ["StaticCompiler", "StaticTools"]
+deps = ["GPUCompiler", "LLVM", "Printf", "Random", "Reexport", "StaticCompiler", "StaticTools", "Test"]
 path = "."
 uuid = "d747b762-a330-4f6e-bc20-fedef305c130"
 version = "0.1.0"
 
     [deps.StaticCompilerOverrides.syntax]
-    julia_version = "1.14.0-alpha2"
+    julia_version = "1.14.0"
 
 [[deps.StaticTools]]
 deps = ["Bumper", "LinearAlgebra", "ManualMemory", "Random"]
-git-tree-sha1 = "ce93b4df242c5f2b95dec16fa9cef1919f510800"
-registries = "General"
+git-tree-sha1 = "9ae2ad3afd0245c78a2bcc010aef402c3bb86056"
+repo-rev = "printf"
+repo-url = "https://github.com/brenhinkeller/StaticTools.jl"
 uuid = "86c06d3c-3f03-46de-9781-57580aa96d0a"
-version = "0.9.0"
+version = "0.9.1"
 
     [deps.StaticTools.syntax]
     julia_version = "1.10.0"
@@ -397,6 +408,14 @@ version = "1.0.3"
 
     [deps.TOML.syntax]
     julia_version = "1.6.0"
+
+[[deps.Test]]
+deps = ["InteractiveUtils", "Logging", "Random", "Serialization"]
+uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+version = "1.11.0"
+
+    [deps.Test.syntax]
+    julia_version = "1.14.0"
 
 [[deps.Tracy]]
 deps = ["ExprTools", "LibTracyClient_jll", "Libdl"]

@@ -8,6 +8,11 @@ struct TagA; x::Int; end
 struct TagB; x::Float64; end
 mutable struct TagC; x::Int; end
 struct TagD{T}; x::T; end
+struct EgPt; x::Int; y::Float64; end
+struct EgNamed; name::String; id::Int; end
+struct EgNested; p::EgNamed; tag::Symbol; w::Int8; end
+struct EgOpt; v::Union{Int,Nothing}; end
+mutable struct EgMut; x::Int; end
 const TAG_P = "a" => 1
 const TAG_Q = "bc" => 2
 
@@ -100,5 +105,44 @@ end
         @test isempty(Runtime.type_switches(mod))
         @test !occursin("switch", string(mod))
         @test count("icmp eq", string(mod)) == 4
+    end
+end
+
+# `===` of objects that are not the same one (for the keys of a `Dict`, for instance): `jl_egal__unboxed` of the runtime
+# compares them by the plan that `egal_plan` makes for their type, which is in front of the layout of the type in the binary
+@testset "egal" begin
+    Runtime = StaticCompilerOverrides.Runtime
+    # (equal, but not the same objects: the strings are made when the program runs, and the values are boxed)
+    mk(s) = s * string(1)
+    box(x) = Any[x][1]
+    cases = [
+        "tuples"         => () -> (a = box((mk("a"), 1)); (a === box((mk("a"), 1))) + 2 * (a === box((mk("a"), 2))) + 4 * (a === box((mk("b"), 1)))),
+        "boxed numbers"  => () -> (a = box(300); (a === box(300)) + 2 * (a === box(301)) + 4 * (box(1.5) === box(1.5)) + 8 * (box(1.5) === box(-1.5)) + 16 * (box('c') === box('c')) + 32 * (box(Int8(3)) === box(Int8(3)))),
+        "struct of bits" => () -> (a = box(EgPt(1, 2.0)); (a === box(EgPt(1, 2.0))) + 2 * (a === box(EgPt(1, 3.0)))),
+        "with a string"  => () -> (a = box(EgNamed(mk("n"), 1)); (a === box(EgNamed(mk("n"), 1))) + 2 * (a === box(EgNamed(mk("m"), 1))) + 4 * (a === box(EgNamed(mk("n"), 2)))),
+        "nested, symbol" => () -> (a = box(EgNested(EgNamed(mk("n"), 1), :s, Int8(2)));
+                                   (a === box(EgNested(EgNamed(mk("n"), 1), :s, Int8(2)))) + 2 * (a === box(EgNested(EgNamed(mk("n"), 1), :t, Int8(2)))) + 4 * (a === box(EgNested(EgNamed(mk("x"), 1), :s, Int8(2))))),
+        "mutable"        => () -> (a = box(EgMut(1)); (a === box(EgMut(1))) + 2 * (a === a)),
+        "Dict, Set"      => () -> (d = Dict{Tuple{String,Int},Int}(); d[(mk("a"), 1)] = 5; d[(mk("b"), 2)] = 6;
+                                   get(d, (mk("a"), 1), 0) + 10 * get(d, (mk("b"), 2), 0) + 100 * get(d, (mk("a"), 2), 0) + 1000 * ((mk("a"), 1) in Set([(mk("a"), 1)]))),
+    ]
+    @testset "$name" for (name, f) in cases
+        @test static_status(f)[1] == :ok
+    end
+
+    @testset "plan" begin
+        # (the number is the 8 bytes before the layout)
+        ops(T) = (plan = Runtime.egal_plan(T); reinterpret(Int64, plan[1][plan[2]-7:plan[2]])[1])
+        # the number of operations (negative for a mutable type): one comparison of bytes for a struct of numbers,
+        # and for a string a comparison of the object it refers to
+        @test ops(EgPt) == 1
+        @test ops(EgNamed) == 2
+        @test ops(EgMut) == -1
+        @test ops(Int) == 1 && ops(Float64) == 1
+        @test Runtime.egal_plan(AbstractString) === nothing
+        # the layout in the plan is Julia's own
+        bytes, off = Runtime.egal_plan(EgNamed)
+        layout = unsafe_load(Ptr{Ptr{UInt8}}(pointer_from_objref(EgNamed) + fieldoffset(DataType, findfirst(==(:layout), fieldnames(DataType)))))
+        @test bytes[off+1:end] == unsafe_wrap(Array, layout, length(bytes) - off)
     end
 end
