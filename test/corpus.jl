@@ -65,6 +65,23 @@ const CORPUS = [
     "interpolation"         => () -> (x = 3; println("x = $x, y = $(2x)"); 1),
     "println Vector"        => () -> (println([1, 2, 3]); 1),
     "println tuple"         => () -> (println((1, "a")); 1),
+    "println Vector Float64" => () -> (println([1.5, 2.0]); 1),
+    "println Vector String" => () -> (println(["a", "b"]); 1),
+    "println Vector Bool"   => () -> (println([true, false]); 1),
+    "println Vector{Any}"   => () -> (println(Any[1, "a", 2.0]); 1),
+    "println Vector{UInt8}" => () -> (println(UInt8[1, 2]); 1),
+    "println empty Vector"  => () -> (println(Int[]); 1),
+    "println nested Vector" => () -> (println([[1, 2], [3]]); 1),
+    "println Any nested"    => () -> (println(Any[1, Any["a", :b], nothing]); 1),
+    "println Vector of Pt"  => () -> (println(Any[Pt(1, 2.0), (3, 4.5)]); 1),
+    "repr Vector{Any}"      => () -> length(repr(Any[1, "a"])),
+    "println Vector tuples" => () -> (println([(1, 2.5), (3, 4.5)]); 1),
+    "println Dict-free pair" => () -> (println("a" => [1]); 1),
+    "println tuple 1"       => () -> (println((1,)); 1),
+    "println tuple nested"  => () -> (println((1, (2.5, 'c'), "s")); 1),
+    "show Type"             => () -> (show(Int); println(); show(Vector{Float64}); println(); 1),
+    "print Type"            => () -> (println(Int); println(Pair{Int,String}); 1),
+    "println Pair"          => () -> (println(1 => 2); 1),
     "show"                  => () -> (show(7); println(); 1),
     "@show"                 => () -> (x = 5; @show x; 1),
     "print in loop"         => () -> (for i in 1:3; println(i); end; 1),
@@ -110,6 +127,7 @@ const CORPUS = [
 const GLOBAL_REF = Ref(0)
 const MIXED = Any[1, "str", 2.5, :sym, nothing, 'c', true, UInt8(7), (1, 2), [1, 2, 3]] # of different types
 struct Pt; x::Int; y::Float64; end
+StaticCompilerOverrides.add_show_candidates!(Pt, Tuple{Int,Float64})
 struct Other; s::String; end
 classify(x) = x isa Int ? 1 : x isa String ? 10 : x isa Float64 ? 100 : x isa Symbol ? 1000 : x isa Nothing ? 10_000 :
               x isa Char ? 100_000 : x isa Bool ? 1_000_000 : x isa UInt8 ? 10_000_000 : x isa Tuple ? 100_000_000 : 1_000_000_000

@@ -26,7 +26,7 @@ Julia 1.14 or later is required.
 ## What works
 
 Code that allocates (`Vector`, `Dict`, `Set`, `String`, closures that escape, boxed values),
-`print`/`println`/`show` of numbers, strings, characters and symbols, `readline` and friends,
+`print`/`println`/`show` of numbers, strings, characters, symbols, arrays, tuples, pairs and types, `readline` and friends,
 `rand`/`randn` on the default RNG, and `try`/`catch`/`finally`/`rethrow` (including for errors thrown by Base, like `BoundsError`), in addition to what
 StaticCompiler already handled (allocation-free numerical code, StaticTools types, and so on).
 The tests in `test/corpus.jl` are the up-to-date list of the idioms that we check, and which of
@@ -91,19 +91,52 @@ are not supported; and so far there is nothing for the file system itself (`isfi
 ### What works, and what doesn't
 
 What works: numbers, strings, characters, symbols, `nothing`, `missing`, and anything built from
-those by `string`, interpolation, `sprint`, `@show` (of these)... and their `show` (with the quotes
-and escapes), Unicode text and its properties (`isletter`, `uppercase`, `textwidth`, ...), formatting,
-and files.
+those by `string`, interpolation, `sprint`, `repr`, `@show`... and their `show` (with the quotes
+and escapes), **arrays** (also nested, and of `Any`), **tuples**, **pairs**, **dictionaries**, **sets**, **types** and plain **structs**
+(see [`show` of containers, types and structs](@ref)), Unicode text and its properties (`isletter`, `uppercase`,
+`textwidth`, ...), formatting, and files.
 
 What doesn't work yet:
-* `show` (so `println`, `repr`, `@show`) of **arrays, tuples, dictionaries** and other containers, and
-  of types: it needs information about types when the program is run. (Print the elements.)
+* `show` of matrices (`Matrix`, which also needs BLAS), and of containers that are not arrays, tuples, pairs,
+  dictionaries or sets. (Print the elements.)
+* **`Dict{K,Any}` or `Dict{Any,Any}` built from pairs** (`Dict{String,Any}("a" => 1)`), and iterating a `Pair` of two
+  different types (`for x in "a" => 1`): both are dynamic. Fill a `Dict{K,Any}()` with `d[k] = v`.
+* **`===`, and so `Dict`/`Set` lookups, of objects other than `String`s and the same object** (a key that is a
+  tuple of Strings, for instance) report and exit when run: the comparison of the contents of a struct needs the
+  layout of its type. Keys that are numbers, symbols and Strings are fine.
 * **`@printf` without an `io`**, which uses `stdout`: write `@printf(STDOUT, ...)`.
 * The **file system** (`isfile`, `mkdir`, `readdir`, `rm`, ...). (`filesize(path)` works.) And memory-mapped
   files, sockets, processes.
 
 The tables for the properties of characters are made when the package is compiled, with the Unicode
 data of the Julia that compiles it, and so are the same as in Julia.
+
+### `show` of containers, types and structs
+
+Base's `show` for a container asks the `IOContext` of the stream what is known about the types of the
+elements (an `ImmutableDict` of `Any`s), and writes type names by looking up modules and bindings: all
+dynamic. Here the same output is made with what is known when compiling (`src/show.jl`):
+
+* the name of a type is a constant string made by Base's own `show` when compiling, so it is what Base prints;
+* what the context knows about the type of the elements is in the type of the stream (`TypeInfoIO{T}`), and
+  what Base's `typeinfo_prefix` does with it is done when compiling, for the type of the container;
+* an element of an abstract type (an element of a `Vector{Any}`, a field of a struct of type `Any`) is shown by
+  a chain of `isa` over a closed set of types: the numbers, `String`, `Char`, `Symbol`, `Nothing`,
+  `Missing`, `Vector{Any}`, and those you add with [`add_show_candidates!`](@ref). Showing a value of another
+  type is an error *when the program runs* (the message says so).
+
+```julia
+struct Point; x::Int; y::Float64; end
+add_show_candidates!(Point, Tuple{Int,Float64})   # before compiling
+
+main() = (println(Any[1, "a", Point(2, 3.5), (4, 5.0)]); 0)
+# Any[1, "a", Point(2, 3.5), (4, 5.0)]
+```
+
+Limits: what is shown is not cut (`:limit`) and containers that contain themselves are not detected; a
+`Symbol` that is not a plain ASCII identifier (an operator, say) is an error; and the names of types of modules other
+than `Main` that the program makes visible with `using`/`import` are written with their module (Base writes
+`Main`'s view of them).
 
 ## Entry points
 
@@ -226,14 +259,21 @@ and exits with status 1. The message does not say which exception it was.
 
 Limitations, which are bugs rather than design choices:
 
-* **`catch e; e isa T` is only reliable when the compiler knows the type of the exception.**
-  Objects allocated by compiled code do not carry a type tag, so when more than one type can reach
-  a `catch` (so that the type is only known at run time), `isa`/dispatch on `e` gives wrong
-  answers instead of failing. Catching without looking at the exception, or where only one type
-  can be thrown, is fine. This test is recorded as broken in `test/runtests.jl`.
+* `catch e; e isa T` works with concrete types, and with abstract ones for constants (objects have type
+  tags, and the types that the code mentions are in the binary; see [Type tags](@ref)). `isa` with an abstract type
+  or a `Union` on a *boxed value whose type is only known at run time* needs `jl_subtype`, and is rejected when
+  compiling.
 * Code that needs dynamic dispatch, or other things from the Julia runtime, is rejected when
   compiling (see strict mode). With `strict = false`, it compiles and aborts with
   `Dynamic behavior is not supported in standalone binaries (...)` if the call is reached.
+
+## Type tags
+
+Every object that a compiled program allocates has a type tag in its header, as in Julia: a small number for
+the built-in types and the address of the type object otherwise. `isa` with a concrete type, the type of a caught
+exception, and `show` of an `Any` element read this tag. The objects that the code refers to as constants
+(strings, tuples, types, ...) are copied into the binary with their tags, and so are the type objects that
+the tags and `isa` with abstract types read (names, parameters). Details are in `src/tags.jl` and `src/runtime.jl`.
 
 ## Method tables
 

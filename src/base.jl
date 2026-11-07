@@ -8,7 +8,7 @@
 @device_override function Base.print_to_string(xs...)
     isempty(xs) && return ""
     s = IOBuffer(sizehint = sizehint_sum(xs...))
-    print_each(s, xs...)
+    print_each(BufIO(s), xs...) # (a `BufIO`: the methods of `show` in `show.jl` are for it)
     return Base.takestring!(s)
 end
 
@@ -19,6 +19,28 @@ print_each(s) = nothing
 function print_each(s, x, xs...)
     print(s, x)
     return print_each(s, xs...)
+end
+
+# `[x, y, ...]` (`Base.vect`) fills the vector with a loop over its arguments, `X[i]`. For arguments of different
+# types (an `Any[1, "a"]`) the type of that depends on `i`, which is not known when compiling, so it is a
+# dynamic call. Recursing over the arguments gives each its own type.
+@device_override function Base.vect(X...)
+    isempty(X) && return Vector{Any}()
+    a = Vector{Base.promote_typeof(X...)}(undef, length(X))
+    vect_fill!(a, 1, X...)
+    return a
+end
+# the same for `Any[x, y, ...]`, which is `getindex(Any, x, y, ...)` (only for `Any`, where the types of the
+# elements differ; for the others, Base's method is the one that compiles well)
+@device_override function Base.getindex(::Type{Any}, vals...)
+    a = Vector{Any}(undef, length(vals))
+    vect_fill!(a, 1, vals...)
+    return a
+end
+vect_fill!(a, i) = a
+function vect_fill!(a, i, x, xs...)
+    @inbounds a[i] = x
+    return vect_fill!(a, i + 1, xs...)
 end
 
 # Locks. A compiled program has one thread and no tasks, so a lock can never be contended: taking

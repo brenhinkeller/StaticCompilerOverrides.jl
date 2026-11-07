@@ -12,6 +12,7 @@ include("overrides.jl") # Our method table, `@device_override`, and the entry po
 include("tags.jl")     # The type tags of objects
 include("base.jl")     # Base methods that can be written to compile statically
 include("io.jl")       # Standard input and output
+include("show.jl")     # show of types and containers
 include("printf.jl")   # Printf, for formats without `*`
 include("unicode.jl")  # Properties of characters, without utf8proc
 include("files.jl")     # Files
@@ -20,7 +21,7 @@ include("testing.jl")  # Differential testing: compiled executable vs. ordinary 
 
 export compile_executable, compile_shlib, static_code_llvm, static_code_typed, static_code_native,
        static_llvm_module, @device_override
-export UnsupportedCodeError
+export UnsupportedCodeError, add_show_candidates!
 export StaticIO, StaticFile, STDIN, STDOUT, STDERR
 export static_result, static_status, undefined_symbols, allocation_sites, @static_test
 

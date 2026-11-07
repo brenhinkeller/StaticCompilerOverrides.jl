@@ -3,16 +3,14 @@ include("corpus.jl")
 include("testruntime.jl")
 include("testembedding.jl")
 include("testunicode.jl")
+include("testtags.jl")
+include("testshow.jl")
 
 # Idioms that must compile to a standalone executable giving the same result as Julia.
 # Known gaps, and what is needed. When one starts working, its `@test_broken` fails (as an
 # unexpected pass): remove it from here, and it will be tested as supported.
 const KNOWN_BROKEN = Dict(
     "Matrix"          => "BLAS (`dgemm`) is not linked",
-    # `show` of containers builds an `IOContext` (an `ImmutableDict` of type objects) and prints type names
-    "println Vector"  => "`show` of containers needs type objects at run time (type descriptors)",
-    "println tuple"   => "`show` of containers needs type objects at run time (type descriptors)",
-    "repr"            => "`show` of containers needs type objects at run time (type descriptors)",
     # the globals `stdout` and `stderr` have the abstract type `IO`: use `STDOUT`, `STDERR`
     "stderr"          => "`stderr` is a global of the abstract type `IO`: use `STDERR`",
     "@printf"         => "`@printf` without an `io` uses `stdout`: use `@printf(STDOUT, ...)`",
@@ -49,13 +47,13 @@ end
 # Code that can't work as a standalone binary is rejected when compiling, rather than crashing
 # (or silently misbehaving) when it is run, unless that is asked for
 @testset "Strict mode" begin
-    printing() = (println([1, 2, 3]); 1) # `show` of an array needs types at run time (dynamic dispatch)
+    printing() = (println(Base.inferencebarrier(Any[1, "a"])); 1) # the type of the argument is not known when compiling (dynamic dispatch)
     main = StaticCompilerOverrides.make_main(printing)
     compile(; kwargs...) = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)); kwargs...)
 
     err = try compile(); nothing catch e; e end
     @test err isa UnsupportedCodeError
-    @test !isempty(err.dynamic) && !isempty(err.pointers)
+    @test !isempty(err.dynamic)
     @test occursin("ijl_apply_generic", sprint(showerror, err)) # says which, and what to do
     @test occursin("strict = false", sprint(showerror, err))
     @test "ijl_apply_generic" in undefined_symbols(printing)    # reported by the diagnostics too
@@ -66,6 +64,7 @@ end
     err2 = try Base.invokelatest(compile_executable, stderr_main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(stderr_main))); nothing catch e; e end
     @test err2 isa UnsupportedCodeError
     @test occursin("STDERR", sprint(showerror, err2))
+    @test !isempty(err2.pointers) # references to Julia objects by their address are reported too
 
     # strict = false compiles code that has dynamic dispatch anyway (and the call aborts the program if
     # it is reached); `allow` accepts specific runtime functions, which is not enough here as there are

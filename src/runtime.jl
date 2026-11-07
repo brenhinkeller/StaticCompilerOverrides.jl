@@ -78,6 +78,41 @@ define linkonce_odr ptr @jl_alloc_genericmemory_unchecked(ptr %ptls, i64 %nbytes
   ret ptr %obj
 }
 
+; `===` of two objects that are not the same one and are not compared inline (a `String`, for instance, is
+; egal to another with the same text). `dtag` is the type tag of both. Only Strings are compared here: anything
+; else would need the layout of its type, and is not supported (it reports and exits, rather than being wrong)
+declare i32 @memcmp(ptr, ptr, i64)
+@_static_egal_msg = private unnamed_addr constant [75 x i8] c"=== of objects of this type is not supported in standalone binaries (egal)\00"
+define linkonce_odr i32 @jl_egal__unboxed(ptr %a, ptr %b, i64 %dtag) {
+entry:
+  %same = icmp eq ptr %a, %b
+  br i1 %same, label %yes, label %check
+check:
+  %tag = and i64 %dtag, -16
+  %isstring = icmp eq i64 %tag, {{TAG_STRING}}
+  br i1 %isstring, label %string, label %other
+string:
+  %la = load i64, ptr %a, align 8
+  %lb = load i64, ptr %b, align 8
+  %leq = icmp eq i64 %la, %lb
+  br i1 %leq, label %compare, label %no
+compare:
+  %da = getelementptr inbounds i8, ptr %a, i64 8
+  %db = getelementptr inbounds i8, ptr %b, i64 8
+  %r = call i32 @memcmp(ptr %da, ptr %db, i64 %la)
+  %zero = icmp eq i32 %r, 0
+  %result = zext i1 %zero to i32
+  ret i32 %result
+other:
+  %s = call i32 @puts(ptr @_static_egal_msg)
+  call void @exit(i32 1)
+  unreachable
+yes:
+  ret i32 1
+no:
+  ret i32 0
+}
+
 define linkonce_odr void @jl_argument_error(ptr %msg) noreturn {
   %s = call i32 @puts(ptr %msg)
   call void @exit(i32 1)
@@ -340,7 +375,7 @@ end
 # the runtime functions defined by `RUNTIME_SHIM_IR`, which override declarations in `mod`
 const RUNTIME_SHIM_FUNCTIONS = (
     "gpu_gc_pool_alloc", "gpu_unsupported_allocation", "jl_alloc_genericmemory_unchecked",
-    "jl_argument_error", "julia.get_pgcstack", "julia.gc_alloc_bytes", "julia.safepoint", "julia.cancellation_point", "julia.get_pgcstack_or_new",
+    "jl_argument_error", "jl_egal__unboxed", "julia.get_pgcstack", "julia.gc_alloc_bytes", "julia.safepoint", "julia.cancellation_point", "julia.get_pgcstack_or_new",
     "ijl_enter_handler", "ijl_pop_handler", "ijl_pop_handler_noexcept", "ijl_excstack_state",
     "ijl_restore_excstack", "ijl_throw", "ijl_rethrow", "ijl_rethrow_other",
     "ijl_current_exception", "jl_current_exception",
@@ -414,7 +449,7 @@ const DYNAMIC_RUNTIME_FUNCTIONS = [
     name => "Dynamic behavior is not supported in standalone binaries ($name)" for name in (
         "ijl_apply_generic", "jl_apply_generic", "jl_f__apply_iterate", "jl_f_apply_type",
         "ijl_get_nth_field_checked", "jl_f_fieldtype", "jl_f_tuple", "ijl_new_structv",
-        "jl_f__task", "jl_f__svec_ref", "jl_egal__unboxed", "ijl_subtype",
+        "jl_f__task", "jl_f__svec_ref", "ijl_subtype",
         "jl_get_abi_converter", "ijl_load_and_lookup", "ijl_lazy_load_and_lookup", "jl_f_getfield",
         "jl_f_isa", "jl_f_typeassert", "jl_f_issubtype", "ijl_new_task",
     )
@@ -980,12 +1015,23 @@ const EMPTY_SVEC = Ref{UInt}(0) # the address of the empty `svec()`
 function field_cut(T::Type, name)
     EMPTY_SVEC[] == 0 && (EMPTY_SVEC[] = UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), Core.svec())))
     if T === DataType
-        return name in (:layout, :types) ? :null : nothing
+        name === :types && return :sizedsvec
+        return name === :layout ? :null : nothing
     elseif T === Core.TypeName
         name in (:module, :atomicfields, :constfields, :partial, :Typeofwrapper, :mt) && return :null
         name in (:cache, :linearcache) && return :emptysvec
     end
     return nothing
+end
+
+# The `types` of a type is a list that is as long as the type has fields (the code that checks an index against the
+# number of the fields of a type reads its length): one of that length, of `nothing`s, stands for it.
+const SIZED_SVECS = Dict{Int,Core.SimpleVector}() # (kept, so that their addresses are not reused)
+function sized_svec(n::Int)
+    sv = get!(SIZED_SVECS, n) do
+        Core.svec(ntuple(_ -> nothing, n)...)
+    end
+    return UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), sv))
 end
 
 function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
@@ -1006,6 +1052,11 @@ function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
                 pos = off + sizeof(Ptr)
             elseif cut === :emptysvec
                 add!(LLVM.PointerType(), g -> embed_ref!(e, EMPTY_SVEC[]))
+                pos = off + sizeof(Ptr)
+            elseif cut === :sizedsvec
+                types_addr = unsafe_load(Ptr{UInt}(base + off))
+                n = types_addr == 0 ? 0 : (check_readable(types_addr, 8); Int(unsafe_load(Ptr{Int}(types_addr))))
+                add!(LLVM.PointerType(), g -> embed_ref!(e, sized_svec(n)))
                 pos = off + sizeof(Ptr)
             elseif T <: Core.GenericMemoryRef && i == 1
                 # a pointer into the data of the memory, which is the second field
