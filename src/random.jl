@@ -1,0 +1,47 @@
+# Random numbers without tasks.
+#
+# Julia's default RNG (`Random.default_rng()`, a `TaskLocalRNG`) keeps its xoshiro256++ state in
+# fields of the current task, and compiled programs have no tasks. We keep the state in a global
+# instead (so there is a single, process-wide stream), seeded from the operating system's
+# entropy source the first time it is used, as Julia seeds each new process randomly.
+# `Random.seed!` works as usual, since it only goes through `setstate!`.
+
+using Random: Random, TaskLocalRNG
+
+# xoshiro256++ state (s0..s3) and the splitmix state `s4`. All zero means "not seeded yet",
+# which is not a valid xoshiro state.
+const TASKLOCAL_RNG_STATE = Ref{NTuple{5,UInt64}}((0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000))
+
+# four words of entropy from libc, or fixed words if the system fails to provide it
+function entropy_state()
+    buf = Ref{NTuple{4,UInt64}}((0x9e3779b97f4a7c15, 0xbf58476d1ce4e5b9, 0x94d049bb133111eb, 0x2545f4914f6cdd1d))
+    ok = GC.@preserve buf @symbolcall getentropy(Ptr{UInt64}(pointer_from_objref(buf))::Ptr{UInt64}, UInt(32)::UInt)::Int32
+    s0, s1, s2, s3 = buf[]
+    return (s0, s1, s2, s3, s0 + 3s1 + 5s2 + 7s3)
+end
+
+@device_override @inline function Random.getstate(::TaskLocalRNG)
+    s = TASKLOCAL_RNG_STATE[]
+    if (s[1] | s[2] | s[3] | s[4]) == 0x0000000000000000
+        s = entropy_state()
+        TASKLOCAL_RNG_STATE[] = s
+    end
+    return s
+end
+
+@device_override @inline function Random.setstate!(x::TaskLocalRNG, (s0, s1, s2, s3, s4))
+    old = TASKLOCAL_RNG_STATE[]
+    # `nothing` leaves the splitmix state as it is
+    TASKLOCAL_RNG_STATE[] = (s0, s1, s2, s3, s4 === nothing ? old[5] : s4)
+    return x
+end
+
+# `seed!(seed)` also records the seed in `task_local_storage()` (an `IdDict` on the current
+# task), for `@testset` to restore. There are no tasks, so record it in a global.
+const STATIC_TLS_SEED = Random.Xoshiro(0, 0, 0, 0, 0)
+@device_override Random.get_tls_seed() = STATIC_TLS_SEED
+
+# Bumper.jl looks up the current task to find its default buffer, and there are no tasks
+@static if isdefined(StaticTools, :Bumper)
+    @device_override StaticTools.Bumper.Internals.get_task() = 0
+end
