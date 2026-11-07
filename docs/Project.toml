@@ -1,0 +1,6 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+StaticCompilerOverrides = "d747b762-a330-4f6e-bc20-fedef305c130"
+
+[sources]
+StaticCompilerOverrides = {rev = "main", url = "https://github.com/brenhinkeller/StaticCompilerOverrides.jl"}
