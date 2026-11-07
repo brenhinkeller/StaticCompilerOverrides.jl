@@ -17,15 +17,20 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 jobs:
   test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - gc ${{ matrix.gc }} - ${{ github.event_name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         version:
-          - '1.14'
+          - 'pre' # the latest prerelease (1.14 has no release yet; change to '1.14' once it does)
         group:
           - Core
+        # the collector as it is by default, and in stress mode (a collection every 3 allocations,
+        # freed memory overwritten), which finds objects that the collector fails to see
+        gc:
+          - 'true'
+          - '3'
         # Linux and macOS, on x86 and ARM (the compiled code is native, so the platforms differ)
         include:
           - os: ubuntu-latest
@@ -54,6 +59,7 @@ jobs:
       - uses: julia-actions/julia-runtest@v1
         env:
           GROUP: ${{ matrix.group }}
+          STATIC_COMPILER_OVERRIDES_GC: ${{ matrix.gc }}
       - uses: julia-actions/julia-processcoverage@v1
       - uses: codecov/codecov-action@v2
         with:
