@@ -63,7 +63,7 @@ StaticCompilerOverrides.add_show_candidates!(ShowPt, Tuple{Int,Float64})
         @test static_status(() -> (println(Any[ShowBox(1)]); 1))[1] == :runtime_error # not in the candidates
         @test static_status(() -> (println(Any[Symbol("+")]); 1))[1] == :runtime_error # not an ASCII identifier
         @test static_status(() -> (println(Any[Dict(1 => 2)]); 1))[1] == :runtime_error # not in the candidates
-        @test static_status(() -> (println(Base.inferencebarrier(Any[1])); 1))[1] == :compile_error
+        @test static_status(() -> (println(Base.inferencebarrier(Any[1])); 1))[1] == :runtime_error # (a call with an `Any`: over the types that are registered, which have not `Vector{Any}`)
     end
 
     # the strings that are made when compiling

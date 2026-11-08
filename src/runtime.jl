@@ -581,6 +581,7 @@ function null_methoderror_arguments!(mod::LLVM.Module)
         call = LLVM.user(use)
         call isa LLVM.CallInst || continue
         frame = LLVM.operands(call)[2]
+        name = nothing # of the function that had no method, which is the first of the arguments
         todo = Any[frame]
         while !isempty(todo)
             v = pop!(todo)
@@ -590,6 +591,8 @@ function null_methoderror_arguments!(mod::LLVM.Module)
                     LLVM.operands(user)[2] == v || continue # (it is the pointer that is stored to)
                     value = LLVM.operands(user)[1]
                     if value isa LLVM.ConstantExpr && isinttoptr(value)
+                        addr = constant_address(value)
+                        name === nothing && addr !== nothing && (name = function_name_at(UInt(addr)))
                         LLVM.operands(user)[1] = LLVM.null(ptrT)
                         changed = true
                     end
@@ -598,8 +601,37 @@ function null_methoderror_arguments!(mod::LLVM.Module)
                 end
             end
         end
+        # say which call it was: where the types that were split on were the ones that are registered, it is what an object of
+        # another type reaches (see `dispatch.jl`)
+        what = name === nothing ? "a call" : "a call of `$name`"
+        msg = "MethodError: no method matches the types of the arguments of $what, which can be of a type that was not known when compiling (see `add_dispatch_candidates!`)"
+        puts = get(LLVM.functions(mod), "puts", nothing)
+        puts === nothing && (puts = LLVM.Function(mod, "puts", LLVM.FunctionType(LLVM.Int32Type(), [ptrT])))
+        exit_ = get(LLVM.functions(mod), "exit", nothing)
+        exit_ === nothing && (exit_ = LLVM.Function(mod, "exit", LLVM.FunctionType(LLVM.VoidType(), [LLVM.Int32Type()])))
+        @dispose builder = LLVM.IRBuilder() begin
+            LLVM.position!(builder, LLVM.before(call))
+            LLVM.call!(builder, LLVM.function_type(puts), puts, [LLVM.globalstring_ptr!(builder, msg)])
+            LLVM.call!(builder, LLVM.function_type(exit_), exit_, [LLVM.ConstantInt(Int32(1))])
+        end
+        changed = true
     end
     return changed
+end
+
+# The name of the function that is the object at `addr` (a function is an object of a type of its own, without contents, that may not be
+# aligned as the others are), or `nothing`
+function function_name_at(addr::UInt)
+    object_type(UInt(0x10000)) # (which sets what the tag of a type is)
+    word = safe_load(addr - 8)
+    word === nothing && return nothing
+    tag = word & ~UInt(15)
+    tag < (64 << 4) && return nothing
+    typetag = safe_load(tag - 8)
+    (typetag === nothing || typetag & ~UInt(15) != DATATYPE_TAG[]) && return nothing
+    T = unsafe_pointer_to_objref(Ptr{Cvoid}(tag))
+    T isa DataType && Base.issingletontype(T) && T <: Function || return nothing
+    return string(nameof(T.instance))
 end
 
 # `getfield(x, name)` with a name that is only known at run time (`getproperty(::QRPivoted, ::Symbol)` is, when it is not inlined) is
@@ -617,12 +649,10 @@ function define_field_index!(mod::LLVM.Module)
         call isa LLVM.CallInst || continue
         ops = LLVM.operands(call)
         (ops[3] isa LLVM.ConstantInt && convert(Int, ops[3]) == 0) || continue # (one that throws is not done)
-        nodes = inttoptr_nodes(ops[1])
-        length(nodes) == 1 || continue
-        addr = constant_address(nodes[1])
+        addr = constant_object_address(ops[1])
         addr === nothing && continue
-        object_type(UInt(addr)) === DataType || continue
-        T = unsafe_pointer_to_objref(Ptr{Cvoid}(UInt(addr)))::DataType
+        object_type(addr) === DataType || continue
+        T = unsafe_pointer_to_objref(Ptr{Cvoid}(addr))::DataType
         LLVM.@dispose builder = LLVM.IRBuilder() begin
             LLVM.position!(builder, LLVM.before(call))
             result = LLVM.ConstantInt(i32, -1)
@@ -656,11 +686,9 @@ function subtype_queries(mod::LLVM.Module)
     for use in LLVM.uses(fns["ijl_subtype"])
         inst = LLVM.user(use)
         inst isa LLVM.CallInst || return nothing
-        nodes = inttoptr_nodes(LLVM.operands(inst)[2])
-        length(nodes) == 1 || return nothing
-        addr = constant_address(nodes[1])
+        addr = constant_object_address(LLVM.operands(inst)[2])
         addr === nothing && return nothing
-        push!(addrs, UInt(addr))
+        push!(addrs, addr)
     end
     return sort!(collect(addrs))
 end
@@ -1180,12 +1208,10 @@ function classify_allocations!(mod::LLVM.Module)
             call = LLVM.user(use)
             call isa LLVM.CallInst || continue
             ops = LLVM.operands(call)
-            nodes = inttoptr_nodes(ops[3])
-            length(nodes) == 1 || continue
-            addr = constant_address(nodes[1])
+            addr = constant_object_address(ops[3])
             addr === nothing && continue
-            object_type(UInt(addr)) === DataType || continue
-            type_pointerfree(unsafe_pointer_to_objref(Ptr{Cvoid}(UInt(addr)))) || continue
+            object_type(addr) === DataType || continue
+            type_pointerfree(unsafe_pointer_to_objref(Ptr{Cvoid}(addr))) || continue
             replace_call!(call, "jl_alloc_genericmemory_atomic", ftype, collect(ops)[1:end-1])
             changed = true
         end
@@ -2022,8 +2048,53 @@ end
 
 embed_constants!(mod::LLVM.Module) = embed_constants!(ObjectEmbedder(mod, Dict()))
 
+# the prefix of the names of the globals that stand for the types that code refers to while it is optimized (see `tags.jl`)
+const TYPE_PLACEHOLDER = "static_type_"
+
+# The address of the object that a constant stands for: `inttoptr (i64 N to ptr)` (possibly with an offset), or the global that stands for a
+# type while the code is optimized (see `TYPE_PLACEHOLDER`); `nothing` if it is neither
+function constant_object_address(op)
+    if op isa LLVM.GlobalVariable
+        name = LLVM.name(op)
+        startswith(name, TYPE_PLACEHOLDER) || return nothing
+        return tryparse(UInt, name[length(TYPE_PLACEHOLDER)+1:end]; base = 16)
+    end
+    nodes = inttoptr_nodes(op)
+    if length(nodes) == 1
+        addr = constant_address(nodes[1])
+        return addr === nothing ? nothing : UInt(addr)
+    end
+    # (an offset of a type that stands for it: `getelementptr (i8, @static_type_N, 16)`)
+    if isempty(nodes) && op isa LLVM.ConstantExpr && !isempty(LLVM.operands(op))
+        return constant_object_address(LLVM.operands(op)[1])
+    end
+    return nothing
+end
+
+# The objects of the types that were globals while the code was optimized: the object that is in the binary, or the number of
+# the type in this process (which is what it was) if it can't be there
+function resolve_type_placeholders!(e::ObjectEmbedder)
+    mod = e.mod
+    placeholders = [g for g in LLVM.globals(mod) if startswith(LLVM.name(g), TYPE_PLACEHOLDER)]
+    isempty(placeholders) && return false
+    ptrT = LLVM.PointerType()
+    for g in placeholders
+        addr = parse(UInt, LLVM.name(g)[length(TYPE_PLACEHOLDER)+1:end]; base = 16)
+        ref = try
+            embed_ref!(e, addr)
+        catch err
+            err isa EmbedFailure || rethrow()
+            LLVM.const_inttoptr(LLVM.ConstantInt(Int64(addr)), ptrT)
+        end
+        LLVM.replace_uses!(g, ref)
+        LLVM.erase!(g)
+    end
+    return true
+end
+
 function embed_constants!(e::ObjectEmbedder)
     mod = e.mod
+    resolve_type_placeholders!(e)
     # as comparisons, so that the types in them can be replaced (see `type_number_constants`)
     foreach(lower_switch!, type_switches(mod))
     changed = fold_small_typeof_loads!(e) || define_small_typeof!(e)

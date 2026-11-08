@@ -52,7 +52,7 @@ for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_t
           :static_code_native, :static_llvm_module)
     @eval begin
         $f(args...; method_table = method_table, strict::Bool = true, allow = (), gc = default_gc(),
-           llvm_postprocess = mod -> link_runtime!(mod; strict, allow, gc), kwargs...) =
+           llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc)), kwargs...) =
             StaticCompiler.$f(args...; method_table, llvm_postprocess, kwargs...)
         @doc """
             $($f)(args...; method_table = StaticCompilerOverrides.method_table, strict = true, allow = (), kwargs...)
@@ -65,7 +65,8 @@ for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_t
         (most often, dynamic dispatch), or references to Julia objects by their address. `strict = false`
         compiles it anyway, with calls that need the runtime aborting the program if they are reached.
         `allow` is a collection of names of runtime functions (as in the error message) to accept even
-        in strict mode.
+        in strict mode. A call on a value of `Any` (or of an abstract type that can't be listed) is made over the registered types (see
+        [`add_dispatch_candidates!`](@ref)), and compiling says so in a debug message (`JULIA_DEBUG=StaticCompilerOverrides`).
 
         By default (`gc = true`, where the collector is available) the program has a garbage collector: memory that is not
         used any more is freed (see the section on memory in the manual). `gc = false` never frees it. A number

@@ -29,6 +29,18 @@ end
 # Write the type tag of each of the objects that the allocation intrinsic `julia.gc_alloc_obj(ptls, size, type)`
 # makes, in the 8 bytes before the object (which is where the tag goes: the runtime allocates a header
 # for them)
+# The global that stands for the type at `addr` while the code is optimized (see below, and `resolve_type_placeholders!`)
+function type_placeholder(mod::LLVM.Module, addr::UInt)
+    name = string(Runtime.TYPE_PLACEHOLDER, string(addr, base = 16))
+    g = get(LLVM.globals(mod), name, nothing)
+    if g === nothing
+        g = LLVM.GlobalVariable(mod, LLVM.Int8Type(), name)
+        LLVM.linkage!(g, LLVM.API.LLVMExternalLinkage)
+        LLVM.visibility!(g, LLVM.API.LLVMHiddenVisibility)
+    end
+    return g
+end
+
 function tag_allocations!(mod::LLVM.Module)
     fns = LLVM.functions(mod)
     haskey(fns, "julia.gc_alloc_obj") || return false
@@ -37,12 +49,13 @@ function tag_allocations!(mod::LLVM.Module)
         call = LLVM.user(use)
         call isa LLVM.CallInst || continue
         typ = LLVM.operands(call)[3]
-        known = typ isa LLVM.ConstantExpr && isinttoptr(typ) && constant_address(typ) !== nothing
+        addr = Runtime.constant_object_address(typ) # (a type, as a constant)
+        known = addr !== nothing
         @dispose builder = LLVM.IRBuilder() begin
             obj = call
             # an object that can't refer to others is allocated as such (the lowering that would follow allocates them all alike)
-            if known && Runtime.object_type(UInt(constant_address(typ))) === DataType &&
-               Runtime.type_pointerfree(unsafe_pointer_to_objref(Ptr{Cvoid}(UInt(constant_address(typ)))))
+            if known && Runtime.object_type(addr) === DataType &&
+               Runtime.type_pointerfree(unsafe_pointer_to_objref(Ptr{Cvoid}(addr)))
                 ftype = LLVM.FunctionType(LLVM.value_type(call), [LLVM.Int64Type()])
                 atomic = get(LLVM.functions(mod), "gpu_gc_pool_alloc_atomic", nothing)
                 atomic === nothing && (atomic = LLVM.Function(mod, "gpu_gc_pool_alloc_atomic", ftype))
@@ -53,7 +66,9 @@ function tag_allocations!(mod::LLVM.Module)
             end
             LLVM.position!(builder, LLVM.after(obj))
             tag = if known
-                LLVM.ConstantInt(type_tag(UInt(constant_address(typ))))
+                t = type_tag(addr)
+                # (a builtin type has a small number as its tag; the others the address of the type, which is the type in the binary)
+                t == Int64(addr) ? LLVM.const_ptrtoint(type_placeholder(mod, addr), LLVM.Int64Type()) : LLVM.ConstantInt(t)
             else
                 LLVM.ptrtoint!(builder, typ, LLVM.Int64Type()) # a type that is only known when running
             end
@@ -81,6 +96,54 @@ const ModulePassManager = isdefined(LLVM, :NewPMModulePassManager) ? LLVM.NewPMM
 const ModulePass = isdefined(LLVM, :NewPMModulePass) ? LLVM.NewPMModulePass : LLVM.ModulePass
 
 const TagAllocationsPass = ModulePass("StaticTagAllocations", tag_allocations!)
+
+# The addresses of type objects that the code that Julia generates compares the tags of objects with (`isa`, `typeof`), and passes on, as numbers, are those
+# of this process, which are not those in the binary (where the types are objects that are copied into it: see `embed_constants!`). They
+# are replaced after the code is optimized. But LLVM does arithmetic with such numbers while it optimizes: a chain of tests of a tag
+# against types becomes a `switch` on `(tag + C)` rotated, where `C` and the numbers of the cases are those of the *addresses of
+# this process*, and what the arithmetic gives for the tags of the binary is another thing. So the addresses are not numbers when it
+# is optimized: before that, each is a global that is declared (`static_type_<address>`), whose address LLVM can't know, and `embed_constants!`
+# makes them the objects.
+function placeholder_type_constants!(mod::LLVM.Module)
+    i64 = LLVM.Int64Type()
+    placeholder(addr::UInt) = type_placeholder(mod, addr)
+    changed = false
+    # the tags that are compared, stored and passed on as numbers
+    for (addr, uses) in Runtime.type_number_constants(mod)
+        number = LLVM.const_ptrtoint(placeholder(addr), i64)
+        for (inst, i) in uses
+            LLVM.operands(inst)[i] = number
+        end
+        changed = true
+    end
+    # the types that are pointers, in the code and in the initializers of the globals that it loads them from (which LLVM folds into
+    # the code: a type is a `private constant` global that holds its address)
+    nodes = Dict{UInt,Vector{LLVM.Value}}()
+    for (addr, ops) in Runtime.inttoptr_constants(mod)
+        append!(get!(Vector{LLVM.Value}, nodes, addr), ops)
+    end
+    for g in LLVM.globals(mod)
+        LLVM.isdeclaration(g) && continue
+        init = LLVM.initializer(g)
+        init === nothing && continue
+        for node in Runtime.inttoptr_nodes(init)
+            addr = constant_address(node)
+            addr === nothing && continue
+            push!(get!(Vector{LLVM.Value}, nodes, UInt(addr)), node)
+        end
+    end
+    for (addr, ops) in nodes
+        Runtime.object_type(addr) === DataType || continue
+        ph = placeholder(addr)
+        for op in ops
+            LLVM.replace_uses!(op, ph)
+        end
+        changed = true
+    end
+    return changed
+end
+
+const TypeConstantsPass = ModulePass("StaticTypeConstants", placeholder_type_constants!)
 
 is_ours(job) = GPUCompiler.method_table(job) === method_table
 
@@ -111,8 +174,10 @@ is_ours(job) = GPUCompiler.method_table(job) === method_table
                 LLVM.register!(pb, GPUCompiler.CleanupKernelStatePass(job))
                 # and ours
                 LLVM.register!(pb, TagAllocationsPass)
+                LLVM.register!(pb, TypeConstantsPass)
 
                 LLVM.add!(pb, ModulePassManager()) do mpm
+                    LLVM.add!(mpm, "StaticTypeConstants") # (before anything is optimized)
                     GPUCompiler.buildNewPMPipeline!(mpm, job, opt_level)
                 end
                 LLVM.run!(pb, mod, tm)

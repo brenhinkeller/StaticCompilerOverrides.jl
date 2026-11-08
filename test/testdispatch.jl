@@ -32,6 +32,11 @@ dmix(a::DAnimal, b::DAnimal) = 3
 dsize(a::DDog) = 1          # (results of different types)
 dsize(a::DCow) = 2.5
 dsize(a::DAnimal) = "big"
+dany(x::Int) = 1
+dany(x::Any) = 100
+struct DUnregistered; v::Int; end
+dnamed(x::Int) = x
+dnamed(x::DUnregistered) = x.v
 const DALL = DAnimal[DDog(3), DCat(2), DCow(450.5), DFish(12), DHen(5), DBee(2)]
 
 abstract type DOpen end        # (a parametric subtype, whose instances can't be listed)
@@ -76,6 +81,80 @@ dopen(a::DOpenE) = 5
         h() = (v = Any[1, 2.5]; sum(x -> x isa Int ? 1 : 2, v))
         @test static_status(h)[1] == :ok # (the tests of a type are not dispatch)
     end
+    @testset "Any, over the registered types" begin
+        # (new closures for each, so that nothing is taken from what was inferred for another)
+        sum_any() = (v = Any[1, 2.5, 3, Float32(0.5)]; s = 0.0; for x in v; s += x; end; s)
+        @test static_result(() -> round(Int, 10 * sum_any())) == round(Int, 10 * sum_any())
+        plus_one() = (v = Any[1, 2.5, UInt8(3)]; Float64(v[1] + 1) + Float64(v[2] + 1) + Float64(v[3] + 1))
+        @test static_result(() -> round(Int, 10 * plus_one())) == round(Int, 10 * plus_one())
+        two_any() = (a = Any[1, 2.5]; Float64(a[1] + a[2]))
+        @test static_result(() -> round(Int, 10 * two_any())) == round(Int, 10 * two_any())
+        sorted_any() = (v = Any[3, 1.5, 2]; sort!(v); Float64(v[1]) * 10 + Float64(v[3]))
+        @test static_result(() -> round(Int, sorted_any())) == round(Int, sorted_any())
+        # printing a value of `Any`, as `show` does
+        @test static_status(() -> (for x in Any[1, "a", 2.5, :s, nothing, 'c']; println(x); end; 1))[1] == :ok
+        # a method for `Any` is called for the types that are registered as well
+        any_fallback() = (v = Any[1, "a", 2.5]; s = 0; for x in v; s += dany(x); end; s)
+        @test static_result(any_fallback) == any_fallback()
+    end
+
+    @testset "a type that is not registered is an error when running, and registering it" begin
+        exe_output(f; kwargs...) = begin
+            main = StaticCompilerOverrides.make_main(f)
+            exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)); kwargs...)
+            out = IOBuffer()
+            p = run(ignorestatus(pipeline(`$exe`; stdout = out, stderr = devnull)))
+            return p.exitcode, String(take!(out))
+        end
+        code, out = exe_output(() -> (v = Any[1, DUnregistered(1)]; s = 0; for x in v; s += dnamed(x); end; s))
+        @test code == 1
+        @test occursin("MethodError", out) && occursin("dnamed", out)
+        add_dispatch_candidates!(DUnregistered)
+        @test static_result(() -> (v = Any[1, DUnregistered(5)]; s = 0; for x in v; s += dnamed(x); end; s)) == 1 + 5
+    end
+
+    @testset "compiling says what was resolved over the registered types" begin
+        # the messages about the registered types that compiling `f` logs (at the debug level, which `JULIA_DEBUG` shows)
+        function dispatch_messages(f)
+            logger = Test.TestLogger(min_level = Base.CoreLogging.Debug)
+            Base.CoreLogging.with_logger(() -> static_result(f), logger)
+            return filter(r -> occursin("registered types", r.message), logger.logs)
+        end
+        warned() = (v = Any[1, 2.5]; Float64(v[2] * 3))
+        msgs = dispatch_messages(() -> round(Int, warned()))
+        @test length(msgs) == 1 && msgs[1].level == Base.CoreLogging.Debug
+        @test occursin("*", string(msgs[1].kwargs[:calls]))
+        # (not shown unless asked for: nothing is logged at the default level)
+        quiet() = (v = Any[1, 2.5]; Float64(v[2] * 5))
+        @test_logs static_result(() -> round(Int, quiet()))
+        # (not for types that are all listed)
+        listed() = (z = DALL; sum(dvalue, z))
+        @test isempty(dispatch_messages(listed))
+    end
+
+    # LLVM turns tests of a tag against the addresses of several types into a `switch` on `(tag + C)` rotated, with the numbers of the
+    # cases computed from the addresses of the types *in this process*, and so it is not right for the tags of the binary (which are
+    # the addresses of the types that are in it): all of the tests then fail, and the last method is called, for every type. The types
+    # must not be numbers while the code is optimized, so what LLVM would have to do that with is not there.
+    @testset "the tests of the types are not arithmetic on addresses" begin
+        SC = StaticCompilerOverrides.StaticCompiler
+        # (what the code has of the types when it has been optimized, which is when the runtime is added to it)
+        type_numbers = Ref(-1)
+        check(mod) = (type_numbers[] = length(StaticCompilerOverrides.Runtime.type_number_constants(mod)) +
+                          count(a -> StaticCompilerOverrides.Runtime.object_type(a) === DataType, keys(StaticCompilerOverrides.Runtime.inttoptr_constants(mod)));
+                      StaticCompilerOverrides.Runtime.link_runtime!(mod))
+        main = StaticCompilerOverrides.make_main(() -> (s = 0; for a in DALL; s += dvalue(a); end; s))
+        ir = SC.GPUCompiler.JuliaContext() do ctx
+            mod = Base.invokelatest(static_llvm_module, main, Tuple{Int,Ptr{Ptr{UInt8}}}; llvm_postprocess = check)
+            try string(mod) finally SC.LLVM.dispose(mod) end
+        end
+        @test type_numbers[] == 0 # (no addresses of types in the code that was optimized: they were globals that stood for them)
+        @test !occursin("static_type_", ir) # (and they are the types that are in the binary now)
+        # and the right method is called for each type
+        @test static_result(() -> dvalue(DALL[2])) == dvalue(DALL[2])
+        @test static_result(() -> dvalue(DALL[3])) == dvalue(DALL[3])
+    end
+
     @testset "with the collector in stress mode" begin
         @test static_result(() -> sum(dvalue, zoo()); gc = 2) == sum(dvalue, DALL)
     end

@@ -50,7 +50,8 @@ end
 # Code that can't work as a standalone binary is rejected when compiling, rather than crashing
 # (or silently misbehaving) when it is run, unless that is asked for
 @testset "Strict mode" begin
-    printing() = (println(Base.inferencebarrier(Any[1, "a"])); 1) # the type of the argument is not known when compiling (dynamic dispatch)
+    # the type of the stream is not known when compiling (an abstract type that has too many subtypes, none of which is registered: dynamic dispatch)
+    printing() = (io = Base.inferencebarrier(STDOUT)::IO; println(io, "a"); 1)
     main = StaticCompilerOverrides.make_main(printing)
     compile(; kwargs...) = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)); kwargs...)
 
@@ -71,7 +72,7 @@ end
 
     # strict = false compiles code that has dynamic dispatch anyway (and the call aborts the program if
     # it is reached); `allow` accepts specific runtime functions, and keeps the check for the rest
-    dynamic() = (x = Base.inferencebarrier(3); Int(x + 1))
+    dynamic() = (io = Base.inferencebarrier(STDOUT)::IO; println(io, 3); 1)
     dyn_main = StaticCompilerOverrides.make_main(dynamic)
     compile_dynamic(; kwargs...) = Base.invokelatest(compile_executable, dyn_main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(dyn_main)); kwargs...)
     @test_throws UnsupportedCodeError compile_dynamic()

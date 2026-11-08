@@ -24,7 +24,7 @@ include("testing.jl")  # Differential testing: compiled executable vs. ordinary 
 
 export compile_executable, compile_shlib, static_code_llvm, static_code_typed, static_code_native,
        static_llvm_module, @device_override
-export UnsupportedCodeError, add_show_candidates!
+export UnsupportedCodeError, add_show_candidates!, add_dispatch_candidates!
 export StaticIO, StaticFile, STDIN, STDOUT, STDERR
 export static_result, static_status, undefined_symbols, allocation_sites, @static_test
 export gc_live_bytes, gc_collections, gc_heap_bytes

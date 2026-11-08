@@ -55,7 +55,7 @@ Code that can't work in a standalone binary is rejected when compiling, with an 
 
 This works for code whose types the compiler can work out, with the runtime that it needs added. The main limits, which the manual has in full:
 
-* **Dynamic behavior**: dispatch on `Any`, on abstract types with many subtypes, and on types that are only known when the program runs; `eval`; tasks, `Channel`s and threads; non-`const` globals. Dispatch on an abstract type with up to 16 concrete subtypes does work.
+* **Dynamic behavior**: dispatch on `Any` and on abstract types with many subtypes works over a list of registered types (numbers, `String`, `Symbol`, ... and `add_dispatch_candidates!`): a value of another type aborts the program when it reaches such a call, and compiling says what it did this way in a debug message (`JULIA_DEBUG=StaticCompilerOverrides`). Dispatch on an abstract type with up to 16 concrete subtypes is exact. Not supported: types that are only known when the program runs and can't be listed, `eval`, tasks, `Channel`s and threads, non-`const` globals.
 * **Libraries that aren't in the binary**: no `BigInt`, `BigFloat` or `Regex`; BLAS and LAPACK need libblastrampoline and the library behind it at the same paths when the program is run.
 * **Platforms**: macOS and Linux for the collector, and Linux is not tested yet; the machine that compiles is the one that is targeted.
 * **Memory**: the collector is conservative and the heap is not thread-safe (a library called from several threads needs a lock; on a stack that is not its thread's it frees nothing).

@@ -195,13 +195,12 @@ a message and abort if they are ever called (and the addresses will crash the pr
 `allow = ("function_name", ...)` accepts specific runtime functions, and keeps the check for the rest.
 Run with `JULIA_DEBUG=StaticCompilerOverrides` to see which are defined this way.
 
-## Dynamic dispatch on abstract types
+## Dynamic dispatch on abstract types and on `Any`
 
 A call whose argument has an abstract type, such as `area(x)` for an `x` from a `Vector{Shape}`, runs the method that fits the
 type that `x` has when the program is run. In Julia that is a lookup in the method tables, which a standalone binary does not
 have. Here it is resolved when compiling, by what Julia does for a `Union`: test which of the types the argument has, and call
-the method for that type. The union is that of the concrete subtypes of the abstract type that are defined when compiling,
-which are all of the types that an object of the program can have.
+the method for that type.
 
 ```julia
 abstract type Shape end
@@ -215,19 +214,42 @@ main(argc::Int, argv::Ptr{Ptr{UInt8}}) = (println(sum(area, shapes())); 0)
 compile_executable(main, (Int, Ptr{Ptr{UInt8}}), "build")      # works
 ```
 
-It applies to a call that needs a dispatch (more than one method fits), when the type of an argument is abstract and has at
-most 16 concrete subtypes (`StaticCompilerOverrides.DISPATCH_LIMIT[]`), all of which can be listed. It does not apply, and the
-call is rejected as dynamic, for:
+Which types the union has depends on the type of the argument:
 
-* `Any`, and abstract types with too many subtypes (`Number`, `Function`, `AbstractArray`).
-* Abstract types with a parametric subtype whose instances are not known (`struct Box{T} <: Shape`): define the concrete ones
-  that you use (`struct IntBox <: Shape`), or use `Union{Circle,Rect}` for the type of the field.
+* **An abstract type that has up to 16 concrete subtypes, which can all be listed**: the union is of all of them, defined when
+  compiling, and that is all of the types that an object of the program can have. Nothing is left to chance: an object of a type
+  that was not there is a `MethodError`, as in Julia. A package that defines more subtypes of `Shape` adds them to the union, and
+  their methods to the code. (`StaticCompilerOverrides.DISPATCH_LIMIT[]` is the limit of 16.)
+* **`Any`, and abstract types that can't be listed** (`Number`, `AbstractString`, `AbstractArray`, or one that has a parametric
+  subtype whose instances are not known): the union is of the types that are *registered*, that are subtypes of it. These are
+  the numbers, `String`, `Char`, `Symbol`, `Nothing` and `Missing`, the same types that `show` of a value of `Any` uses (so
+  `println(x)` of an element of a `Vector{Any}` works), and what you add:
+
+  ```julia
+  add_dispatch_candidates!(MyType, Tuple{Int,Float64})   # before compiling; the same list as `add_show_candidates!`
+  ```
+
+  A value of a type that is not registered **aborts the program when it reaches such a call**, with a message that says which
+  call (`MethodError: no method matches the types of the arguments of a call of `f``), because it is not known when compiling
+  which types the values of an `Any` can have. So compiling says, once for what it did this way, what was resolved over the
+  registered types, in a debug message (set `JULIA_DEBUG=StaticCompilerOverrides` to see it). Calls on values whose types are all registered
+  are as fast as any other call: it is a few comparisons of the type tag. A binary that does not have such a call is not
+  bigger for the list.
+
+  `Vector{Any}` is not among the usual types for dispatch (though it is for `show`), because it has methods of arithmetic and the like
+  that a call on a number would need: register it if the values that you call things on include lists.
+
+It applies to a call that is a dispatch on the types of its arguments (more than one method fits, or the one that does doesn't fit
+all that the arguments can be). A call of one method that fits all of them is not changed. A call with several arguments of
+these types has a case for each combination, up to 64 of them (`StaticCompilerOverrides.SPLIT_LIMIT[]`): `x + y` of two values of
+`Any` is split, and `sort` of a `Vector{Any}` too.
+
+Still dynamic, and rejected when compiling:
+
+* Types that can't be listed, with no registered subtype (`IO`: use `STDOUT`, `STDERR`, `STDIN`, or a type that you know).
 * Types and methods that are made after compiling (there is no `eval`).
-* Calls that compute a type from the types of the arguments at run time (`Dict(k => v)` of pairs with abstract values,
-  `typejoin`).
-
-The types that are loaded when compiling count: a package that defines more subtypes of `Shape` adds them to the union, and
-their methods to the code. An object of a type that was not there is a `MethodError`, as in Julia.
+* Calls that compute a type from the types of the arguments at run time (`Dict(k => v)` of pairs with abstract values, `typejoin`,
+  `sum(f, v)` of a `Vector{Any}`, whose element type is a union of the results).
 
 ## Memory and the garbage collector
 
@@ -458,14 +480,15 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 
 **What is dynamic**
 
-* **Dynamic dispatch** is resolved for abstract types with at most 16 concrete subtypes that can be listed (see
-  [Dynamic dispatch on abstract types](@ref)); not for `Any`, `Number`, `Function` or other types with many subtypes, nor for parametric
-  subtypes whose instances are not known. These, `Core.Box` variables (a closure that changes a variable that it captures: use a `Ref`),
-  **non-`const` globals**, splatting a collection whose length is not known when compiling (`f(v...)`), and calls that compute a type at
-  run time (`typejoin`, a `Dict` made from pairs with abstract values, `sort(rev = true)`, `isprime`) are rejected when compiling
-  (`UnsupportedCodeError`), or abort the program if compiled with `strict = false`.
-* **Values that are only known at run time** (an element of a `Vector{Any}`) can't be the argument of `objectid`, `hash`, or `===` of
-  types and unions, and `show` of one is limited to a closed set of types (see [`show` of containers, types and structs](@ref)).
+* **Dynamic dispatch** is resolved for abstract types with at most 16 concrete subtypes that can be listed, and for `Any` and the other
+  abstract types over the registered types (see [Dynamic dispatch on abstract types and on `Any`](@ref)): a value of a type that is not
+  registered aborts the program when it reaches such a call. It is not resolved for types that can't be listed and have no registered
+  subtype (`IO`). These, `Core.Box` variables with a type that is not known, **non-`const` globals**, splatting a collection whose
+  length is not known when compiling (`f(v...)`), and calls that compute a type at run time (`typejoin`, a `Dict` made from pairs
+  with abstract values, `sum(f, v)` of a `Vector{Any}`, `isprime`) are rejected when compiling (`UnsupportedCodeError`), or abort the
+  program if compiled with `strict = false`.
+* **Values that are only known at run time** (an element of a `Vector{Any}`) can't be the argument of `objectid` or `hash` unless their types
+  are registered, nor `===` of types and unions, and `show` of one is limited to the registered types (see [`show` of containers, types and structs](@ref)).
 * **Symbols from strings** (`Symbol("a", "b")`) and `deepcopy` (an `IdDict`), `titlecase` (it needs the grapheme breaks of utf8proc),
   the `MersenneTwister` generator, and `Random.seed!(seed)` of the default generator need things of libjulia that are not there.
 

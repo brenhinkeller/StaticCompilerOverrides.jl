@@ -4,7 +4,7 @@ environment_id = "d747b762-a330-4f6e-bc20-fedef305c130"
 environment_name = "StaticCompilerOverrides"
 julia_version = "1.14.0-alpha2"
 manifest_format = "2.2"
-project_hash = "10bba93deb4436bc5b9d340b52a6c4cf332b9a69"
+project_hash = "5067106639891162a8880a5fe30c7a6ce2766c1a"
 
 [[deps.Artifacts]]
 uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
@@ -93,10 +93,10 @@ version = "1.11.0"
 
 [[deps.GPUCompiler]]
 deps = ["CompilerCaching", "ExprTools", "InteractiveUtils", "LLVM", "Libdl", "Logging", "PrecompileTools", "Preferences", "REPL", "ScopedValues", "TOML", "Tracy", "UUIDs", "tree_sitter_gcn_jll", "tree_sitter_llvm_jll", "tree_sitter_ptx_jll", "tree_sitter_spirv_jll"]
-git-tree-sha1 = "65175d8064f99fc7a27cc9b69bed573b35ee080e"
+git-tree-sha1 = "9bb654f2d3732e4f54b952078b27079d13572739"
 registries = "General"
 uuid = "61eb1bfa-7361-4325-ad38-22787b887f55"
-version = "2.21.0"
+version = "2.22.0"
 
     [deps.GPUCompiler.extensions]
     CthulhuExt = "Cthulhu"
@@ -365,7 +365,7 @@ version = "1.11.0"
 
 [[deps.StaticCompiler]]
 deps = ["Clang_jll", "GPUCompiler", "InteractiveUtils", "LLD_jll", "LLVM", "Libdl", "MacroTools", "Serialization", "StaticTools"]
-git-tree-sha1 = "4a0db8057b39df9f48a09296c5890cfd255432b7"
+git-tree-sha1 = "346e86c300e93621d82742034394be9f5e3c933f"
 repo-rev = "postprocess"
 repo-url = "https://github.com/tshort/StaticCompiler.jl"
 uuid = "81625895-6c0f-48fc-b932-11a18313743c"
@@ -375,7 +375,7 @@ version = "0.7.5"
     julia_version = "1.11.0"
 
 [[deps.StaticCompilerOverrides]]
-deps = ["GPUCompiler", "LLVM", "Printf", "Random", "Reexport", "StaticCompiler", "StaticTools", "Test"]
+deps = ["GPUCompiler", "InteractiveUtils", "LLVM", "Printf", "Random", "Reexport", "StaticCompiler", "StaticTools", "Test"]
 path = "."
 uuid = "d747b762-a330-4f6e-bc20-fedef305c130"
 version = "0.1.0"
@@ -385,9 +385,8 @@ version = "0.1.0"
 
 [[deps.StaticTools]]
 deps = ["Bumper", "LinearAlgebra", "ManualMemory", "Random"]
-git-tree-sha1 = "9ae2ad3afd0245c78a2bcc010aef402c3bb86056"
-repo-rev = "printf"
-repo-url = "https://github.com/brenhinkeller/StaticTools.jl"
+git-tree-sha1 = "2f099a395520e6f23265acb7ca739a5dc29f4856"
+registries = "General"
 uuid = "86c06d3c-3f03-46de-9781-57580aa96d0a"
 version = "0.9.1"
 
