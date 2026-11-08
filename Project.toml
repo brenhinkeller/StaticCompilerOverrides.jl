@@ -19,7 +19,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 StaticCompiler = {rev = "postprocess", url = "https://github.com/tshort/StaticCompiler.jl"}
 
 [compat]
-GPUCompiler = "2"
+GPUCompiler = "2.19"
 InteractiveUtils = "1"
 LLVM = "10"
 Libdl = "1"

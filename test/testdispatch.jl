@@ -161,6 +161,16 @@ end
     @test splitting(SC.StaticCompilerParams(); method_table = StaticCompilerOverrides.method_table) == Core.Compiler.InferenceParams().max_union_splitting
     @test splitting(SC.StaticCompilerParams()) == Core.Compiler.InferenceParams().max_union_splitting
     @test splitting(StaticCompilerOverrides.OverridesParams(); method_table = StaticCompilerOverrides.method_table) >= StaticCompilerOverrides.SPLIT_LIMIT[]
+    # the interpreter of our compilations is of a type of its own (so that the methods that change inference are for it only); StaticCompiler's own
+    # compilations have GPUCompiler's interpreter, whatever is loaded
+    interpreter(params; kwargs...) = SC.GPUCompiler.get_interpreter(first(SC.static_job(identity, (Int,); params, kwargs...)))
+    @test interpreter(StaticCompilerOverrides.OverridesParams(); method_table = StaticCompilerOverrides.method_table) isa StaticCompilerOverrides.OverridesInterpreter
+    @test !(interpreter(SC.StaticCompilerParams()) isa StaticCompilerOverrides.OverridesInterpreter)
+    @test !(interpreter(SC.StaticCompilerParams(); method_table = StaticCompilerOverrides.method_table) isa StaticCompilerOverrides.OverridesInterpreter)
+    # and they infer as they did: what `invokelatest` calls is not known to them
+    plain_invokelatest() = Base.invokelatest(+, Base.inferencebarrier(1)::Int, 2)
+    @test first(SC.static_code_typed(plain_invokelatest, ())).second === Any
+    @test first(static_code_typed(plain_invokelatest, ())).second === Int
 end
 
 # A call with an argument of the type `Any` that has no method for any of the registered types (the only method is for a `Vector`, which

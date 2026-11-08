@@ -197,6 +197,11 @@ Run with `JULIA_DEBUG=StaticCompilerOverrides` to see which are defined this way
 
 ## Dynamic dispatch on abstract types and on `Any`
 
+*How this is done without changing other compilations.* The changes to inference (resolving the dispatch, `invokelatest`) are methods of functions of Julia's compiler
+for an interpreter of a type that only our compilations have: the type of GPUCompiler's `GPUInterpreter` has the view of the method tables that it looks methods up in as a
+parameter, and our compilations choose a view of a type of their own (`OverridesTableView`, through `GPUCompiler.method_table_view`). What StaticCompiler compiles on its own, in the
+same session, has GPUCompiler's own interpreter and is not changed.
+
 A call whose argument has an abstract type, such as `area(x)` for an `x` from a `Vector{Shape}`, runs the method that fits the
 type that `x` has when the program is run. In Julia that is a lookup in the method tables, which a standalone binary does not
 have. Here it is resolved when compiling, by what Julia does for a `Union`: test which of the types the argument has, and call
@@ -468,6 +473,9 @@ seed)` works for explicitly constructed generators. The default generator is not
 there are no threads. `Random.seed!(seed)` on the default generator does not work yet.
 
 ## Code from packages
+
+(The survey that this section reports is kept as tests, `test/packages` — Distributions.jl, NaNStatistics.jl and StatsBase.jl, each program compared with Julia — and
+run on CI as a job of its own.)
 
 Code of packages compiles like the code of Base: nothing is needed from the package. What packages do that Base's code seldom does is
 handled here, found by compiling [Distributions.jl](https://github.com/JuliaStats/Distributions.jl),
