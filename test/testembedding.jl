@@ -4,8 +4,6 @@
 # offset into the address). Objects are recognized by their type tag, which is the word before
 # them, and for a pointer into a string, that word is the string's length: which looks like a valid
 # tag for some lengths. Check that, for every length, the right object is found.
-using Test
-using LLVM: LLVM, @dispose
 
 @testset "Embedding constants: interior pointers" begin
     SC = StaticCompilerOverrides.StaticCompiler
@@ -78,7 +76,6 @@ end
 # Constants are shared by all the functions of a library: they are compiled separately (and then
 # linked), and a mutable object that they all refer to has to remain one object
 @testset "Embedding constants: shared state across functions" begin
-    using Libdl: dlopen, dlsym, dlclose
     @eval const SHARED_COUNTER = Ref(0)
     @eval shared_inc() = (SHARED_COUNTER[] += 1; Int(SHARED_COUNTER[]))
     @eval shared_get() = Int(SHARED_COUNTER[])

@@ -1,11 +1,4 @@
 # BLAS through libblastrampoline: the program uses the library that was forwarded to when it was compiled
-using Test, LinearAlgebra
-if Base.find_package("StaticCompilerOverrides") === nothing
-    include(joinpath(@__DIR__, "..", "src", "StaticCompilerOverrides.jl"))
-    using .StaticCompilerOverrides
-else
-    using StaticCompilerOverrides
-end
 
 blas_work() = (a = [sin(i + 2j) for i in 1:30, j in 1:30]; b = [cos(i - j) for i in 1:30, j in 1:30];
                x = (a + 10I) \ b[:, 1];
@@ -29,7 +22,7 @@ blas_work() = (a = [sin(i + 2j) for i in 1:30, j in 1:30]; b = [cos(i - j) for i
             Core.eval(Main, :(using AppleAccelerate))
             before = BLAS.get_config()
             try
-                Base.invokelatest(Main.AppleAccelerate.load_accelerate)
+                Base.invokelatest(() -> Main.AppleAccelerate.load_accelerate()) # (the module was loaded just now: a newer world)
                 @test any(l -> occursin("Accelerate", l.libname), BLAS.get_config().loaded_libs)
                 @test static_result(blas_work) == blas_work()
             finally

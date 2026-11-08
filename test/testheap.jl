@@ -1,6 +1,5 @@
 # The heap that allocation comes from, and the garbage collector (src/heap.jl): the allocators themselves, on the host, and
-# what they do to programs. Included by runtests.jl, after corpus.jl has loaded StaticCompilerOverrides.
-using Test, Random
+# what they do to programs. Included by runtests.jl.
 
 const Heap = StaticCompilerOverrides.Runtime.Heap
 

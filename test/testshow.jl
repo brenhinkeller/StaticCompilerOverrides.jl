@@ -1,6 +1,5 @@
 # `show` of containers, types and structs (src/show.jl): the output of the compiled program is exactly that of
 # Julia, and the strings that are made when compiling are what Base makes. Included by runtests.jl.
-using Test
 
 struct ShowPt; x::Int; y::Float64; end
 struct ShowBox{T}; v::T; end

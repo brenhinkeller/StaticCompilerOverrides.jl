@@ -1,8 +1,6 @@
 # Type tags, `isa` on boxed values and on constants, and the lowering of the `switch`es on tags (src/tags.jl,
 # src/runtime.jl). These are what depends most on how the Julia version lays out objects and generates code, so
 # they are the tests to look at first when a new version of Julia breaks something. Included by runtests.jl.
-using Test
-using LLVM
 
 struct TagA; x::Int; end
 struct TagB; x::Float64; end

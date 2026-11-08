@@ -1,5 +1,4 @@
 # The tables of the properties of characters (src/unicode.jl) agree with utf8proc for every code point
-using Test
 
 @testset "Unicode tables" begin
     U = StaticCompilerOverrides

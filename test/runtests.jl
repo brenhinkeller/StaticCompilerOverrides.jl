@@ -1,14 +1,14 @@
-using Test
-include("corpus.jl")
-include("testruntime.jl")
-include("testembedding.jl")
-include("testunicode.jl")
-include("testtags.jl")
-include("testobjectid.jl")
-include("testshow.jl")
-include("testheap.jl")
-include("testblas.jl")
-include("testdispatch.jl")
+using Test, Random, Printf, LinearAlgebra, Libdl
+using LLVM
+using LLVM: @dispose
+if Base.find_package("StaticCompilerOverrides") === nothing
+    include(joinpath(@__DIR__, "..", "src", "StaticCompilerOverrides.jl"))
+    using .StaticCompilerOverrides
+else
+    using StaticCompilerOverrides
+end
+
+include("corpus.jl") # (the helpers and the corpus that the tests below use)
 
 # Idioms that must compile to a standalone executable giving the same result as Julia.
 # Known gaps, and what is needed. When one starts working, its `@test_broken` fails (as an
@@ -86,3 +86,13 @@ end
     ok_main = StaticCompilerOverrides.make_main(ok)
     @test isfile(Base.invokelatest(compile_executable, ok_main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(ok_main))))
 end
+
+include("testblas.jl")
+include("testdispatch.jl")
+include("testembedding.jl")
+include("testobjectid.jl")
+include("testheap.jl")
+include("testruntime.jl")
+include("testshow.jl")
+include("testtags.jl")
+include("testunicode.jl")

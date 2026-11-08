@@ -1,6 +1,5 @@
 # The minimal runtime of statically compiled code (src/runtime.jl): allocation without a GC, and
-# exceptions. Included by runtests.jl, after corpus.jl has loaded StaticCompilerOverrides.
-using Test
+# exceptions. Included by runtests.jl.
 
 # compile `main(argc, argv)`, run it, and return what it prints
 function run_main(main; dir = mktempdir())

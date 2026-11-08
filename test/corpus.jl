@@ -1,12 +1,5 @@
 # Coverage corpus: idioms of increasing "dynamism", each a zero-argument function whose
 # result is compared between Julia and a compiled standalone executable.
-using Random, Printf, LinearAlgebra
-if Base.find_package("StaticCompilerOverrides") === nothing
-    include(joinpath(@__DIR__, "..", "src", "StaticCompilerOverrides.jl"))
-    using .StaticCompilerOverrides
-else
-    using StaticCompilerOverrides
-end
 
 @noinline thrower(x::Int) = x > 0 ? throw(ArgumentError("boom")) : x
 @noinline thrower3(x::Int) = x == 1 ? throw(ArgumentError("a")) : x == 2 ? throw(DomainError(x, "b")) : [1, 2, 3][x + 10]

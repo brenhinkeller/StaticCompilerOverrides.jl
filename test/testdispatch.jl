@@ -1,11 +1,4 @@
 # Dynamic dispatch on abstract types: resolved when compiling, by union splitting over the concrete subtypes (`src/dispatch.jl`)
-using Test
-if Base.find_package("StaticCompilerOverrides") === nothing
-    include(joinpath(@__DIR__, "..", "src", "StaticCompilerOverrides.jl"))
-    using .StaticCompilerOverrides
-else
-    using StaticCompilerOverrides
-end
 
 abstract type DAnimal end
 abstract type DPet <: DAnimal end
@@ -158,4 +151,14 @@ dopen(a::DOpenE) = 5
     @testset "with the collector in stress mode" begin
         @test static_result(() -> sum(dvalue, zoo()); gc = 2) == sum(dvalue, DALL)
     end
+end
+
+# GPUCompiler's functions are specialized for the parameters of this package only: what StaticCompiler compiles on its own is unchanged
+@testset "Our compilations only" begin
+    SC = StaticCompilerOverrides.StaticCompiler
+    splitting(params; kwargs...) = SC.GPUCompiler.inference_params(first(SC.static_job(identity, (Int,); params, kwargs...))).max_union_splitting
+    # (also with our method table: it is the parameters that tell)
+    @test splitting(SC.StaticCompilerParams(); method_table = StaticCompilerOverrides.method_table) == Core.Compiler.InferenceParams().max_union_splitting
+    @test splitting(SC.StaticCompilerParams()) == Core.Compiler.InferenceParams().max_union_splitting
+    @test splitting(StaticCompilerOverrides.OverridesParams(); method_table = StaticCompilerOverrides.method_table) >= StaticCompilerOverrides.SPLIT_LIMIT[]
 end

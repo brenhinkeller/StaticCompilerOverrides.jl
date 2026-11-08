@@ -1,7 +1,6 @@
 # `objectid`, so that a struct can be the key of a `Dict` or a `Set` (src/objectid.jl): the number is exactly Julia's
 # (a `Dict` made when compiling is in the binary, and looked up in with the numbers that the program makes), and what
 # uses it compiles. Included by runtests.jl.
-using Test
 
 struct OidPt; x::Int; y::Float64; end
 struct OidPad; a::UInt8; b::Int64; end
@@ -17,7 +16,7 @@ mutable struct OidMut; x::Int; end
 const OID_DICT = Dict(OidNamed("a", 1) => 10, OidNamed("b", 2) => 20, OidNamed("c", 3) => 30)
 const OID_PTS = Dict(OidPt(1, 2.0) => 1, OidPt(3, 4.0) => 2)
 
-@testset "objectid" begin
+@testset "Objectid" begin
     S = StaticCompilerOverrides
     # the same number as Julia: for the sizes of values that are hashed in different ways (1, 2, 4, 8 and more bytes, of
     # which more than one block of the hash), padding, Unions, references, nested structs, and strings
