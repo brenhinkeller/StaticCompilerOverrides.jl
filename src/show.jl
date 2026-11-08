@@ -161,23 +161,25 @@ Base.typeinfo_prefix(io::ShowStream, X) = typeinfo_prefix_static(typeinfo_of(io)
 
 ## `Symbol`s
 
-# Base decides whether a `Symbol` prints as `:name` with the tables of the parser (`isidentifier`, `isoperator`,
-# ...), which are in libjulia. The names that are plain ASCII identifiers print as `:name` in Base and here;
-# for any other it's an error, as printing it differently from Base would be wrong
+# Base decides how a `Symbol` is written (`:name`, an operator, `Symbol("a b")`) with the tables of the parser, which are in libjulia. A name that is a
+# plain ASCII identifier is `:name`, as in Base. For the other symbols that are in the binary the text is what Julia writes, which is made
+# when linking (`define_symbol_texts!`); of those that the program makes, the names that are certainly not identifiers or operators are
+# `Symbol("...")`, and for any other it's an error, as printing it differently from Base would be wrong
 function Base.show(io::ShowStream, s::Symbol)
-    n = ncodeunits(string(s))
-    str = string(s)
-    ok = n > 0
-    i = 1
-    while ok && i <= n
-        c = codeunit(str, i)
-        isalpha = (UInt8('a') <= c <= UInt8('z')) || (UInt8('A') <= c <= UInt8('Z')) || c == UInt8('_')
-        isother = (UInt8('0') <= c <= UInt8('9')) || c == UInt8('!')
-        ok = isalpha || (i > 1 && isother)
-        i += 1
+    if symbol_is_plain(s)
+        print(io, ':', string(s))
+        return nothing
     end
-    ok || error("show: a Symbol that is not an ASCII identifier is not supported")
-    print(io, ':', str)
+    text = symbol_text(s)
+    if text != 0
+        unsafe_write(io, Ptr{UInt8}(text), UInt(@symbolcall strlen(Ptr{UInt8}(text)::Ptr{UInt8})::Int64))
+    elseif symbol_is_certainly_quoted(s)
+        print(io, "Symbol(")
+        show(io, string(s))
+        print(io, ')')
+    else
+        error("show: a Symbol that the program made, and that is not an ASCII identifier, is not supported")
+    end
     return nothing
 end
 

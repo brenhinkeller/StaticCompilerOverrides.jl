@@ -139,9 +139,28 @@ main() = (println(Any[1, "a", Point(2, 3.5), (4, 5.0)]); 0)
 
 Limits: what is shown is not cut (`:limit`) and containers that contain themselves are not detected (they recurse until the program crashes); an
 `IOContext(io, :compact => true)` (or `:limit`, `:displaysize`, ...) of one of these streams is **accepted but ignored**: the output is not compacted or cut; a
-`Symbol` that is not a plain ASCII identifier (an operator, say) is an error; and the names of types of modules other
+`Symbol` that the program makes and that is not a plain ASCII identifier is written as Base writes it only if that is clear without the parser's tables
+(`Symbol("a b")`, `Symbol("1a")`, `Symbol("")`), and else it is an error (the symbols that were there when compiling, such as `:+` or `:α`, are written as Julia writes them: see
+[Symbols](@ref)); and the names of types of modules other
 than `Main` that the program makes visible with `using`/`import` are written with their module (Base writes
 `Main`'s view of them).
+
+## Symbols
+
+Julia keeps every symbol in one table, so that there is one object for each name and `===` of symbols compares addresses. A program has no such table, so:
+
+* The symbols that the program has when it is compiled are copied into it, as any constant is, so `Dict`s and `Set`s of symbols that are `const` work (a symbol
+  hashes by a number that is in it, which the copy has too), and so does `string(sym)`, `print`, `sort`, `startswith(string(sym), ...)`, and the like.
+* `Symbol("abc")`, `Symbol("x", 1)`, `Symbol(uppercase(string(s)))` and `Symbol(::Vector{UInt8})` of a name that the program makes work too. The binary has a list of
+  its symbols, sorted by name, that is looked in first, so `Symbol("abc") === :abc` and a `Dict` that was made when compiling finds a key that the program made; a name
+  that is not in it is made into a new symbol, kept in a tree (the same as the table of Julia is: by hash and name). These symbols are never freed (40 bytes and the name
+  for each different name), and their names can't have a NUL in them.
+* `show` of a symbol writes `:name` for a name that is a plain ASCII identifier. For other symbols, Julia decides with tables of its parser (`:+`, `:(==)`, `:α`, `Symbol("a b")`):
+  for those that the binary has, it writes what Julia writes (the text is made when linking); for those that the program makes, only the names that are certainly not
+  identifiers or operators (empty, with a space or a control character or a quote, or starting with a digit) are written, as `Symbol("...")`; any other is an error.
+* Types as keys: `==` of types, `hash` of a `DataType`, and so `Dict{DataType,...}` and `Set{DataType}`, work (a type hashes by the number that it has in it). `==` of types
+  that are not both concrete (a `Union`, an abstract type with parameters) goes by `<:` (see [Dynamic dispatch on abstract types and on `Any`](@ref)).
+* Not supported: `getfield(x, name)` and `x[name]` of a `NamedTuple` with a `Symbol` that is only known when the program runs (it needs the types of the fields).
 
 ## Entry points
 
@@ -497,9 +516,9 @@ handled here, found by compiling [Distributions.jl](https://github.com/JuliaStat
   keys that are numbers is slow.
 * **`deepcopy`** works for any struct, array, dictionary, tuple or string, with shared and cyclic references kept as in Julia. Base reads the fields of a struct by a number that
   is only known when the program runs; here each type is copied field by field, each of its own type, made when compiling (`src/deepcopy.jl`). A field of the type `Any` or of an
-  abstract type is copied over the registered types (see [`add_dispatch_candidates!`](@ref)). A method of `deepcopy_internal` that a package defines for its own type is not used
-  (the struct is copied field by field: the methods that there are can't be looked up when compiling), and `BigInt`, `BigFloat`, locks and `SimpleVector`s are not supported.
-* **`reshape(x, :, n)`**, **functions and `Colon()` in messages** (`string(sin)`, `show(:)`), and **`Symbol`s that are not known when compiling** (printing them, or in a `string`).
+  abstract type is copied over the registered types (see [`add_dispatch_candidates!`](@ref)). A method of `deepcopy_internal` that a package defines for its own type can't be used:
+  compiling warns, and the program stops if it reaches the copy of such a type (it is not copied field by field, which would be a different result). And `BigInt`, `BigFloat`, locks and `SimpleVector`s are not supported.
+* **`reshape(x, :, n)`**, and **functions and `Colon()` in messages** (`string(sin)`, `show(:)`).
 
 Compiled and compared with Julia in the survey (the results rounded to 6 digits, because of the last bit of libm):
 
@@ -574,7 +593,7 @@ What does not work yet, or works differently from Julia, gathered in one place. 
   program if compiled with `strict = false`.
 * **Values that are only known at run time** (an element of a `Vector{Any}`) can't be the argument of `objectid` or `hash` unless their types
   are registered, nor `===` of types and unions, and `show` of one is limited to the registered types (see [`show` of containers, types and structs](@ref)).
-* **Symbols from strings** (`Symbol("a", "b")`), `titlecase` (it needs the grapheme breaks of utf8proc),
+* `titlecase` of a string (it needs the grapheme breaks of utf8proc),
   the `MersenneTwister` generator, and `Random.seed!(seed)` of the default generator need things of libjulia that are not there.
 
 **What a binary starts with**

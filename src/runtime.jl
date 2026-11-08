@@ -2105,6 +2105,9 @@ end
 # at fields of an object (e.g., the data of a string)
 function object_extent(T::DataType, base::UInt)
     T === String && return 8 + unsafe_load(Ptr{Int}(base)) + 1
+    # a symbol is { left, right, hash, name, NUL }: the code reads its hash (`objectid`, so `hash` and a `Dict` of symbols) and its
+    # name (`string`) with an address in it, that of the field
+    T === Symbol && return 24 + Int(ccall(:strlen, Csize_t, (Ptr{UInt8},), Ptr{UInt8}(base + 24))) + 1
     if T <: Core.GenericMemory
         ET = eltype(T)
         len = unsafe_load(Ptr{Int}(base))
@@ -2524,7 +2527,81 @@ function embed_constants!(e::ObjectEmbedder)
         isempty(dead) && break
         foreach(LLVM.erase!, dead)
     end
+    changed |= define_symbol_table!(e)
+    changed |= define_symbol_texts!(e)
     return changed
+end
+
+# whether a name is a plain ASCII identifier, which is written `:name` by `show` (the same test is made for the symbols of the program, in `show.jl`)
+function plain_symbol_name(name)
+    isempty(name) && return false
+    for (i, c) in enumerate(name)
+        isalpha = (UInt8('a') <= c <= UInt8('z')) || (UInt8('A') <= c <= UInt8('Z')) || c == UInt8('_')
+        isother = (UInt8('0') <= c <= UInt8('9')) || c == UInt8('!')
+        (isalpha || (i > 1 && isother)) || return false
+    end
+    return true
+end
+
+# The symbols of the binary: (name, its global, the address in this process), sorted by name (by the bytes, the shorter first, as
+# `compare_symbol_name` in `symbols.jl` does)
+function embedded_symbol_globals(mod::LLVM.Module)
+    found = Tuple{Vector{UInt8},LLVM.GlobalVariable,UInt}[]
+    for g in LLVM.globals(mod)
+        name = LLVM.name(g)
+        startswith(name, "static_object_") || continue
+        addr = tryparse(UInt, first(split(name[15:end], '.')), base = 16)
+        (addr === nothing || object_type(addr) !== Symbol) && continue
+        len = Int(ccall(:strlen, Csize_t, (Ptr{UInt8},), Ptr{UInt8}(addr + 24)))
+        push!(found, (copy(unsafe_wrap(Array, Ptr{UInt8}(addr + 24), len)), g, addr))
+    end
+    return sort!(found; by = first)
+end
+
+# Replace the reference (a declaration) that the code has to a list of symbols by the list: a constant `{ count, words... }`
+function define_symbol_list!(mod::LLVM.Module, name::AbstractString, words::Vector{LLVM.Constant})
+    old = get(LLVM.globals(mod), name, nothing)
+    old === nothing && return false
+    table = LLVM.ConstantArray(LLVM.Int64Type(), words)
+    new = LLVM.GlobalVariable(mod, LLVM.value_type(table), string(name, "_list"))
+    LLVM.initializer!(new, table)
+    LLVM.constant!(new, true)
+    LLVM.linkage!(new, LLVM.API.LLVMInternalLinkage)
+    LLVM.replace_uses!(old, new)
+    LLVM.erase!(old)
+    return true
+end
+
+symbol_address(g) = LLVM.const_ptrtoint(LLVM.const_gep(LLVM.Int8Type(), g, [i64(EMBED_HEADER)]), LLVM.Int64Type())
+
+# The symbols that are in the binary, as the list that `Symbol(string)` looks in (see `symbols.jl`): { count, the address of each symbol },
+# sorted by name. Only if the code has the reference that asks for it (`_static_symbols`): the list keeps all the symbols alive.
+function define_symbol_table!(e::ObjectEmbedder)
+    haskey(LLVM.globals(e.mod), "_static_symbols") || return false
+    found = embedded_symbol_globals(e.mod)
+    return define_symbol_list!(e.mod, "_static_symbols", LLVM.Constant[i64(length(found)), (symbol_address(g) for (_, g, _) in found)...])
+end
+
+# The text that `show` of a symbol writes, for the symbols of the binary that it is not `:name` for (an operator, a name that is not an identifier,
+# one with characters other than ASCII): what Julia writes, which is decided by tables of its parser that are not in the binary. As
+# { count, (the address of the symbol, the address of the text as a C string)... }, sorted by name.
+function define_symbol_texts!(e::ObjectEmbedder)
+    mod = e.mod
+    haskey(LLVM.globals(mod), "_static_symbol_texts") || return false
+    words = LLVM.Constant[]
+    n = 0
+    for (name, g, addr) in embedded_symbol_globals(mod)
+        plain_symbol_name(name) && continue
+        text = repr(unsafe_pointer_to_objref(Ptr{Cvoid}(addr))::Symbol)
+        bytes = LLVM.ConstantDataArray(LLVM.Int8Type(), UInt8[codeunits(text)..., 0x00])
+        tg = LLVM.GlobalVariable(mod, LLVM.value_type(bytes), "static_symbol_text_$n")
+        LLVM.initializer!(tg, bytes)
+        LLVM.constant!(tg, true)
+        LLVM.linkage!(tg, LLVM.API.LLVMInternalLinkage)
+        push!(words, symbol_address(g), LLVM.const_ptrtoint(tg, LLVM.Int64Type()))
+        n += 1
+    end
+    return define_symbol_list!(mod, "_static_symbol_texts", LLVM.Constant[i64(n), words...])
 end
 
 include("blas.jl") # BLAS and LAPACK, through libblastrampoline
