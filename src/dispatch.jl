@@ -176,7 +176,7 @@ function CC.abstract_call_gf_by_type(interp::GPUCompiler.GPUInterpreter, @nospec
             max_methods = max(max_methods, SPLIT_LIMIT[]) # (one method for each type, at most)
             if registered
                 fname = f isa Function ? nameof(f) : f isa Type ? f : nameof(typeof(f))
-                key = string(fname, "(", join(("::" * string(CC.widenconst(T)) for T in original[2:end]), ", "), ")")
+                key = string(fname, "(", join(("::" * (T isa Core.TypeofVararg ? string(T) : string(CC.widenconst(T))) for T in original[2:end]), ", "), ")")
                 REGISTERED_CALLS[key] = get(REGISTERED_CALLS, key, 0) + 1
             end
         end

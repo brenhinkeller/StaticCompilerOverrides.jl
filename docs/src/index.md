@@ -367,7 +367,12 @@ the tags and `isa` with abstract types read (names, parameters). Details are in 
 subtyping algorithm is not in the binary. The types that it is asked about are constants of the code, and the types
 that an object can have are those in the binary, so the answers are worked out when compiling, with Julia's own `<:`, and
 written out as the function `ijl_subtype`: a table of which types in the binary are subtypes of each type that is asked
-about. A type that is computed when the program runs (`isa(x, types[i])`) is not a constant: it is rejected when compiling.
+about. When the type is not a constant of the code (`isa(x, types[i])`, `a <: b` of two elements of a `Vector{DataType}`, `eltype(c) <: C`), the table
+has an answer for each pair of the types that are in the binary (a bit each, found by searching for the two types), and `jl_f_issubtype` and `jl_f_isa`, the
+builtins that these calls are, look in it. So `<:` and `isa` work for any types that are in the binary: the types of its objects, the types that it names, and the
+types that those refer to. A type that the program makes up (`Vector{T}` for a `T` that is computed, anything with a `TypeVar`) is not in the binary, and the program exits with a
+message if it is asked about; `a <: b` of types that a function builds this way is rejected when compiling. The table has a row and a column for each type in the binary, so it
+grows with the square of their number (about 125 kB for a thousand types), and is only there if the code asks about types that are not constants.
 
 ## Binary size
 
@@ -496,6 +501,12 @@ Compiled and compared with Julia in the survey (the results rounded to 6 digits,
   `skewness`, `kurtosis`, `mad`, `iqr`, `cor`, `cov`, `autocor`, `pacf`, `corspearman`, `corkendall`, ranks, `countmap`, `proportionmap`, `entropy`, `kldivergence`, `Histogram`, `ecdf`,
   `zscore` and `ZScoreTransform`, `sample` and `wsample` (with and without replacement, weighted) with a generator that is given, ... The two that don't: `summarystats` (it splats a
   `Vector` of a length that is not known into a constructor, `SummaryStats(m, sd, qs..., n)`), and `normalize` of a `Histogram` (a `deepcopy` of a struct).
+
+* **[Thermochron.jl](https://github.com/brenhinkeller/Thermochron.jl)** (forward models; 19 cases in the survey): helium diffusion (`SphericalHe`, `PlanarHe`, `ZirconHe`, `ApatiteHe` with RDAAM and ZRDAAM
+  annealing, `SphericalAr`), fission track ages (`ZirconFT`, `ApatiteFT` with the Ketcham and Yamada/Guenthner models), vitrinite reflectance with a `NielsenBasinRo` that is a constant, and
+  `model!` over a `Vector` of one concrete type of chronometer (`Vector{ApatiteHe{...}}`), with the chronometers built when compiling or by the program. Not yet: `model!` over a vector
+  of chronometers of several types (`AbsoluteChronometer`, `FissionTrackSample`), because `model!` prints chronometers in a debugging message (`@info chrons[imax]`) and takes `argmax` over a union of many types, both dynamic
+  (`eltype(c) <: C` now works, see [Binary size](@ref)); `NielsenBasinRo()` built by the program (it splats a vector into a tuple); and the MCMC functions, which are not tried yet.
 
 ## Known limitations
 

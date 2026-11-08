@@ -120,3 +120,20 @@ sb_case9() = (a = ["a", "bc"]; length(deepcopy(a)[2]))
         @static_test sb_case9()
     end
 end
+
+# Found compiling Thermochron.jl: an immutable struct of many fields (a `SphericalHe` is 392 bytes) that is a constant: its fields
+# beyond 256 bytes were looked for as objects of their own, and not found
+struct ManyFields
+    a1::Vector{Int}; a2::Vector{Int}; a3::Vector{Int}; a4::Vector{Int}; a5::Vector{Int}; a6::Vector{Int}; a7::Vector{Int}; a8::Vector{Int}
+    b1::Vector{Int}; b2::Vector{Int}; b3::Vector{Int}; b4::Vector{Int}; b5::Vector{Int}; b6::Vector{Int}; b7::Vector{Int}; b8::Vector{Int}
+    c1::Vector{Int}; c2::Vector{Int}; c3::Vector{Int}; c4::Vector{Int}; c5::Vector{Int}; c6::Vector{Int}; c7::Vector{Int}; c8::Vector{Int}
+    d1::Vector{Int}; d2::Vector{Int}; d3::Vector{Int}; d4::Vector{Int}; d5::Vector{Int}; d6::Vector{Int}; d7::Vector{Int}; d8::Vector{Int}
+    e1::Vector{Int}; e2::Vector{Int}; e3::Vector{Int}; e4::Vector{Int}; e5::Vector{Int}; e6::Vector{Int}; e7::Vector{Int}; e8::Vector{Int}
+    name::String
+end
+const MANY = ManyFields((([i] for i in 1:40)..., "many")...)
+many_sum(m::ManyFields) = m.a1[1] + m.b8[1] + m.c3[1] + m.d8[1] + m.e1[1] + m.e8[1] + ncodeunits(m.name)
+@testset "Large constant structs" begin
+    @test sizeof(MANY) > 256
+    @static_test many_sum(MANY)
+end

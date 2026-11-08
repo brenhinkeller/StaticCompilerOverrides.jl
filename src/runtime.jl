@@ -802,6 +802,139 @@ function define_subtype!(e, queries::Vector{UInt}) # (e::ObjectEmbedder, which i
     return
 end
 
+# `a <: b` for two types that are only known when the program runs (a `Vector{DataType}` of the types of some objects, compared
+# with a type): `jl_f_issubtype`, the builtin, which is `ijl_subtype` with its arguments in an array and its result boxed; and
+# `x isa T` for a type `T` that is only known then: the same with the type of `x`, which is its tag
+function define_subtype_builtins!(mod::LLVM.Module)
+    fns = LLVM.functions(mod)
+    wanted(name) = haskey(fns, name) && LLVM.isdeclaration(fns[name]) && !isempty(LLVM.uses(fns[name]))
+    (wanted("jl_f_issubtype") || wanted("jl_f_isa")) || return false
+    ptrT, i64 = LLVM.PointerType(), LLVM.Int64Type()
+    sub_t = LLVM.FunctionType(LLVM.Int32Type(), [ptrT, ptrT])
+    sub = haskey(fns, "ijl_subtype") ? fns["ijl_subtype"] : LLVM.Function(mod, "ijl_subtype", sub_t)
+    globals = LLVM.globals(mod)
+    jl_true = haskey(globals, "jl_true") ? globals["jl_true"] : LLVM.GlobalVariable(mod, ptrT, "jl_true")
+    jl_false = haskey(globals, "jl_false") ? globals["jl_false"] : LLVM.GlobalVariable(mod, ptrT, "jl_false")
+    small = nothing
+    if wanted("jl_f_isa")
+        small = haskey(globals, "jl_small_typeof") ? globals["jl_small_typeof"] :
+                LLVM.GlobalVariable(mod, LLVM.ArrayType(ptrT, (64 << 4) ÷ sizeof(Ptr)), "jl_small_typeof")
+    end
+    for name in ("jl_f_issubtype", "jl_f_isa")
+        wanted(name) || continue
+        fn = LLVM.functions(mod)[name]
+        LLVM.linkage!(fn, LLVM.API.LLVMLinkOnceODRLinkage)
+        _, args, _ = LLVM.parameters(fn)
+        @dispose builder = LLVM.IRBuilder() begin
+            LLVM.position!(builder, LLVM.at_end(LLVM.BasicBlock(fn, "entry")))
+            first_arg = LLVM.load!(builder, ptrT, args)
+            second = LLVM.load!(builder, ptrT, LLVM.gep!(builder, ptrT, args, [LLVM.ConstantInt(Int64(1))]))
+            a = first_arg
+            if name == "jl_f_isa"
+                # the type of the object: its tag, or the type of the small number that stands for one
+                tag_slot = LLVM.gep!(builder, LLVM.Int8Type(), first_arg, [LLVM.ConstantInt(Int64(-8))])
+                tag = LLVM.and!(builder, LLVM.load!(builder, i64, tag_slot), LLVM.ConstantInt(Int64(-16)))
+                is_small = LLVM.icmp!(builder, LLVM.API.LLVMIntULT, tag, LLVM.ConstantInt(Int64(64 << 4)))
+                entry_ptr = LLVM.gep!(builder, LLVM.ArrayType(ptrT, (64 << 4) ÷ sizeof(Ptr)), small,
+                                      [LLVM.ConstantInt(Int64(0)), LLVM.lshr!(builder, tag, LLVM.ConstantInt(Int64(3)))])
+                # (a load that is not made for a tag that is not small: the index of a big tag is out of the table)
+                index_ok = LLVM.select!(builder, is_small, entry_ptr, LLVM.gep!(builder, LLVM.ArrayType(ptrT, (64 << 4) ÷ sizeof(Ptr)), small, [LLVM.ConstantInt(Int64(0)), LLVM.ConstantInt(Int64(0))]))
+                small_type = LLVM.load!(builder, ptrT, index_ok)
+                a = LLVM.select!(builder, is_small, small_type, LLVM.inttoptr!(builder, tag, ptrT))
+            end
+            r = LLVM.call!(builder, sub_t, sub, [a, second])
+            yes = LLVM.icmp!(builder, LLVM.API.LLVMIntNE, r, LLVM.ConstantInt(Int32(0)))
+            LLVM.ret!(builder, LLVM.select!(builder, yes, LLVM.load!(builder, ptrT, jl_true), LLVM.load!(builder, ptrT, jl_false)))
+        end
+    end
+    return true
+end
+
+# `ijl_subtype(a, b)` for any two of the types that are in the binary: a table of the answers, which Julia's `<:` gave when
+# compiling, for each pair (a bit for each, row `b`, column `a`), and a search of the table of types for each of the arguments. (A type
+# that is not in the binary can't be the type of an object that the program has, or a type that it can name, so it is not asked about.)
+# `define_subtype!` is shorter for what is asked about with types that are constants, and is used if all of the calls are like that.
+function define_subtype_table!(e)
+    mod = e.mod
+    haskey(LLVM.functions(mod), "ijl_subtype") && LLVM.isdeclaration(LLVM.functions(mod)["ijl_subtype"]) || return
+    fn = LLVM.functions(mod)["ijl_subtype"]
+    found = Tuple{UInt,Any}[]
+    for (addr, g) in e.globals
+        g === nothing && continue
+        K = object_type(addr)
+        (K === DataType || K === Union || K === UnionAll || K === Core.TypeofBottom) || continue
+        push!(found, (addr, unsafe_pointer_to_objref(Ptr{Cvoid}(addr))))
+    end
+    sort!(found; by = first)
+    n = length(found)
+    rowbytes = (n + 7) >> 3
+    bits = zeros(UInt8, n * rowbytes)
+    for (ib, (_, B)) in enumerate(found), (ia, (_, A)) in enumerate(found)
+        A <: B || continue
+        k = (ib - 1) * n + (ia - 1)
+        bits[(k >> 3) + 1] |= UInt8(1) << (k & 7)
+    end
+    ptrT, i64, i32 = LLVM.PointerType(), LLVM.Int64Type(), LLVM.Int32Type()
+    types_t = LLVM.ArrayType(ptrT, n)
+    types_g = LLVM.GlobalVariable(mod, types_t, "static_subtype_types")
+    LLVM.initializer!(types_g, LLVM.ConstantArray(ptrT, LLVM.Constant[embed_ref!(e, addr) for (addr, _) in found]))
+    LLVM.constant!(types_g, true); LLVM.linkage!(types_g, LLVM.API.LLVMPrivateLinkage)
+    bits_g = LLVM.GlobalVariable(mod, LLVM.ArrayType(LLVM.Int8Type(), length(bits)), "static_subtype_bits")
+    LLVM.initializer!(bits_g, LLVM.ConstantDataArray(LLVM.Int8Type(), bits))
+    LLVM.constant!(bits_g, true); LLVM.linkage!(bits_g, LLVM.API.LLVMPrivateLinkage)
+    fns = LLVM.functions(mod)
+    puts_t = LLVM.FunctionType(i32, [ptrT])
+    exit_t = LLVM.FunctionType(LLVM.VoidType(), [i32])
+    puts = haskey(fns, "puts") ? fns["puts"] : LLVM.Function(mod, "puts", puts_t)
+    exit = haskey(fns, "exit") ? fns["exit"] : LLVM.Function(mod, "exit", exit_t)
+    LLVM.linkage!(fn, LLVM.API.LLVMLinkOnceODRLinkage)
+    a, b = LLVM.parameters(fn)
+    N = LLVM.ConstantInt(Int64(n))
+    @dispose builder = LLVM.IRBuilder() begin
+        entry = LLVM.BasicBlock(fn, "entry")
+        loopa, bodya, nexta = (LLVM.BasicBlock(fn, s) for s in ("loopa", "bodya", "nexta"))
+        loopb, bodyb, nextb = (LLVM.BasicBlock(fn, s) for s in ("loopb", "bodyb", "nextb"))
+        lookup, unknown = LLVM.BasicBlock(fn, "lookup"), LLVM.BasicBlock(fn, "unknown")
+        LLVM.position!(builder, LLVM.at_end(entry)); LLVM.br!(builder, loopa)
+        # the index of `a`
+        LLVM.position!(builder, LLVM.at_end(loopa))
+        ia = LLVM.phi!(builder, i64, "ia")
+        LLVM.br!(builder, LLVM.icmp!(builder, LLVM.API.LLVMIntEQ, ia, N), unknown, bodya)
+        LLVM.position!(builder, LLVM.at_end(bodya))
+        va = LLVM.load!(builder, ptrT, LLVM.gep!(builder, types_t, types_g, [LLVM.ConstantInt(Int64(0)), ia]))
+        LLVM.br!(builder, LLVM.icmp!(builder, LLVM.API.LLVMIntEQ, va, a), loopb, nexta)
+        LLVM.position!(builder, LLVM.at_end(nexta))
+        ia_next = LLVM.add!(builder, ia, LLVM.ConstantInt(Int64(1)))
+        LLVM.br!(builder, loopa)
+        append!(LLVM.incoming(ia), [(LLVM.ConstantInt(Int64(0)), entry), (ia_next, nexta)])
+        # the index of `b`
+        LLVM.position!(builder, LLVM.at_end(loopb))
+        ib = LLVM.phi!(builder, i64, "ib")
+        LLVM.br!(builder, LLVM.icmp!(builder, LLVM.API.LLVMIntEQ, ib, N), unknown, bodyb)
+        LLVM.position!(builder, LLVM.at_end(bodyb))
+        vb = LLVM.load!(builder, ptrT, LLVM.gep!(builder, types_t, types_g, [LLVM.ConstantInt(Int64(0)), ib]))
+        LLVM.br!(builder, LLVM.icmp!(builder, LLVM.API.LLVMIntEQ, vb, b), lookup, nextb)
+        LLVM.position!(builder, LLVM.at_end(nextb))
+        ib_next = LLVM.add!(builder, ib, LLVM.ConstantInt(Int64(1)))
+        LLVM.br!(builder, loopb)
+        append!(LLVM.incoming(ib), [(LLVM.ConstantInt(Int64(0)), bodya), (ib_next, nextb)])
+        # the bit of row `ib`, column `ia`
+        LLVM.position!(builder, LLVM.at_end(lookup))
+        k = LLVM.add!(builder, LLVM.mul!(builder, ib, N), ia)
+        byte = LLVM.load!(builder, LLVM.Int8Type(), LLVM.gep!(builder, LLVM.ArrayType(LLVM.Int8Type(), length(bits)), bits_g,
+                                                           [LLVM.ConstantInt(Int64(0)), LLVM.lshr!(builder, k, LLVM.ConstantInt(Int64(3)))]))
+        shift = LLVM.trunc!(builder, LLVM.and!(builder, k, LLVM.ConstantInt(Int64(7))), LLVM.Int8Type())
+        bit = LLVM.and!(builder, LLVM.lshr!(builder, byte, shift), LLVM.ConstantInt(Int8(1)))
+        LLVM.ret!(builder, LLVM.zext!(builder, bit, i32))
+        LLVM.position!(builder, LLVM.at_end(unknown))
+        msg = LLVM.globalstring_ptr!(builder, "<: with a type that is not in the binary is not supported in standalone binaries")
+        LLVM.call!(builder, puts_t, puts, [msg])
+        LLVM.call!(builder, exit_t, exit, [LLVM.ConstantInt(Int32(1))])
+        LLVM.unreachable!(builder)
+    end
+    return
+end
+
 # Runtime functions that throw. Without unwinding, the best we can do is to report and exit.
 # Their bodies are generated from the declaration, since we don't care about the arguments.
 const ABORTING_RUNTIME_FUNCTIONS = (
@@ -824,7 +957,7 @@ const DYNAMIC_RUNTIME_FUNCTIONS = [
         "ijl_get_nth_field_checked", "jl_f_fieldtype", "jl_f_tuple", "ijl_new_structv",
         "jl_f__task", "jl_f__svec_ref", "ijl_subtype",
         "ijl_object_id_", "jl_object_id_", "ijl_object_id", "jl_object_id", "jl_get_abi_converter", "ijl_load_and_lookup", "ijl_lazy_load_and_lookup", "jl_f_getfield",
-        "jl_f_isa", "jl_f_typeassert", "jl_f_issubtype", "ijl_new_task",
+        "jl_f_typeassert", "ijl_new_task",
     )
 ]
 
@@ -1155,6 +1288,7 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     blas = resolve_blas_lookups!(mod) # (before what they are given is embedded)
     library_paths, library_symbols = resolve_library_lookups!(mod)
     define_field_index!(mod)
+    define_subtype_builtins!(mod)
     null_methoderror_arguments!(mod)
     stub_cancel_handlers!(mod)
     e = ObjectEmbedder(mod, Dict())
@@ -1163,7 +1297,7 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     gc === false || classify_allocations!(mod)
     queries = subtype_queries(mod)
     embed_constants!(e)
-    queries === nothing || define_subtype!(e, queries)
+    queries === nothing ? define_subtype_table!(e) : define_subtype!(e, queries)
     resolve_lazy_lookups!(mod)
     define_aborting_functions!(mod)
     if strict
@@ -1421,6 +1555,10 @@ function object_type(addr::UInt)
     # the objects that are types (`typeof(Int)` is `DataType`) are objects as well, those of these kinds (the last is `Union{}`)
     (T <: Type) && !(T === DataType || T === UnionAll || T === Union || T === Core.TypeofBottom) && return nothing
     addr % 16 == 0 && return T
+    # (the one instance of a type that has no fields, which has no contents, is allocated where the data of an object would be, 8 bytes in
+    # a cell that is 16 aligned: it is the `instance` of its type)
+    Base.issingletontype(T) && isdefined(T, :instance) &&
+        UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), T.instance)) == addr && return T
     return T === Symbol && is_symbol(addr) ? T : nothing
 end
 
@@ -1769,6 +1907,7 @@ function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt; n::Int=1)
             elseif cut === :sizedsvec
                 types_addr = unsafe_load(Ptr{UInt}(base + off))
                 n = types_addr == 0 ? 0 : (check_readable(types_addr, 8); Int(unsafe_load(Ptr{Int}(types_addr))))
+                (0 <= n <= 100_000 && types_addr % 8 == 0) || throw(EmbedFailure("a type whose fields are not a svec (not a type?), at $(string(addr, base = 16))"))
                 add!(LLVM.PointerType(), g -> embed_ref!(e, sized_svec(n)))
                 pos = off + sizeof(Ptr)
             elseif T <: Core.GenericMemoryRef && i == 1
@@ -1869,9 +2008,12 @@ end
 # right, and the caller needs to try them in order: the one closest to `addr` first, since a
 # false one is usually further away. (The false ones that are tried usually fail to be
 # embedded: their contents are not valid.)
+# how far before an address the object that it is in can start: a field of a struct of many fields (a `SphericalHe` is 392 bytes)
+const MAX_INTERIOR = 2048
+
 function find_objects(addr::UInt)
     candidates = Tuple{UInt,Int}[]
-    for delta in Int(addr % 8):8:256 # (objects are aligned: `addr` may be in the middle of the data of one)
+    for delta in Int(addr % 8):8:MAX_INTERIOR # (objects are aligned: `addr` may be in the middle of the data of one)
         base = addr - delta
         T = object_type(base)
         T === nothing && continue
