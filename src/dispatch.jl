@@ -39,16 +39,37 @@ function GPUCompiler.inference_params(job::GPUCompiler.CompilerJob{<:StaticCompi
     return CC.InferenceParams(base; max_union_splitting = max(base.max_union_splitting, SPLIT_LIMIT[]))
 end
 
-# whether the code of this interpreter is compiled with our method table (and not StaticCompiler's)
-function uses_our_method_table(interp::GPUCompiler.GPUInterpreter)
-    t = CC.method_table(interp)
-    hasproperty(t, :table) && (t = t.table) # (a cache of the table)
-    hasproperty(t, :tables) && return any(mt -> mt === method_table, t.tables) # (GPUCompiler 2.22: a list of the tables)
-    while true
-        hasproperty(t, :mt) && t.mt === method_table && return true
-        hasproperty(t, :parent) || return false
-        t = t.parent
-    end
+## The interpreter of our compilations
+#
+# Inference is changed below with methods of functions of the compiler (`abstract_call_gf_by_type`, `abstract_call_known`, `optimize`) that GPUCompiler's
+# interpreter (`GPUCompiler.GPUInterpreter`, which StaticCompiler's own compilations use too) is the argument of. Methods for that type would change what
+# every compilation does, ours or not, and so would have to look at which it is each time. Instead, our compilations have an interpreter of a type of their
+# own: the type of a `GPUInterpreter` has the type of the view of the method tables that it looks methods up in as a parameter, and GPUCompiler lets a
+# back-end choose the view (`method_table_view`, which says that returning a view of another type "also gives inference a different interpreter type").
+# The view here (`OverridesTableView`) holds the one that GPUCompiler makes, and does what it does; and the methods below are for the interpreters that
+# have it. No other compilation is of that type, so none is changed.
+
+"""
+    OverridesTableView
+
+The view of the method tables that our compilations are made with: that of GPUCompiler (the table of the compilation, then Base's), in a type that is ours, so that the
+interpreter that has it is told from others by its type.
+"""
+struct OverridesTableView{T<:CC.MethodTableView} <: CC.MethodTableView
+    inner::T
+end
+CC.isoverlayed(table::OverridesTableView) = CC.isoverlayed(table.inner)
+CC.findall(@nospecialize(sig::Type), table::OverridesTableView; kwargs...) = CC.findall(sig, table.inner; kwargs...)
+CC.findsup(@nospecialize(sig::Type), table::OverridesTableView) = CC.findsup(sig, table.inner)
+
+GPUCompiler.method_table_view(job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}) =
+    OverridesTableView(@invoke GPUCompiler.method_table_view(job::GPUCompiler.CompilerJob))
+
+# (the interpreter has the view in a cache, `CachedMethodTable`, when the compiler has one)
+const OverridesInterpreter = @static if isdefined(CC, :CachedMethodTable)
+    GPUCompiler.GPUInterpreter{<:Union{OverridesTableView, CC.CachedMethodTable{<:OverridesTableView}}}
+else
+    GPUCompiler.GPUInterpreter{<:OverridesTableView}
 end
 
 ## the types that are registered: those of `show` (`add_show_candidates!`), which are the types that a value of `Any` is expected to have
@@ -172,25 +193,23 @@ function uncovered(info::CC.UnionSplitInfo)
 end
 uncovered(info) = info
 
-function CC.abstract_call_gf_by_type(interp::GPUCompiler.GPUInterpreter, @nospecialize(f), arginfo::CC.ArgInfo, si::CC.StmtInfo,
+function CC.abstract_call_gf_by_type(interp::OverridesInterpreter, @nospecialize(f), arginfo::CC.ArgInfo, si::CC.StmtInfo,
                                      @nospecialize(atype), vtypes::Union{Nothing,Vector{CC.VarState}},
                                      sv::Union{CC.IRInterpretationState{I},CC.InferenceState{I}} where I<:CC.AbstractInterpreter,
                                      max_methods::Int)
     registered = false
-    if uses_our_method_table(interp)
-        closed = close_abstract_arguments(arginfo)
-        # (a call that none of the types that the arguments are closed to has a method for is left as it is: it is not known what the
-        # arguments are, and the result of the call is not that it is an error, which would make what calls it one too)
-        closed === nothing || has_methods(interp, closed[1], closed[2], max_methods) || (closed = nothing)
-        if closed !== nothing && dispatch_needed(interp, arginfo, atype, max_methods)
-            original = arginfo.argtypes
-            arginfo, atype, registered = closed
-            max_methods = max(max_methods, SPLIT_LIMIT[]) # (one method for each type, at most)
-            if registered
-                fname = f isa Function ? nameof(f) : f isa Type ? f : nameof(typeof(f))
-                key = string(fname, "(", join(("::" * (T isa Core.TypeofVararg ? string(T) : string(CC.widenconst(T))) for T in original[2:end]), ", "), ")")
-                REGISTERED_CALLS[key] = get(REGISTERED_CALLS, key, 0) + 1
-            end
+    closed = close_abstract_arguments(arginfo)
+    # (a call that none of the types that the arguments are closed to has a method for is left as it is: it is not known what the
+    # arguments are, and the result of the call is not that it is an error, which would make what calls it one too)
+    closed === nothing || has_methods(interp, closed[1], closed[2], max_methods) || (closed = nothing)
+    if closed !== nothing && dispatch_needed(interp, arginfo, atype, max_methods)
+        original = arginfo.argtypes
+        arginfo, atype, registered = closed
+        max_methods = max(max_methods, SPLIT_LIMIT[]) # (one method for each type, at most)
+        if registered
+            fname = f isa Function ? nameof(f) : f isa Type ? f : nameof(typeof(f))
+            key = string(fname, "(", join(("::" * (T isa Core.TypeofVararg ? string(T) : string(CC.widenconst(T))) for T in original[2:end]), ", "), ")")
+            REGISTERED_CALLS[key] = get(REGISTERED_CALLS, key, 0) + 1
         end
     end
     call = @invoke CC.abstract_call_gf_by_type(interp::CC.AbstractInterpreter, f::Any, arginfo::CC.ArgInfo, si::CC.StmtInfo, atype::Any,
@@ -219,9 +238,9 @@ end
 # macros of logging (`@warn`), and sometimes to avoid a recursion that inference gives up on. So (for what is compiled with our method
 # table) inference takes it for the call of `f`, and the statement is made that call before it is optimized.
 
-function CC.abstract_call_known(interp::GPUCompiler.GPUInterpreter, f::typeof(Core.invokelatest), arginfo::CC.ArgInfo, si::CC.StmtInfo,
+function CC.abstract_call_known(interp::OverridesInterpreter, f::typeof(Core.invokelatest), arginfo::CC.ArgInfo, si::CC.StmtInfo,
                                 vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int = CC.get_max_methods(interp, f, sv))
-    if uses_our_method_table(interp) && length(arginfo.argtypes) >= 2
+    if length(arginfo.argtypes) >= 2
         inner = CC.ArgInfo(arginfo.fargs === nothing ? nothing : arginfo.fargs[2:end], arginfo.argtypes[2:end])
         return CC.abstract_call(interp, inner, si, vtypes, sv)
     end
@@ -248,15 +267,13 @@ function called_function(code, x)
 end
 
 # (before optimizing: the statements of `invokelatest` are the calls that inference took them for)
-function CC.optimize(interp::GPUCompiler.GPUInterpreter, opt::CC.OptimizationState, caller::CC.InferenceResult)
-    if uses_our_method_table(interp)
-        code = opt.src.code
-        for pc in eachindex(code)
-            st = code[pc]
-            st isa Expr && st.head === :call && length(st.args) >= 2 || continue
-            called_function(code, st.args[1]) === Core.invokelatest || continue
-            code[pc] = Expr(:call, st.args[2:end]...)
-        end
+function CC.optimize(interp::OverridesInterpreter, opt::CC.OptimizationState, caller::CC.InferenceResult)
+    code = opt.src.code
+    for pc in eachindex(code)
+        st = code[pc]
+        st isa Expr && st.head === :call && length(st.args) >= 2 || continue
+        called_function(code, st.args[1]) === Core.invokelatest || continue
+        code[pc] = Expr(:call, st.args[2:end]...)
     end
     return @invoke CC.optimize(interp::CC.AbstractInterpreter, opt::CC.OptimizationState, caller::CC.InferenceResult)
 end
