@@ -59,6 +59,10 @@ function default_gc()
     return Sys.isapple() || Sys.islinux()
 end
 
+# The math library: on Linux its functions (`erfc`, which Julia code calls by name, see `libraries.jl`) are in `libm`, which is
+# not linked by default, as it is on macOS (where it is part of libSystem)
+default_cflags() = Sys.islinux() ? `-lm` : ``
+
 # StaticCompiler's entry points, with our method table as the default, and the runtime of this
 # package installed in the code that they generate (`llvm_postprocess`)
 for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_typed,
@@ -66,7 +70,8 @@ for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_t
     @eval begin
         $f(args...; method_table = method_table, params = OverridesParams(), strict::Bool = true, allow = (), gc = default_gc(),
            llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc)), kwargs...) =
-            StaticCompiler.$f(args...; method_table, params, llvm_postprocess, kwargs...)
+            StaticCompiler.$f(args...; method_table, params, llvm_postprocess,
+                              $(f in (:compile_executable, :compile_shlib) ? :(merge((; cflags = default_cflags()), NamedTuple(kwargs))...) : :(kwargs...)))
         @doc """
             $($f)(args...; method_table = StaticCompilerOverrides.method_table, strict = true, allow = (), kwargs...)
 
