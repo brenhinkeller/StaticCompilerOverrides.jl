@@ -15,6 +15,7 @@ include("base.jl")     # Base methods that can be written to compile statically
 include("io.jl")       # Standard input and output
 include("show.jl")     # show of types and containers
 include("objectid.jl") # objectid, so that a struct can be the key of a Dict
+include("iddict.jl")   # IdDict, and with it deepcopy
 include("dispatch.jl") # dynamic dispatch on abstract types, by union splitting
 include("gc.jl")       # The garbage collector, from the program
 include("printf.jl")   # Printf, for formats without `*`

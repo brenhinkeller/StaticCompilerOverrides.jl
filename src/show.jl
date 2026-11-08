@@ -102,6 +102,28 @@ host_string(f, x) = replace(sprint(f, x; context = :module => Main), r"(?<![\w.]
 @generated type_name(::Type{T}) where {T} = host_string(show, T)
 Base.show(io::ShowStream, ::Type{T}) where {T} = (print(io, type_name(T)); nothing)
 
+## Singletons: functions, `Colon()`, ...
+##
+## What Base prints for a value that has no fields depends on its type only (the name of the function, and the module
+## if it is not visible from where it is shown), but it finds that out with lookups of modules and bindings, in
+## libjulia. The text is made when compiling (as for the names of types).
+
+@generated singleton_text(::Type{T}) where {T} = Base.issingletontype(T) ? host_string(show, T.instance) : nothing
+
+function Base.show(io::ShowStream, f::Function)
+    text = singleton_text(typeof(f))
+    text === nothing && return @invoke Base.show(io::IO, f::Function)
+    print(io, text)
+    return nothing
+end
+function Base.print(io::ShowStream, f::Function)
+    text = singleton_text(typeof(f))
+    text === nothing && return @invoke Base.print(io::IO, f::Function)
+    print(io, text)
+    return nothing
+end
+Base.show(io::ShowStream, ::Colon) = (print(io, "Colon()"); nothing)
+
 ## `typeinfo_prefix` of Base, which prefixes what is shown by the type of the container when the context
 ## doesn't know the type of the elements. It depends on the types only, and on whether the container is empty.
 

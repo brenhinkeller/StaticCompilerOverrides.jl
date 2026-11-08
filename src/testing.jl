@@ -139,7 +139,8 @@ end
 undefined_symbols(f; kwargs...) = undefined_symbols(make_main(f), (Int, Ptr{Ptr{UInt8}}); kwargs...)
 
 const ALLOCATORS = Set(["gpu_gc_pool_alloc", "julia.gc_alloc_bytes", "jl_alloc_genericmemory_unchecked",
-                        "ijl_alloc_string", "ijl_box_int64", "ijl_box_uint64", "ijl_box_int32", "ijl_box_uint32", "ijl_box_char"])
+                        "ijl_alloc_string", "ijl_box_int64", "ijl_box_uint64", "ijl_box_int32", "ijl_box_uint32", "ijl_box_char",
+                        "ijl_box_int8", "ijl_box_uint8", "ijl_box_int16", "ijl_box_uint16", "ijl_box_float32", "ijl_box_float64"])
 
 """
     allocation_sites(f, types) -> Int

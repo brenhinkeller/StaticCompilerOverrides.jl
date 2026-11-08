@@ -80,7 +80,7 @@ end
     string_size() = 0
     string_size(v::Char, rest...) = ncodeunits(v) + string_size(rest...)
     string_size(v::Union{String, SubString{String}}, rest...) = sizeof(v) + string_size(rest...)
-    string_size(v::Symbol, rest...) = sizeof(v) + string_size(rest...)
+    string_size(v::Symbol, rest...) = symbol_length(v) + string_size(rest...)
 
     string_fill!(out, offs) = nothing
     function string_fill!(out, offs, v, rest...)
@@ -88,6 +88,23 @@ end
         return string_fill!(out, offs, rest...)
     end
 end
+
+# `Symbol`s whose value is not known when compiling (the name of a function in a message, taken from a field). Base asks libjulia for the
+# bytes of a `Symbol` (`jl_symbol_name`) and for how long they are (`sizeof`, a builtin that is a call into the runtime when it can't be
+# folded). The name is stored right after the three pointers of the node of the symbol table (`jl_sym_t`), and ends with a NUL.
+symbol_pointer(s::Symbol) = Ptr{UInt8}(Base.pointer_from_objref(s)) + 3 * sizeof(Ptr{Cvoid})
+symbol_length(s::Symbol) = Int(@symbolcall strlen(symbol_pointer(s)::Ptr{UInt8})::Int64)
+
+@device_override Base.unsafe_convert(::Type{Ptr{UInt8}}, s::Symbol) = symbol_pointer(s)
+@device_override Base.unsafe_convert(::Type{Ptr{Int8}}, s::Symbol) = Ptr{Int8}(symbol_pointer(s))
+@device_override Base._str_sizehint(s::Symbol) = symbol_length(s)
+@device_override function Base.__unsafe_string!(out, s::Symbol, offs::Integer)
+    n = symbol_length(s)
+    GC.@preserve s out unsafe_copyto!(pointer(out, offs), symbol_pointer(s), n)
+    return n
+end
+@device_override Base.print(io::IO, s::Symbol) = (unsafe_write(io, symbol_pointer(s), UInt(symbol_length(s))); nothing)
+@device_override Base.write(io::IO, s::Symbol) = Int(unsafe_write(io, symbol_pointer(s), UInt(symbol_length(s))))
 
 # The clocks of libc (`jl_hrtime` and `jl_clock_now` are libjulia's, which is not there)
 function clock_nanoseconds(id::Int32)

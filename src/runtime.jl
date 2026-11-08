@@ -139,13 +139,17 @@ numbers:
   %i32a = icmp eq i64 %dtag, {{TAG_INT32}}
   %i32b = icmp eq i64 %dtag, {{TAG_UINT32}}
   %i32c = icmp eq i64 %dtag, {{TAG_CHAR}}
+  %i32d = icmp eq i64 %dtag, {{TAG_FLOAT32}}
   %i64a = icmp eq i64 %dtag, {{TAG_INT64}}
   %i64b = icmp eq i64 %dtag, {{TAG_UINT64}}
+  %i64c = icmp eq i64 %dtag, {{TAG_FLOAT64}}
   %c1 = or i1 %i8a, %i8b
   %c2 = or i1 %i16a, %i16b
   %c4a = or i1 %i32a, %i32b
-  %c4 = or i1 %c4a, %i32c
-  %c8 = or i1 %i64a, %i64b
+  %c4b = or i1 %c4a, %i32c
+  %c4 = or i1 %c4b, %i32d
+  %c8a = or i1 %i64a, %i64b
+  %c8 = or i1 %c8a, %i64c
   %s8 = select i1 %c8, i64 8, i64 0
   %s4 = select i1 %c4, i64 4, i64 %s8
   %s2 = select i1 %c2, i64 2, i64 %s4
@@ -270,6 +274,49 @@ define linkonce_odr ptr @ijl_box_uint32(i32 %v) {
   %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
   store i64 {{TAG_UINT32}}, ptr %tagslot, align 8
   store i32 %v, ptr %p, align 4
+  ret ptr %p
+}
+
+define linkonce_odr ptr @ijl_box_int8(i8 %v) {
+  %p = call ptr @gpu_gc_pool_alloc_atomic(i64 8)
+  %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
+  store i64 {{TAG_INT8}}, ptr %tagslot, align 8
+  store i8 %v, ptr %p, align 1
+  ret ptr %p
+}
+define linkonce_odr ptr @ijl_box_uint8(i8 %v) {
+  %p = call ptr @gpu_gc_pool_alloc_atomic(i64 8)
+  %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
+  store i64 {{TAG_UINT8}}, ptr %tagslot, align 8
+  store i8 %v, ptr %p, align 1
+  ret ptr %p
+}
+define linkonce_odr ptr @ijl_box_int16(i16 %v) {
+  %p = call ptr @gpu_gc_pool_alloc_atomic(i64 8)
+  %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
+  store i64 {{TAG_INT16}}, ptr %tagslot, align 8
+  store i16 %v, ptr %p, align 2
+  ret ptr %p
+}
+define linkonce_odr ptr @ijl_box_uint16(i16 %v) {
+  %p = call ptr @gpu_gc_pool_alloc_atomic(i64 8)
+  %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
+  store i64 {{TAG_UINT16}}, ptr %tagslot, align 8
+  store i16 %v, ptr %p, align 2
+  ret ptr %p
+}
+define linkonce_odr ptr @ijl_box_float32(float %v) {
+  %p = call ptr @gpu_gc_pool_alloc_atomic(i64 8)
+  %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
+  store i64 {{TAG_FLOAT32}}, ptr %tagslot, align 8
+  store float %v, ptr %p, align 4
+  ret ptr %p
+}
+define linkonce_odr ptr @ijl_box_float64(double %v) {
+  %p = call ptr @gpu_gc_pool_alloc_atomic(i64 8)
+  %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
+  store i64 {{TAG_FLOAT64}}, ptr %tagslot, align 8
+  store double %v, ptr %p, align 8
   ret ptr %p
 }
 
@@ -510,7 +557,7 @@ function shim_ir()
     for (token, example) in ("TAG_STRING" => "", "TAG_INT64" => 1, "TAG_UINT64" => UInt64(1),
                              "TAG_INT32" => Int32(1), "TAG_UINT32" => UInt32(1),
                              "TAG_INT8" => Int8(1), "TAG_UINT8" => UInt8(1), "TAG_INT16" => Int16(1),
-                             "TAG_UINT16" => UInt16(1), "TAG_CHAR" => 'a',
+                             "TAG_UINT16" => UInt16(1), "TAG_CHAR" => 'a', "TAG_FLOAT32" => 1f0, "TAG_FLOAT64" => 1.0,
                              "TAG_SYMBOL" => :a, "TAG_BOOL" => true, "TAG_NOTHING" => nothing,
                              "TAG_MEMORY_UINT8" => Memory{UInt8}(undef, 1))
         ir = replace(ir, "{{$token}}" => string(object_tag(example)))
@@ -527,6 +574,7 @@ const RUNTIME_SHIM_FUNCTIONS = (
     "ijl_restore_excstack", "ijl_throw", "ijl_rethrow", "ijl_rethrow_other",
     "ijl_current_exception", "jl_current_exception",
     "ijl_box_int64", "ijl_box_uint64", "ijl_box_int32", "ijl_box_uint32", "ijl_box_char",
+    "ijl_box_int8", "ijl_box_uint8", "ijl_box_int16", "ijl_box_uint16", "ijl_box_float32", "ijl_box_float64",
     "ijl_alloc_string", "ijl_pchar_to_string", "jl_pchar_to_string", "ijl_cstr_to_string", "jl_cstr_to_string", "jl_string_to_genericmemory", "jl_genericmemory_to_string",
     "jl_genericmemory_copyto",
 )

@@ -465,8 +465,8 @@ there are no threads. `Random.seed!(seed)` on the default generator does not wor
 ## Code from packages
 
 Code of packages compiles like the code of Base: nothing is needed from the package. What packages do that Base's code seldom does is
-handled here, found by compiling [Distributions.jl](https://github.com/JuliaStats/Distributions.jl) and
-[NaNStatistics.jl](https://github.com/brenhinkeller/NaNStatistics.jl):
+handled here, found by compiling [Distributions.jl](https://github.com/JuliaStats/Distributions.jl),
+[NaNStatistics.jl](https://github.com/brenhinkeller/NaNStatistics.jl) and [StatsBase.jl](https://github.com/JuliaStats/StatsBase.jl):
 
 * **Logging.** `@warn`, `@info` and `@error` write to the standard error, as the default logger of Julia does to something that is not a terminal
   (`┌ Warning: message`, the keywords as `│   key = value`, and `└ @ file:line`). `@debug` is off, as it is in Julia without `JULIA_DEBUG`, and the code of it is not in
@@ -479,6 +479,10 @@ handled here, found by compiling [Distributions.jl](https://github.com/JuliaStat
   uses, does). The functions of the math library of the machine are linked by name: the values can differ from openlibm's in the last bit. Those of
   other libraries (OpenSpecFun, Rmath, GMP, ...) are looked up when the program runs, with `dlopen` of the **path that the library had when compiling**:
   the binary needs that file, as it needs libblastrampoline for BLAS. The libraries of the runtime of Julia (libjulia, libuv, ...) are not available.
+* **`IdDict`** (and with it `deepcopy` of arrays, dictionaries and strings, and of arrays of them) works: the table is kept with Julia code, with the address of an object
+  as its hash. What is not a mutable object all has one hash, so an `IdDict` with many keys that are numbers is slow. `deepcopy` of a struct of your own does not work (it
+  reads the fields of the struct by a number that is only known when the program runs).
+* **`reshape(x, :, n)`**, **functions and `Colon()` in messages** (`string(sin)`, `show(:)`), and **`Symbol`s that are not known when compiling** (printing them, or in a `string`).
 
 Compiled and compared with Julia in the survey (the results rounded to 6 digits, because of the last bit of libm):
 
@@ -488,6 +492,10 @@ Compiled and compared with Julia in the survey (the results rounded to 6 digits,
 * **NaNStatistics.jl**: all the cases of the survey (`nanmean`, `nanstd`, `nanmedian`, `nanquantile`, `nanpctile`, `nancov`, `nancor`, `movmean`, `histcounts`, `nanbinmean`, `nansort!`, ...)
   but `nanmean(A; dim = (1, 2))`: with the dimensions as a tuple the result is an `Array` of a size that is only known when the program runs (a function
   that is not type-stable), see [Dynamic dispatch on abstract types and on `Any`](@ref).
+* **StatsBase.jl**: 91 of the 97 cases of the survey, of which 4 were not valid in Julia either. Weighted and unweighted `mean`, `var`, `std`, `median`, `quantile`,
+  `skewness`, `kurtosis`, `mad`, `iqr`, `cor`, `cov`, `autocor`, `pacf`, `corspearman`, `corkendall`, ranks, `countmap`, `proportionmap`, `entropy`, `kldivergence`, `Histogram`, `ecdf`,
+  `zscore` and `ZScoreTransform`, `sample` and `wsample` (with and without replacement, weighted) with a generator that is given, ... The two that don't: `summarystats` (it splats a
+  `Vector` of a length that is not known into a constructor, `SummaryStats(m, sd, qs..., n)`), and `normalize` of a `Histogram` (a `deepcopy` of a struct).
 
 ## Known limitations
 
@@ -521,7 +529,7 @@ What does not work yet, or works differently from Julia, gathered in one place. 
   program if compiled with `strict = false`.
 * **Values that are only known at run time** (an element of a `Vector{Any}`) can't be the argument of `objectid` or `hash` unless their types
   are registered, nor `===` of types and unions, and `show` of one is limited to the registered types (see [`show` of containers, types and structs](@ref)).
-* **Symbols from strings** (`Symbol("a", "b")`) and `deepcopy` (an `IdDict`), `titlecase` (it needs the grapheme breaks of utf8proc),
+* **Symbols from strings** (`Symbol("a", "b")`), `deepcopy` of a struct, `titlecase` (it needs the grapheme breaks of utf8proc),
   the `MersenneTwister` generator, and `Random.seed!(seed)` of the default generator need things of libjulia that are not there.
 
 **What a binary starts with**

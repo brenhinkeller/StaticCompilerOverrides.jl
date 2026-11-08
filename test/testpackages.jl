@@ -68,3 +68,55 @@ const TEST_LIBM = Libdl.LazyLibrary(Base.libm_name)
         @info "Skipping the test of another library: libmpfr is not found"
     end
 end
+
+# What was found compiling StatsBase.jl: `reshape(x, :, n)` (which shows `Colon()` in its error message), a `Symbol` that
+# is not known when compiling (AliasTables, which `sample` uses, makes messages with one), boxed floats and small integers
+# (the value in a `DomainError`), and `IdDict` (with `deepcopy`)
+symbol_name(x::Vector{Symbol}) = x[1]
+mutable struct DeepNode
+    value::Int
+    next::Union{Nothing,DeepNode}
+end
+
+sb_case1() = (y = Base.inferencebarrier(1.5)::Float64; z = Base.inferencebarrier(Int8(3))::Int8; x = Any[y, 2.5f0, z]; Int(x[1] === y) + 10 * Int(x[2] === 2.5f0) + 100 * Int(x[3] === z) + 1000 * Int(x[1] === x[2]))
+sb_case2() = (d = IdDict{Vector{Int},Int}(); a = [1]; b = [1]; d[a] = 1; d[b] = 2; d[a] + 10 * d[b] + 100 * length(d) + 1000 * Int(haskey(d, [1])))
+sb_case3() = (d = IdDict{Vector{Int},Int}(); ks = [[i] for i in 1:40]; for (i, k) in enumerate(ks); d[k] = i; end; for k in ks[1:2:end]; delete!(d, k); end; s = 0; for (k, v) in d; s += k[1] * v; end; 100000 * length(d) + s)
+sb_case4() = (d = IdDict{Vector{Int},Int}(); a = [1]; get!(d, a, 3) + get!(() -> 9, d, a) + pop!(d, a) + length(d))
+sb_case5() = (d = IdDict{Int,Int}(); for i in 1:100; d[i] = i * i; end; d[7] + length(d))
+sb_case6() = (a = [[1, 2], [3]]; b = deepcopy(a); b[1][1] = 9; a[1][1] * 10 + b[1][1] + length(b[2]))
+sb_case7() = (x = [1, 2]; b = deepcopy([x, x]); b[1][1] = 7; b[2][1])
+sb_case8() = (d = Dict(1 => [1, 2]); e = deepcopy(d); e[1][1] = 8; d[1][1] * 10 + e[1][1])
+sb_case9() = (a = ["a", "bc"]; length(deepcopy(a)[2]))
+
+@testset "Found compiling StatsBase.jl" begin
+    @testset "reshape with a colon" begin
+        @static_test size(reshape(Float64[1, 2, 3, 4, 5, 6], :, 2), 1)
+        @static_test size(reshape(Float64[1, 2, 3, 4, 5, 6], 3, :), 2)
+    end
+    @testset "functions and Colon() are shown" begin
+        @test static_status(() -> (print(sin); print(' '); print(:); print(' '); print(typeof(sin)); print(' '); println((:, identity)); 0)) == (:ok, "")
+        @static_test ncodeunits(string(sin, identity, :))
+    end
+    @testset "Symbols that are not known when compiling" begin
+        f = () -> (v = Base.inferencebarrier([:abcd, :ef])::Vector{Symbol}; s = symbol_name(v); ncodeunits(string("x ", s, " y")) + 100 * ncodeunits(sprint(print, s)))
+        @static_test f()
+        @test static_status(() -> (v = Base.inferencebarrier([:abcd])::Vector{Symbol}; print(symbol_name(v)); 0)) == (:ok, "")
+    end
+    @testset "boxed floats and small integers" begin
+        boxed(x) = Base.inferencebarrier(x)
+        @test static_result(() -> (a = boxed(1.5)::Float64; b = boxed(Float32(2.5))::Float32; c = boxed(Int8(3))::Int8; d = boxed(UInt16(4))::UInt16; Int(round(a + b)) + c + d)) == 11
+        @static_test sb_case1()
+    end
+    @testset "IdDict" begin
+        @static_test sb_case2()
+        @static_test sb_case3()
+        @static_test sb_case4()
+        @static_test sb_case5()
+    end
+    @testset "deepcopy" begin
+        @static_test sb_case6()
+        @static_test sb_case7()
+        @static_test sb_case8()
+        @static_test sb_case9()
+    end
+end
