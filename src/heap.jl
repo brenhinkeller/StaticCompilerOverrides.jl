@@ -60,6 +60,7 @@ const S_STACK, S_STACK_N, S_STACK_CAP = 17, 18, 19 # the mark stack
 const S_SINCE, S_THRESHOLD, S_LIVE, S_COLLECTIONS, S_COLLECTING = 20, 21, 22, 23, 24
 const S_XROOTS, S_XROOTS_N, S_STRESS, S_STRESS_LEFT, S_SCAN_STACK = 25, 26, 27, 28, 29
 const S_DISABLED = 31 # (collections are off: `GC.enable(false)`)
+const S_RLIMIT = 130 # (2 words, `struct rlimit`: where the limit of the size of the stack is read to)
 const S_REGS = 192 # (64 words from here: where the registers are saved, while the stack is scanned)
 const S_CUR = 32 # per kind and class: the block that is allocated from (2 * NCLASSES words)
 const S_PARTIAL = S_CUR + 2 * NCLASSES # and the list of those with free cells
@@ -130,7 +131,18 @@ else
     stack_base() = UInt(0) # (the stack is not known: the collector can't be used)
 end
 
-# how far below the base the stack of the thread can reach, which is known on macOS, and is assumed to be at most 1 GiB on Linux
+# The stack size limit of the process (`getrlimit(RLIMIT_STACK)`): how far below the base the stack of the main thread can reach. The stacks of
+# other threads are not within that distance of it (the system leaves a gap of that size under the stack of the main thread before where
+# it puts them), so a stack pointer that is farther than that from the base is not on the stack of the main thread. A limit that is not
+# set (infinity), or that can't be read, is taken to be 1 GiB. (The word of the state that holds it: `S_RLIMIT`.)
+@inline function rlimit_stack_size()
+    buffer = state() + UInt(8 * (S_RLIMIT - 1)) # (`struct rlimit`: the current limit, and the maximum)
+    ok = @symbolcall getrlimit(Int32(3)::Int32, Ptr{UInt}(buffer)::Ptr{UInt})::Int32 # (RLIMIT_STACK is 3 on Linux and macOS)
+    cur = ld(buffer, 0)
+    return (ok != 0 || cur == typemax(UInt) || cur == 0) ? UInt(1) << 30 : cur
+end
+
+# how far below the base the stack of the thread can reach, which is known on macOS, and on Linux is the limit of the process
 @static if Sys.isapple()
     @inline stack_size() = Base.llvmcall(("""
         declare ptr @pthread_self()
@@ -141,7 +153,7 @@ end
           ret i64 %n
         }""", "size"), UInt, Tuple{})
 else
-    stack_size() = UInt(1) << 30
+    @inline stack_size() = rlimit_stack_size()
 end
 
 @noinline function out_of_memory()

@@ -39,17 +39,18 @@ Base.iswritable(f::StaticFile) = isopen(f)
 
 ## position
 
-Base.position(f::StaticFile) = Int(ftell(f.fp))
-Base.seek(f::StaticFile, n::Integer) = (fseek(f.fp, Int64(n), SEEK_SET); f)
-Base.seekstart(f::StaticFile) = (fseek(f.fp, Int64(0), SEEK_SET); f)
-Base.seekend(f::StaticFile) = (fseek(f.fp, Int64(0), SEEK_END); f)
-Base.skip(f::StaticFile, n::Integer) = (fseek(f.fp, Int64(n), SEEK_CUR); f)
+Base.position(f::StaticFile) = Int(ftell(filepointer(f)))
+Base.seek(f::StaticFile, n::Integer) = (fseek(filepointer(f), Int64(n), SEEK_SET); f)
+Base.seekstart(f::StaticFile) = (fseek(filepointer(f), Int64(0), SEEK_SET); f)
+Base.seekend(f::StaticFile) = (fseek(filepointer(f), Int64(0), SEEK_END); f)
+Base.skip(f::StaticFile, n::Integer) = (fseek(filepointer(f), Int64(n), SEEK_CUR); f)
 
 function Base.filesize(f::StaticFile)
-    here = ftell(f.fp)
-    fseek(f.fp, Int64(0), SEEK_END)
-    size = ftell(f.fp)
-    fseek(f.fp, here, SEEK_SET)
+    fp = filepointer(f)
+    here = ftell(fp)
+    fseek(fp, Int64(0), SEEK_END)
+    size = ftell(fp)
+    fseek(fp, here, SEEK_SET)
     return Int(size)
 end
 

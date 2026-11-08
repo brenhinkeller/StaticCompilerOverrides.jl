@@ -42,7 +42,12 @@ end
 const LibcStream = Union{StaticIO, StaticFile}
 
 # the libc `FILE*` of the stream
-filepointer(f::StaticFile) = f.fp
+# (a file that has been closed has no `FILE*`: using it is an error, as in Julia, and not a call of libc with a null pointer)
+function filepointer(f::StaticFile)
+    fp = f.fp
+    fp == C_NULL && throw(ErrorException("stream is closed"))
+    return fp
+end
 filepointer(::StaticIO{:stdin}) = stdinp()
 filepointer(::StaticIO{:stdout}) = stdoutp()
 filepointer(::StaticIO{:stderr}) = stderrp()

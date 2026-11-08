@@ -68,9 +68,17 @@ define linkonce_odr void @gpu_unsupported_allocation(ptr %name) {
   ret void
 }
 
+; The sizes below are checked against what could be allocated at all (a length that is negative, as a number of bytes, is a very large one):
+; without it, adding the header to it wraps around, and the object is small, and what is then written to it is not.
 ; Memory{T} (Julia 1.11+): { length, data pointer } header followed by inline data.
 ; The caller fills in the length. Zeroed, as Julia does for pointer-containing memory.
 define linkonce_odr ptr @jl_alloc_genericmemory_unchecked(ptr %ptls, i64 %nbytes, ptr %ty) {
+  %toobig = icmp ugt i64 %nbytes, 4611686018427387903
+  br i1 %toobig, label %oom, label %ok
+oom:
+  call void @_static_oom()
+  unreachable
+ok:
   %total = add i64 %nbytes, 16
   %obj = call ptr @gpu_gc_pool_alloc(i64 %total)
   %tagslot = getelementptr inbounds i8, ptr %obj, i64 -8
@@ -85,6 +93,12 @@ define linkonce_odr ptr @jl_alloc_genericmemory_unchecked(ptr %ptls, i64 %nbytes
 ; The same for the memory of elements that are not references (`jl_alloc_genericmemory_atomic`, which calls to the above are
 ; made for by `classify_allocations!`), which the collector doesn't look inside
 define linkonce_odr ptr @jl_alloc_genericmemory_atomic(ptr %ptls, i64 %nbytes, ptr %ty) {
+  %toobig = icmp ugt i64 %nbytes, 4611686018427387903
+  br i1 %toobig, label %oom, label %ok
+oom:
+  call void @_static_oom()
+  unreachable
+ok:
   %total = add i64 %nbytes, 16
   %obj = call ptr @gpu_gc_pool_alloc_atomic(i64 %total)
   %tagslot = getelementptr inbounds i8, ptr %obj, i64 -8
@@ -330,6 +344,12 @@ define linkonce_odr ptr @ijl_box_char(i32 %v) {
 
 ; String (Julia 1.11+): { length, data..., NUL }
 define linkonce_odr ptr @ijl_alloc_string(i64 %n) {
+  %toobig = icmp ugt i64 %n, 4611686018427387903
+  br i1 %toobig, label %oom, label %ok
+oom:
+  call void @_static_oom()
+  unreachable
+ok:
   %total = add i64 %n, 9
   %p = call ptr @gpu_gc_pool_alloc_atomic(i64 %total)
   %tagslot = getelementptr inbounds i8, ptr %p, i64 -8

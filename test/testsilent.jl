@@ -84,3 +84,38 @@ using_Statistics_mean(v) = sum(v) / length(v)
 @testset "@simd reductions" for f in (simd_sum32, simd_sum64, base_sum32, base_sum64, base_dot, base_mean)
     @test static_status(f)[1] == :ok
 end
+
+# Memory safety. The size of a string or of the memory of an array has the header added to it, which wraps around for a size that is negative
+# (as a number of bytes, one that is far too large): the object was then a few bytes, and what was written in it was not.
+function exit_status_and_output(f)
+    main = StaticCompilerOverrides.make_main(f)
+    exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)))
+    out = IOBuffer()
+    proc = run(pipeline(ignorestatus(`$exe`); stdout = out, stderr = out))
+    return proc.exitcode, String(take!(out))
+end
+huge_string() = (s = Base._string_n(Base.inferencebarrier(-1)::Int); ncodeunits(s))
+huge_memory() = (m = Memory{UInt8}(undef, Base.inferencebarrier(typemax(Int) >> 1)::Int); m[1] = 0x01; Int(m[1]))
+@testset "Allocation sizes that are too large" begin
+    for f in (huge_string, huge_memory)
+        @testset "$(nameof(f))" begin
+            code, out = exit_status_and_output(f)
+            @test code != 0 # (the program stops: with a message of its own, or an uncaught exception)
+            @test !isempty(out)
+        end
+    end
+end
+
+# On Linux the collector decides whether it is on the stack of the main thread by how far the stack pointer is from the base of the stack: the
+# limit of the size of the stack is the far end (`getrlimit`), which it reads
+rlimit_stack() = Int(StaticCompilerOverrides.Runtime.Heap.rlimit_stack_size())
+@testset "Size limit of the stack" begin
+    @test 1 << 16 <= rlimit_stack() <= 1 << 40
+    @test static_status(rlimit_stack)[1] == :ok
+end
+
+# A file that was closed has no `FILE*`: reading it was a call of libc with a null pointer
+closed_read() = (path = "/tmp/static_overrides_closed_test.txt"; write(path, "abc"); io = open(path); close(io); try; read(io, UInt8); 0; catch; 1; end)
+@testset "Closed files" begin
+    @test static_status(closed_read)[1] == :ok
+end
