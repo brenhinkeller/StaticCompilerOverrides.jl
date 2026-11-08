@@ -188,7 +188,10 @@ of `show_element`, where the methods that you define later are not visible.)
 function add_show_candidates!(types::Type...)
     for T in types
         isconcretetype(T) || throw(ArgumentError("$T is not a concrete type"))
-        T in SHOW_CANDIDATES || push!(SHOW_CANDIDATES, T)
+        if !(T in SHOW_CANDIDATES)
+            push!(SHOW_CANDIDATES, T)
+            CANDIDATES_VERSION[] += 1
+        end
     end
     return nothing
 end

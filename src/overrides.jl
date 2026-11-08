@@ -14,6 +14,19 @@
 include("runtime.jl") # The runtime functions that compiled code needs: allocation, exceptions, ...
 using .Runtime: link_runtime!, UnsupportedCodeError
 
+# The parameters of the compilations of this package. GPUCompiler's functions that we specialize (`inference_params`,
+# `optimize!`, ...) are for this type, which is ours, and so they don't change what StaticCompiler's own compilations do.
+#
+# It also has the number of times that the list of registered types (`add_show_candidates!`, `add_dispatch_candidates!`) has
+# changed. GPUCompiler keeps what it infers apart for each value of the parameters, so what is inferred with a list of types
+# is not used for compiling with another (it would be, if the type were just a type, with the dispatch that was made for the list
+# that was there when a method was first inferred).
+struct OverridesParams <: GPUCompiler.AbstractCompilerParams
+    candidates::Int
+end
+const CANDIDATES_VERSION = Ref(0)
+OverridesParams() = OverridesParams(CANDIDATES_VERSION[])
+
 Base.Experimental.@MethodTable(method_table)
 @doc """
     StaticCompilerOverrides.method_table
@@ -51,9 +64,9 @@ end
 for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_typed,
           :static_code_native, :static_llvm_module)
     @eval begin
-        $f(args...; method_table = method_table, strict::Bool = true, allow = (), gc = default_gc(),
+        $f(args...; method_table = method_table, params = OverridesParams(), strict::Bool = true, allow = (), gc = default_gc(),
            llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc)), kwargs...) =
-            StaticCompiler.$f(args...; method_table, llvm_postprocess, kwargs...)
+            StaticCompiler.$f(args...; method_table, params, llvm_postprocess, kwargs...)
         @doc """
             $($f)(args...; method_table = StaticCompilerOverrides.method_table, strict = true, allow = (), kwargs...)
 

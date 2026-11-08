@@ -2,6 +2,7 @@ module StaticCompilerOverrides
 
 using Reexport: @reexport
 using StaticCompiler: StaticCompiler
+using GPUCompiler: GPUCompiler
 # StaticCompiler's own entry points (and `@device_override`) are replaced by ones of ours that
 # use our method table, see `overrides.jl`
 @reexport using StaticCompiler: StaticTarget

@@ -148,12 +148,12 @@ const TypeConstantsPass = ModulePass("StaticTypeConstants", placeholder_type_con
 is_ours(job) = GPUCompiler.method_table(job) === method_table
 
 @static if isdefined(GPUCompiler, :buildIntrinsicLoweringPipeline) && isdefined(GPUCompiler, :optimize!)
-    function GPUCompiler.buildIntrinsicLoweringPipeline(mpm, job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget}, opt_level)
+    function GPUCompiler.buildIntrinsicLoweringPipeline(mpm, job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}, opt_level)
         is_ours(job) && LLVM.add!(mpm, "StaticTagAllocations")
         return invoke(GPUCompiler.buildIntrinsicLoweringPipeline, Tuple{Any, GPUCompiler.CompilerJob, Any}, mpm, job, opt_level)
     end
 
-    function GPUCompiler.optimize!(job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget}, mod::LLVM.Module,
+    function GPUCompiler.optimize!(job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}, mod::LLVM.Module,
                                    relocs::GPUCompiler.Relocations; opt_level = 2)
         is_ours(job) || return invoke(GPUCompiler.optimize!, Tuple{GPUCompiler.CompilerJob, LLVM.Module, GPUCompiler.Relocations},
                                       job, mod, relocs; opt_level)

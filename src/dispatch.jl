@@ -33,7 +33,7 @@ const SPLIT_LIMIT = Ref(64)
 
 # `GPUCompiler.inference_params` of the code that is compiled with our method table: the number of types that Julia's inference
 # splits a union in, which is 4 by default, is that of the types that we dispatch over
-function GPUCompiler.inference_params(job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget})
+function GPUCompiler.inference_params(job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams})
     base = @invoke GPUCompiler.inference_params(job::GPUCompiler.CompilerJob)
     job.config.target.method_table === method_table || return base
     return CC.InferenceParams(base; max_union_splitting = max(base.max_union_splitting, SPLIT_LIMIT[]))
@@ -43,6 +43,7 @@ end
 function uses_our_method_table(interp::GPUCompiler.GPUInterpreter)
     t = CC.method_table(interp)
     hasproperty(t, :table) && (t = t.table) # (a cache of the table)
+    hasproperty(t, :tables) && return any(mt -> mt === method_table, t.tables) # (GPUCompiler 2.22: a list of the tables)
     while true
         hasproperty(t, :mt) && t.mt === method_table && return true
         hasproperty(t, :parent) || return false

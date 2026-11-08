@@ -1327,6 +1327,7 @@ function check_readable(addr::UInt, n::Integer)
 end
 
 const DATATYPE_TAG = Ref{UInt}(0) # the tag of `DataType` objects
+const TYPENAME_TAG = Ref{UInt}(0) # the tag of `TypeName` objects
 
 # the type of the Julia object at `addr`, from its type tag, or `nothing` if it doesn't look
 # like an object.
@@ -1348,6 +1349,15 @@ function object_type(addr::UInt)
     # the tag must point at a `DataType`
     typetag = safe_load(UInt(ptr) - 8)
     (typetag === nothing || typetag & ~UInt(15) != DATATYPE_TAG[]) && return nothing
+    # (a word before an address that is a type tag is not enough: it may be a field that holds the type `DataType`, with the next
+    # field after it, which is not a type. Asking Julia anything about that, as `<:` does, crashes it. So look at what a `DataType`
+    # has: its name is a `TypeName`, and its supertype a `DataType`.)
+    is_tagged(p, tag) = (w = safe_load(p - 8); w !== nothing && w & ~UInt(15) == tag)
+    TYPENAME_TAG[] == 0 && (TYPENAME_TAG[] = unsafe_load(Ptr{UInt}(UInt(pointer_from_objref(typeof(Int).name)) - 8)) & ~UInt(15))
+    name = safe_load(UInt(ptr))
+    super = safe_load(UInt(ptr) + 8)
+    (name === nothing || super === nothing || name % 16 != 0 || super % 16 != 0) && return nothing
+    is_tagged(name, TYPENAME_TAG[]) && is_tagged(super, DATATYPE_TAG[]) || return nothing
     T = unsafe_pointer_to_objref(ptr)
     T isa DataType && isconcretetype(T) || return nothing
     # the objects that are types (`typeof(Int)` is `DataType`) are objects as well, those of these kinds (the last is `Union{}`)
