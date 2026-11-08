@@ -19,6 +19,7 @@ include("objectid.jl") # objectid, so that a struct can be the key of a Dict
 include("iddict.jl")   # IdDict, and with it deepcopy
 include("deepcopy.jl") # deepcopy of any struct
 include("dispatch.jl") # dynamic dispatch on abstract types, by union splitting
+include("diagnostics.jl") # Why an entry point does not infer to a concrete type
 include("gc.jl")       # The garbage collector, from the program
 include("printf.jl")   # Printf, for formats without `*`
 include("unicode.jl")  # Properties of characters, without utf8proc
@@ -29,7 +30,7 @@ include("testing.jl")  # Differential testing: compiled executable vs. ordinary 
 
 export compile_executable, compile_shlib, static_code_llvm, static_code_typed, static_code_native,
        static_llvm_module, @device_override
-export UnsupportedCodeError, add_show_candidates!, add_dispatch_candidates!
+export UnsupportedCodeError, InferenceError, add_show_candidates!, add_dispatch_candidates!
 export StaticIO, StaticFile, STDIN, STDOUT, STDERR
 export static_result, static_status, undefined_symbols, allocation_sites, @static_test
 export gc_live_bytes, gc_collections, gc_heap_bytes

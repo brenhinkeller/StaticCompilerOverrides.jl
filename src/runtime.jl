@@ -1202,6 +1202,36 @@ function lower_gc_frames!(mod::LLVM.Module)
     return changed
 end
 
+# ## The objects that are copied into the binary: what it has to be, and what is checked
+#
+# Code that is compiled from a Julia process refers to the objects of that process by their addresses (`inttoptr (i64 N)`): a string, a
+# `Vector`, a type, a `Dict` that is a `const`. A binary does not have the process, so the objects are copied into it (`embed_constants!`), and
+# each address is replaced by the copy. Nothing says which numbers are addresses of objects and which are only numbers, and the memory of
+# the process is not described anywhere that this can ask: so what is done is made of checks, each of which has to hold for an address to be
+# an object, and each of which is the reason for a failure that the messages say (`JULIA_DEBUG=StaticCompilerOverrides`):
+#
+# 1. *An object is where its tag says.* The word before an address is its type tag: a small number (the builtin types), or the address of a
+#    `DataType`. That `DataType` has to have the tag of a `DataType`, a name with the tag of a `TypeName`, a supertype with the tag of a
+#    `DataType`, and `svec`s for its parameters and the types of its fields (`object_type`). Asking Julia anything about a "type" that does not
+#    have these (`<:`, `isconcretetype`) can crash the process that compiles, so nothing is asked before they are known. The objects that have
+#    no fields (a function, `nothing`) are 8 bytes after a 16-byte aligned cell, and are the `instance` of their type; symbols are 8-byte aligned too.
+# 2. *Memory is read only where the kernel says that it is readable* (`safe_load`, `check_readable`): a word that looks like a pointer may
+#    not be one.
+# 3. *An address that is an object is that object.* An address that is the start of an object is not looked for in an object before it
+#    (`find_objects`); only an address that is not (the data of a string, a field of a struct) is, up to `MAX_INTERIOR` bytes, and in an object
+#    only if the object is large enough to have it.
+# 4. *The objects are one each.* An object that is referred to twice (in two arrays, by two constants) is one object in the binary, by its
+#    address in this process (`e.globals`), so `===` and cycles are as in Julia. An object that is being copied is in `e.globals` before
+#    what it refers to is, which is how cycles are copied.
+# 5. *What a program never reads is not copied*: the supertype, wrapper and field names of a type, the method tables, the caches of a type name
+#    (`field_cut`). A program that reads them gets null, or an empty list.
+# 6. *A copy that fails fails whole.* If an object can't be copied (a `Module`, a task, something that is not an object), it and what refers to it are
+#    not, and the code that refers to its address stays as it was: strict mode refuses it, naming the address (`unresolved_pointer_uses`), and
+#    `EMBED_FAILURES` has why.
+#
+# `test/testembedfuzz.jl` checks all of it together: random nested constants and what a program does to a copy of them, with what Julia computes
+# from them as the answer, also with the collector run as often as it can.
+
 # (the objects of the program that are in the binary, by the address that they have in this process)
 mutable struct ObjectEmbedder
     mod::LLVM.Module
@@ -1520,6 +1550,7 @@ end
 
 const DATATYPE_TAG = Ref{UInt}(0) # the tag of `DataType` objects
 const TYPENAME_TAG = Ref{UInt}(0) # the tag of `TypeName` objects
+const SVEC_TAG = Ref{UInt}(0) # the tag of `svec`s
 
 # the type of the Julia object at `addr`, from its type tag, or `nothing` if it doesn't look
 # like an object.
@@ -1555,6 +1586,14 @@ function object_type(addr::UInt)
     super = safe_load(UInt(ptr) + 8)
     (name === nothing || super === nothing || name % 16 != 0 || super % 16 != 0) && return nothing
     is_tagged(name, TYPENAME_TAG[]) && is_tagged(super, DATATYPE_TAG[]) || return nothing
+    # (and the lists of its parameters and of the types of its fields are `svec`s: asking Julia for the fields of a type, which
+    # `isconcretetype` and what follows do, reads the length of the list that the word is at)
+    SVEC_TAG[] == 0 && (SVEC_TAG[] = unsafe_load(Ptr{UInt}(UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), Core.svec(1))) - 8)) & ~UInt(15))
+    parameters = safe_load(UInt(ptr) + fieldoffset(DataType, 3))
+    types = safe_load(UInt(ptr) + fieldoffset(DataType, 4))
+    (parameters === nothing || types === nothing) && return nothing
+    (parameters % 16 == 0 && is_tagged(parameters, SVEC_TAG[])) || return nothing
+    (types == 0 || (types % 16 == 0 && is_tagged(types, SVEC_TAG[]))) || return nothing # (null until the fields of the type are looked up)
     T = unsafe_pointer_to_objref(ptr)
     T isa DataType && isconcretetype(T) || return nothing
     # the objects that are types (`typeof(Int)` is `DataType`) are objects as well, those of these kinds (the last is `Union{}`)
@@ -2191,6 +2230,30 @@ function define_small_typeof!(e::ObjectEmbedder)
     return true
 end
 
+# Code boxes an `Int8` or `UInt8` by indexing the table of the boxed values of libjulia (`jl_boxed_int8_cache`, `jl_boxed_uint8_cache`: 256 objects
+# each) instead of allocating one. The tables are made of the objects in the binary, when the code uses them.
+function define_boxed_caches!(e::ObjectEmbedder)
+    mod = e.mod
+    changed = false
+    for name in ("jl_boxed_int8_cache", "jl_boxed_uint8_cache")
+        globals = LLVM.globals(mod)
+        haskey(globals, name) && LLVM.isdeclaration(globals[name]) || continue
+        old = globals[name]
+        ptrT = LLVM.PointerType()
+        host = name == "jl_boxed_int8_cache" ? cglobal(:jl_boxed_int8_cache, Ptr{Ptr{Cvoid}}) : cglobal(:jl_boxed_uint8_cache, Ptr{Ptr{Cvoid}})
+        entries = LLVM.Constant[embed_ref!(e, UInt(unsafe_load(host, i))) for i in 1:256]
+        LLVM.name!(old, name * ".declaration")
+        new = LLVM.GlobalVariable(mod, LLVM.ArrayType(ptrT, 256), name)
+        LLVM.initializer!(new, LLVM.ConstantArray(ptrT, entries))
+        LLVM.constant!(new, true)
+        LLVM.linkage!(new, LLVM.API.LLVMLinkOnceODRLinkage)
+        LLVM.replace_uses!(old, new)
+        LLVM.erase!(old)
+        changed = true
+    end
+    return changed
+end
+
 # The `switch`es on a type tag. (LLVM makes one of a chain of comparisons of the tag of an object with
 # types, which is `tag & -16`.) The cases of a switch are numbers, which can't be the addresses of the
 # types in the binary, so the switch has to become the comparisons again: one after another, and not by
@@ -2348,6 +2411,7 @@ function embed_constants!(e::ObjectEmbedder)
     # as comparisons, so that the types in them can be replaced (see `type_number_constants`)
     foreach(lower_switch!, type_switches(mod))
     changed = fold_small_typeof_loads!(e) || define_small_typeof!(e)
+    changed |= define_boxed_caches!(e)
     consts = inttoptr_constants(mod)
     for (addr, ops) in consts
         replacement = nothing

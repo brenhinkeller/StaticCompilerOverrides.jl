@@ -78,10 +78,13 @@ end
 for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_typed,
           :static_code_native, :static_llvm_module)
     @eval begin
-        $f(args...; method_table = method_table, params = OverridesParams(), strict::Bool = true, allow = (), gc = default_gc(), target = default_target(),
-           llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc)), kwargs...) =
-            StaticCompiler.$f(args...; method_table, params, target, llvm_postprocess,
+        function $f(args...; method_table = method_table, params = OverridesParams(), strict::Bool = true, allow = (), gc = default_gc(), target = default_target(),
+                    llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc)), kwargs...)
+            $(f in (:compile_executable, :compile_shlib) ?
+                :(length(args) >= 2 && args[1] isa Function && args[2] isa Tuple && check_entry(args[1], args[2]; method_table, params, target)) : :nothing)
+            return StaticCompiler.$f(args...; method_table, params, target, llvm_postprocess,
                               $(f in (:compile_executable, :compile_shlib) ? :(merge((; cflags = default_cflags()), NamedTuple(kwargs))...) : :(kwargs...)))
+        end
         @doc """
             $($f)(args...; method_table = StaticCompilerOverrides.method_table, strict = true, allow = (), kwargs...)
 
