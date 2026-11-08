@@ -44,7 +44,7 @@ method table of StaticCompilerOverrides, which is the one used by the functions 
 compilation with StaticCompiler's own functions.
 """
 macro device_override(ex)
-    return esc(:($Base.Experimental.@overlay($(GlobalRef(@__MODULE__, :method_table)), $ex)))
+    return esc(:($Base.Experimental.@consistent_overlay($(GlobalRef(@__MODULE__, :method_table)), $ex)))
 end
 
 # the collector is on, where it can be (it needs to know where the stack of the program starts); the environment variable

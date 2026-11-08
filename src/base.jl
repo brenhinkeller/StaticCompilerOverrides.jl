@@ -105,3 +105,15 @@ const CLOCK_MONOTONIC = Sys.isapple() ? Int32(6) : Int32(1)
 
 # There is one thread
 @device_override Base.Threads.nthreads() = 1
+
+# `@assert cond "message $x"` (a message that is not a literal) makes the message with `_assert_tostring`, which is opaque to the
+# compiler on purpose (`Core.compilerbarrier`), so it is a call on an `Any`. The message is a `String`, nearly always, and then
+# there is nothing to do.
+@device_override Base._assert_tostring(msg::String) = msg
+
+# Deprecation warnings (`Base.depwarn`, which packages call from the methods that are deprecated) look at the options of the
+# Julia that runs (`JLOptions()`, `--depwarn`), which a program does not have; and are not shown by default: nothing is done
+@device_override Base.depwarn(msg, funcsym; force::Bool = false) = nothing
+@static if isdefined(Base, :depwarn_if_not_pure)
+    @device_override Base.depwarn_if_not_pure(args...) = nothing # (the deprecated properties of types, `Type.name`, which `@deprecate` reads)
+end

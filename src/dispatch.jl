@@ -198,3 +198,52 @@ function report_registered_dispatch()
     shown = join(("`$c`" for c in first(calls, 5)), ", ") * (length(calls) > 5 ? ", and $(length(calls) - 5) more" : "")
     @debug "Dispatch on `Any` or on an abstract type with unlisted subtypes was resolved over registered types: a value of another type that reaches such a call aborts the program with a MethodError. Add types with `add_dispatch_candidates!`." calls = shown candidates = join(string.(dispatch_candidates()), ", ") _id = :static_dispatch_candidates
 end
+
+## `invokelatest`
+#
+# `invokelatest(f, args...)` calls `f` in the newest world, and so the compiler can't know what it calls: the call is an `Any`, made
+# by the runtime. In a program that is compiled there are no newer methods, so it is the call `f(args...)`. Packages use it in the
+# macros of logging (`@warn`), and sometimes to avoid a recursion that inference gives up on. So (for what is compiled with our method
+# table) inference takes it for the call of `f`, and the statement is made that call before it is optimized.
+
+function CC.abstract_call_known(interp::GPUCompiler.GPUInterpreter, f::typeof(Core.invokelatest), arginfo::CC.ArgInfo, si::CC.StmtInfo,
+                                vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int = CC.get_max_methods(interp, f, sv))
+    if uses_our_method_table(interp) && length(arginfo.argtypes) >= 2
+        inner = CC.ArgInfo(arginfo.fargs === nothing ? nothing : arginfo.fargs[2:end], arginfo.argtypes[2:end])
+        return CC.abstract_call(interp, inner, si, vtypes, sv)
+    end
+    return @invoke CC.abstract_call_known(interp::CC.AbstractInterpreter, f::Any, arginfo::CC.ArgInfo, si::CC.StmtInfo,
+                                          vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int)
+end
+
+# The function that a statement of the code before it is optimized calls (what a callee refers to, if that is a variable that a
+# statement before has loaded: `Base.invokelatest` is a `GlobalRef`, or `getproperty(Base, :invokelatest)`), or `nothing`
+function called_function(code, x)
+    x isa Core.SSAValue && (x = code[x.id])
+    if x isa Expr && x.head === :call && length(x.args) == 3
+        f = called_function(code, x.args[1])
+        if f === getproperty || f === getglobal
+            mod = called_function(code, x.args[2])
+            name = x.args[3] isa QuoteNode ? x.args[3].value : x.args[3]
+            return mod isa Module && name isa Symbol && isdefined(mod, name) ? getglobal(mod, name) : nothing
+        end
+        return nothing
+    end
+    x isa GlobalRef && return isdefined(x.mod, x.name) ? getglobal(x.mod, x.name) : nothing
+    x isa QuoteNode && return x.value
+    return x isa Expr ? nothing : x
+end
+
+# (before optimizing: the statements of `invokelatest` are the calls that inference took them for)
+function CC.optimize(interp::GPUCompiler.GPUInterpreter, opt::CC.OptimizationState, caller::CC.InferenceResult)
+    if uses_our_method_table(interp)
+        code = opt.src.code
+        for pc in eachindex(code)
+            st = code[pc]
+            st isa Expr && st.head === :call && length(st.args) >= 2 || continue
+            called_function(code, st.args[1]) === Core.invokelatest || continue
+            code[pc] = Expr(:call, st.args[2:end]...)
+        end
+    end
+    return @invoke CC.optimize(interp::CC.AbstractInterpreter, opt::CC.OptimizationState, caller::CC.InferenceResult)
+end

@@ -273,6 +273,14 @@ define linkonce_odr ptr @ijl_box_uint32(i32 %v) {
   ret ptr %p
 }
 
+define linkonce_odr ptr @ijl_box_char(i32 %v) {
+  %p = call ptr @gpu_gc_pool_alloc_atomic(i64 8)
+  %tagslot = getelementptr inbounds i8, ptr %p, i64 -8
+  store i64 {{TAG_CHAR}}, ptr %tagslot, align 8
+  store i32 %v, ptr %p, align 4
+  ret ptr %p
+}
+
 ; String (Julia 1.11+): { length, data..., NUL }
 define linkonce_odr ptr @ijl_alloc_string(i64 %n) {
   %total = add i64 %n, 9
@@ -518,7 +526,7 @@ const RUNTIME_SHIM_FUNCTIONS = (
     "ijl_enter_handler", "ijl_pop_handler", "ijl_pop_handler_noexcept", "ijl_excstack_state",
     "ijl_restore_excstack", "ijl_throw", "ijl_rethrow", "ijl_rethrow_other",
     "ijl_current_exception", "jl_current_exception",
-    "ijl_box_int64", "ijl_box_uint64", "ijl_box_int32", "ijl_box_uint32",
+    "ijl_box_int64", "ijl_box_uint64", "ijl_box_int32", "ijl_box_uint32", "ijl_box_char",
     "ijl_alloc_string", "ijl_pchar_to_string", "jl_pchar_to_string", "ijl_cstr_to_string", "jl_cstr_to_string", "jl_string_to_genericmemory", "jl_genericmemory_to_string",
     "jl_genericmemory_copyto",
 )
@@ -1097,6 +1105,7 @@ end
 # Define the runtime functions that `mod` calls but does not define.
 function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux())
     blas = resolve_blas_lookups!(mod) # (before what they are given is embedded)
+    library_paths, library_symbols = resolve_library_lookups!(mod)
     define_field_index!(mod)
     null_methoderror_arguments!(mod)
     stub_cancel_handlers!(mod)
@@ -1126,6 +1135,7 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
         LLVM.link!(mod, shim) # consumes `shim`
     end
     linked |= link_blas!(mod, blas)
+    linked |= link_libraries!(mod, library_paths, library_symbols)
     linked |= link_heap!(mod; gc) # (the shim, and the code, call `static_alloc`)
     haskey(LLVM.functions(mod), "gpu_gc_pool_alloc") && inline_allocation!(mod, gc)
     linked && run!(GlobalDCEPass(), mod)
@@ -2169,5 +2179,6 @@ function embed_constants!(e::ObjectEmbedder)
 end
 
 include("blas.jl") # BLAS and LAPACK, through libblastrampoline
+include("libraries.jl") # the functions of libraries that are called by their library: libm, and the others loaded when the program runs
 
 end # module Runtime

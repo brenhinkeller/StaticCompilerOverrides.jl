@@ -462,6 +462,33 @@ operating system (`getentropy`) when first used, like Julia seeds a new process.
 seed)` works for explicitly constructed generators. The default generator is not thread-safe, as
 there are no threads. `Random.seed!(seed)` on the default generator does not work yet.
 
+## Code from packages
+
+Code of packages compiles like the code of Base: nothing is needed from the package. What packages do that Base's code seldom does is
+handled here, found by compiling [Distributions.jl](https://github.com/JuliaStats/Distributions.jl) and
+[NaNStatistics.jl](https://github.com/brenhinkeller/NaNStatistics.jl):
+
+* **Logging.** `@warn`, `@info` and `@error` write to the standard error, as the default logger of Julia does to something that is not a terminal
+  (`┌ Warning: message`, the keywords as `│   key = value`, and `└ @ file:line`). `@debug` is off, as it is in Julia without `JULIA_DEBUG`, and the code of it is not in
+  the binary. There is one logger (`with_logger` and `global_logger` have no effect), and `maxlog` is not kept: the message is written each time.
+* **`invokelatest`.** `invokelatest(f, args...)` (and `@invokelatest f(args...)`) is the call `f(args...)`: there are no newer methods in a program. The keyword
+  form (`invokelatest(f, x; k = 1)`) is not supported.
+* **`@assert cond "message $x"`** works (the message is a `String`, made when the assertion fails).
+* **Deprecated methods** can be called: the warning (`Base.depwarn`) is not shown, as it is not in Julia by default.
+* **Functions of libraries that a package calls by the name of the library** (`ccall((:erfc, libopenlibm), ...)`, as SpecialFunctions.jl, which Distributions.jl
+  uses, does). The functions of the math library of the machine are linked by name: the values can differ from openlibm's in the last bit. Those of
+  other libraries (OpenSpecFun, Rmath, GMP, ...) are looked up when the program runs, with `dlopen` of the **path that the library had when compiling**:
+  the binary needs that file, as it needs libblastrampoline for BLAS. The libraries of the runtime of Julia (libjulia, libuv, ...) are not available.
+
+Compiled and compared with Julia in the survey (the results rounded to 6 digits, because of the last bit of libm):
+
+* **Distributions.jl**: 65 of 65 cases, from `pdf`, `cdf`, `quantile`, `mean`, `var`, `entropy` for the usual distributions (`Normal`, `Gamma`, `Beta`, `TDist`, `Poisson`,
+  `Binomial`, `Categorical`, `MvNormal`, `Dirichlet`, `Multinomial`, truncated and mixture models, ...), to `rand` with a generator that is given (`rand(Xoshiro(1), Normal())`),
+  `fit`, `loglikelihood` and `kldivergence`.
+* **NaNStatistics.jl**: all the cases of the survey (`nanmean`, `nanstd`, `nanmedian`, `nanquantile`, `nanpctile`, `nancov`, `nancor`, `movmean`, `histcounts`, `nanbinmean`, `nansort!`, ...)
+  but `nanmean(A; dim = (1, 2))`: with the dimensions as a tuple the result is an `Array` of a size that is only known when the program runs (a function
+  that is not type-stable), see [Dynamic dispatch on abstract types and on `Any`](@ref).
+
 ## Known limitations
 
 What does not work yet, or works differently from Julia, gathered in one place. The sections above say more about each.
@@ -477,8 +504,8 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 
 **Threads, tasks and `eval`**
 
-* There are **no tasks, `Channel`s, `@async` or `Threads.@spawn`**, no `eval` or `invokelatest`, and no `Regex`, `BigInt` or `BigFloat` (they
-  need libraries that are not there: PCRE, GMP and MPFR).
+* There are **no tasks, `Channel`s, `@async` or `Threads.@spawn`**, no `eval`, no keyword form of `invokelatest`, and no `Regex`, `BigInt` or `BigFloat` (they
+  need libraries that are not there: PCRE, GMP and MPFR; see [Code from packages](@ref) for calling functions of libraries).
 * **The heap is not thread-safe.** A program, or a library from `compile_shlib`, allocates from one thread at a time. A library that
   is called on a stack that is not that of the thread (a task of Julia running on another thread) **frees nothing** in that call
   (see [Memory and the garbage collector](@ref)).
