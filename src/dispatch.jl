@@ -143,6 +143,15 @@ function dispatch_needed(interp, arginfo::CC.ArgInfo, @nospecialize(atype), max_
     return length(matches.applicable) > 1 || !CC.fully_covering(matches)
 end
 
+# whether some method fits a call
+function has_methods(interp, arginfo::CC.ArgInfo, @nospecialize(atype), max_methods::Int)
+    matches = arginfo.fargs === nothing ?
+        CC.find_method_matches(interp, arginfo.argtypes, atype; max_methods) :
+        CC.find_method_matches(interp, arginfo.argtypes, atype; max_methods, fargs = arginfo.fargs)
+    matches isa CC.FailedMethodMatch && return true # (too many to count)
+    return !isempty(matches.applicable)
+end
+
 # What Julia is told of the methods that fit, as not covering what the arguments can be, so that the call it makes is a test of each
 # type (and not of all but the last, which would be what is left): what is left is a `MethodError`. For a call over the registered
 # types, which an argument of the type that it has (`Any`) can be more than, so that the types that are not registered are not
@@ -170,6 +179,9 @@ function CC.abstract_call_gf_by_type(interp::GPUCompiler.GPUInterpreter, @nospec
     registered = false
     if uses_our_method_table(interp)
         closed = close_abstract_arguments(arginfo)
+        # (a call that none of the types that the arguments are closed to has a method for is left as it is: it is not known what the
+        # arguments are, and the result of the call is not that it is an error, which would make what calls it one too)
+        closed === nothing || has_methods(interp, closed[1], closed[2], max_methods) || (closed = nothing)
         if closed !== nothing && dispatch_needed(interp, arginfo, atype, max_methods)
             original = arginfo.argtypes
             arginfo, atype, registered = closed
@@ -181,7 +193,8 @@ function CC.abstract_call_gf_by_type(interp::GPUCompiler.GPUInterpreter, @nospec
             end
         end
     end
-    call = @invoke CC.abstract_call_gf_by_type(interp::CC.AbstractInterpreter, f, arginfo, si, atype, vtypes, sv, max_methods::Int)
+    call = @invoke CC.abstract_call_gf_by_type(interp::CC.AbstractInterpreter, f::Any, arginfo::CC.ArgInfo, si::CC.StmtInfo, atype::Any,
+                    vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int)
     registered || return call
     return CC.Future{CC.CallMeta}(call, interp, sv) do result, interp, sv
         return CC.CallMeta(result.rt, result.exct, result.effects, uncovered(result.info), result.refinements)

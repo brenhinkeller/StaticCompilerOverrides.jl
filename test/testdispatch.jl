@@ -162,3 +162,12 @@ end
     @test splitting(SC.StaticCompilerParams()) == Core.Compiler.InferenceParams().max_union_splitting
     @test splitting(StaticCompilerOverrides.OverridesParams(); method_table = StaticCompilerOverrides.method_table) >= StaticCompilerOverrides.SPLIT_LIMIT[]
 end
+
+# A call with an argument of the type `Any` that has no method for any of the registered types (the only method is for a `Vector`, which
+# is not one of them) is left to Julia, which tests the type of the argument: closing it to the registered types would make the call an
+# error, and what calls it infer as `Union{}`.
+only_vector(v::Vector) = length(v)
+call_only_vector(x) = only_vector(x)
+@testset "Calls over the registered types that no method fits" begin
+    @test static_result(() -> call_only_vector(Base.inferencebarrier([1, 2, 3]))) == 3
+end

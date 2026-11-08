@@ -508,6 +508,14 @@ Compiled and compared with Julia in the survey (the results rounded to 6 digits,
   of chronometers of several types (`AbsoluteChronometer`, `FissionTrackSample`), because `model!` prints chronometers in a debugging message (`@info chrons[imax]`) and takes `argmax` over a union of many types, both dynamic
   (`eltype(c) <: C` now works, see [Binary size](@ref)); `NielsenBasinRo()` built by the program (it splats a vector into a tuple); and the MCMC functions, which are not tried yet.
 
+* **[Isoplot.jl](https://github.com/brenhinkeller/Isoplot.jl)** (28 of 29 cases of the survey, after the changes below; `metropolis_min` compiles, but draws from the global generator, so its numbers are not
+  Julia's): the weighted means, `mswd`, `chauvenet`, `yorkfit`, `lsqfit`, `mcleanfit`, `isochron`, the concordia functions (`age`, `discordance`, `isconcordant`, `upperintercept`, `ageconcordia`),
+  `stacey_kramers`, `CI`, `Age`, `rand` of an analysis with a generator that is given, `distwmean` and `Measurement` arithmetic. Written with sizes that are only known when the
+  program runs, five things did not compile, and were made to by small changes to a copy of the package: `Analysis(μ, Σ)` of a `Vector` and a `Matrix` is an `Analysis{length(μ)}` (given
+  `SVector`s, whose length is in the type, it compiles); `SVector{npoints}` in `Ellipse` with a number of points that is a keyword (a `Val`, `Ellipse(d, Val(50))`); `ntuple(f, length(x))` of a
+  `Vector` in `yorkfit` and `distwmean` (a `Tuple` or `SVector` of analyses compiles); `eigen` of an `SMatrix` that has complex eigenvalues for all that the compiler can tell
+  (`eigen(Symmetric(Σ))`); and a local function that returns a number or a tuple depending on an argument (`mcleanfit`), which is two functions.
+
 ## Known limitations
 
 What does not work yet, or works differently from Julia, gathered in one place. The sections above say more about each.
