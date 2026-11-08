@@ -1677,9 +1677,54 @@ function embed_global!(e::ObjectEmbedder, addr::UInt)
     end
 end
 
+# Tables whose places depend on addresses: a `Dict` (or a `Set`) of keys that `hash` by `objectid`, which for a mutable object is its address, and an
+# `IdDict`, which is made with the addresses of the keys, whatever they are. The copy of such a table in the binary has the keys at other
+# addresses, so what it looks up is not found, and no error says so. Such a table is refused.
+
+# whether `objectid(x)` is made from an address: `x` is a mutable object, or has one in a field (as `objectid` of the fields of an immutable
+# struct is the `objectid` of what they refer to)
+function objectid_by_address(x, depth::Int = 0)
+    T = typeof(x)
+    # (a type, a module, a symbol and a string have their own hashes, which are not those of their addresses)
+    T <: Union{DataType, Module, Core.TypeName, Symbol, String, Core.SimpleVector, Union, UnionAll} && return false
+    ismutabletype(T) && return true
+    (depth > 8 || isbitstype(T)) && return false
+    for i in 1:fieldcount(T)
+        isdefined(x, i) && objectid_by_address(getfield(x, i), depth + 1) && return true
+    end
+    return false
+end
+
+# whether `hash` of the key is made with its `objectid` (the fallback method of Base)
+function hash_is_objectid(x)
+    m = Base.invokelatest(which, hash, Tuple{typeof(x), UInt})
+    return m.sig == Tuple{typeof(hash), Any, UInt}
+end
+
+# why the table at `addr` of the type `T` can't be copied, or `nothing`
+function address_hashed_reason(T::DataType, addr::UInt)
+    (T <: Dict || T <: IdDict) || return nothing
+    d = unsafe_pointer_to_objref(Ptr{Cvoid}(addr))
+    isempty(d) && return nothing
+    if d isa IdDict
+        return string("an `IdDict` that has keys (`", T, "`), whose places in the table are from the addresses of the keys, which are not those of the binary: ",
+                      "make it when the program runs, or use a `Dict`")
+    end
+    for k in keys(d)
+        if objectid_by_address(k) && hash_is_objectid(k)
+            return string("a `", T, "` whose keys of the type `", typeof(k), "` are hashed by their addresses (the `hash` of `Base` for a type that has no method of its own is ",
+                          "its `objectid`), which are not those of the binary, so a lookup would not find them: define `Base.hash(::", typeof(k), ", ::UInt)` (and `==`), ",
+                          "or make the table when the program runs")
+        end
+    end
+    return nothing
+end
+
 function embed_new_global!(e::ObjectEmbedder, addr::UInt)
     T = object_type(addr)
     T === nothing && throw(EmbedFailure("not an object, at $(string(addr, base = 16)): tag word $(repr(safe_load(addr - 8)))"))
+    reason = address_hashed_reason(T, addr)
+    reason === nothing || throw(EmbedFailure(reason))
     # `values` needs the global, since objects may refer to themselves or to each other
     types, values = object_pieces(e, T, addr)
     # Before the object, as in Julia: its type tag (as it is in this process: the code that was compiled compares

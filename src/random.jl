@@ -12,10 +12,12 @@ using Random: Random, TaskLocalRNG
 # which is not a valid xoshiro state.
 const TASKLOCAL_RNG_STATE = Ref{NTuple{5,UInt64}}((0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000))
 
-# four words of entropy from libc, or fixed words if the system fails to provide it
+# four words of entropy from libc. If the system can't provide it that is an error: a generator with a fixed seed would give the same numbers each
+# time that the program runs, which is not what `rand()` is. (`Random.seed!` makes one that is meant to be fixed.)
 function entropy_state()
     buf = Ref{NTuple{4,UInt64}}((0x9e3779b97f4a7c15, 0xbf58476d1ce4e5b9, 0x94d049bb133111eb, 0x2545f4914f6cdd1d))
     ok = GC.@preserve buf @symbolcall getentropy(Ptr{UInt64}(pointer_from_objref(buf))::Ptr{UInt64}, UInt(32)::UInt)::Int32
+    ok == 0 || error("could not get entropy from the system to seed the default random number generator: use `Random.seed!(seed)`")
     s0, s1, s2, s3 = buf[]
     return (s0, s1, s2, s3, s0 + 3s1 + 5s2 + 7s3)
 end

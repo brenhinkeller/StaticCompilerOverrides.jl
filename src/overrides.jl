@@ -78,8 +78,10 @@ end
 for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_typed,
           :static_code_native, :static_llvm_module)
     @eval begin
-        function $f(args...; method_table = method_table, params = OverridesParams(), strict::Bool = true, allow = (), gc = default_gc(), target = default_target(),
+        function $f(args...; method_table = method_table, params = nothing, strict::Bool = true, allow = (), gc = default_gc(), target = default_target(),
                     llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc)), kwargs...)
+            register_custom_deepcopy!() # (this can change the parameters: they have the version of the lists of types)
+            params === nothing && (params = OverridesParams())
             $(f in (:compile_executable, :compile_shlib) ?
                 :(length(args) >= 2 && args[1] isa Function && args[2] isa Tuple && check_entry(args[1], args[2]; method_table, params, target)) : :nothing)
             return StaticCompiler.$f(args...; method_table, params, target, llvm_postprocess,

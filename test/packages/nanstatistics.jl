@@ -2,7 +2,12 @@
 using NaNStatistics
 
 # (the result is an array of a size that is only known when the program runs)
-const NANSTATISTICS_BROKEN = ("nanmean tuple",)
+# Reducing over several dimensions (`dims = (1, 2)`) is inferred as `Any` by NaNStatistics 1.0.2 (its generated functions call themselves,
+# and inference gives up on the recursion), and so can't be compiled; later versions assert the type of the result (`::typeof(B)`).
+const TUPLE_DIMS = ("nanmean tuple", "nansum tuple", "nanstd tuple", "nanvar tuple", "nansem tuple", "nanmedian tuple",
+                    "nanskewness tuple", "nankurtosis tuple", "nanmad tuple", "nanpctile tuple")
+const TUPLE_DIMS_INFERRED = only(Base.return_types(A -> nanmean(A; dims = (1, 2)), (Array{Float64, 3},))) !== Any
+const NANSTATISTICS_BROKEN = TUPLE_DIMS_INFERRED ? () : TUPLE_DIMS
 
 @testset "NaNStatistics.jl" begin
     check_cases([
@@ -27,8 +32,17 @@ const NANSTATISTICS_BROKEN = ("nanmean tuple",)
   "histcountindices" => () -> sum(histcountindices(data(), 0:5:30)[1]),
   "nanmedian dim3" => () -> (m = reshape(dataN(), 5, 5, 2); r6(sum(nanmedian(m; dim = 3)))),
   "nanstd dims"    => () -> (m = reshape(dataN(), 10, 5); r6(sum(nanstd(m; dim = 2)))),
-    "nanmean 2arg"   => () -> r6(nanmean(dataN(), data())),
+  "nanmean 2arg"   => () -> r6(nanmean(dataN(), data())),
   "nanmean tuple"  => () -> (m = reshape(dataN(), 10, 5); r6(sum(nanmean(m; dim = (1, 2))))),
+  "nansum tuple"   => () -> (m = reshape(dataN(), 5, 5, 2); r6(sum(nansum(m; dim = (1, 2))))),
+  "nanstd tuple"   => () -> (m = reshape(dataN(), 5, 5, 2); r6(sum(nanstd(m; dim = (1, 2))))),
+  "nanvar tuple"   => () -> (m = reshape(dataN(), 5, 5, 2); r6(sum(nanvar(m; dim = (2, 3))))),
+  "nansem tuple"   => () -> (m = reshape(dataN(), 5, 5, 2); r6(sum(nansem(m; dim = (1, 2))))),
+  "nanmedian tuple" => () -> (m = reshape(dataN(), 5, 5, 2); r6(sum(nanmedian(m; dim = (1, 2))))),
+  "nanskewness tuple" => () -> (m = reshape(dataN(), 5, 5, 2); r6(sum(nanskewness(m; dim = (1, 2))))),
+  "nankurtosis tuple" => () -> (m = reshape(dataN(), 5, 5, 2); r6(sum(nankurtosis(m; dim = (1, 2))))),
+  "nanmad tuple"   => () -> (m = reshape(dataN(), 5, 5, 2); r6(sum(nanmad(m; dim = (1, 2))))),
+  "nanpctile tuple" => () -> (m = reshape(dataN(), 5, 5, 2); r6(sum(nanpctile(m, 30; dim = (1, 2))))),
   "nanmaximum Int" => () -> nanmaximum(collect(1:20)),
   "nanminimum Float32" => () -> r6(nanminimum(Float32.(dataN()))),
   "nanmean ranges" => () -> r6(nanmean(1:10)),

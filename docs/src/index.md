@@ -137,7 +137,8 @@ main() = (println(Any[1, "a", Point(2, 3.5), (4, 5.0)]); 0)
 # Any[1, "a", Point(2, 3.5), (4, 5.0)]
 ```
 
-Limits: what is shown is not cut (`:limit`) and containers that contain themselves are not detected; a
+Limits: what is shown is not cut (`:limit`) and containers that contain themselves are not detected (they recurse until the program crashes); an
+`IOContext(io, :compact => true)` (or `:limit`, `:displaysize`, ...) of one of these streams is **accepted but ignored**: the output is not compacted or cut; a
 `Symbol` that is not a plain ASCII identifier (an operator, say) is an error; and the names of types of modules other
 than `Main` that the program makes visible with `using`/`import` are written with their module (Base writes
 `Main`'s view of them).
@@ -539,6 +540,20 @@ What does not work yet, or works differently from Julia, gathered in one place. 
   not the host) is not supported.
 * BLAS and LAPACK need LBT and the libraries that back it **at the same paths when the program is run** (see
   [Linear algebra and BLAS](@ref)); they are not in the binary.
+
+**Refused, because the answer would otherwise differ from Julia's**
+
+* **Constant tables hashed by address.** A `const` `Dict` or `Set` whose keys are mutable objects (or hold one) with no `hash` method of
+  their own, and any non-empty `IdDict`, are made in Julia with the addresses of their keys, which are not the addresses of the copies in the binary: a
+  lookup would quietly find nothing. Compiling such a constant is an error that says so. Define `Base.hash` (and `==`) for the key type, or make the table
+  when the program runs (a table that is made by the program is fine).
+* **`deepcopy` of a type with a package's own `deepcopy_internal`.** The copy here is made field by field, which is not what that method does, so
+  compiling warns, and the program stops if it reaches the copy.
+* **Writes that fail.** A write, `flush` or `close` that libc reports as failed (a full disk, a closed pipe) throws, as in Julia. And if the system
+  has no entropy for the default random number generator, the first `rand()` throws, rather than the program using a fixed seed (`Random.seed!` makes
+  one that is meant to be fixed).
+* Loops with `@simd` (so `sum`, `dot`, `mean`, ...) are vectorized and their reductions reordered, as in Julia, so the results are the same as
+  Julia's, to the last digit, when it is run on the same machine type; other machines (SIMD widths) may differ in the last digits, in Julia as here.
 
 **Threads, tasks and `eval`**
 

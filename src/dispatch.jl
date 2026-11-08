@@ -65,6 +65,12 @@ CC.findsup(@nospecialize(sig::Type), table::OverridesTableView) = CC.findsup(sig
 GPUCompiler.method_table_view(job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}) =
     OverridesTableView(@invoke GPUCompiler.method_table_view(job::GPUCompiler.CompilerJob))
 
+# GPUCompiler runs the loop and SLP vectorizers only for the jobs that say they can (`can_vectorize`, false by default: it is true for its native and GPU
+# targets, and not for StaticCompiler's). Without them a loop with `@simd` is not vectorized, nor its reduction reordered, so the result of `sum`, `dot` and
+# the like is that of a plain loop: different in the last digits from what Julia gives (which uses the vectorizer) and less accurate. Our jobs
+# (the type of the parameters is ours) run them, as Julia does.
+GPUCompiler.can_vectorize(::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}) = true
+
 # (the interpreter has the view in a cache, `CachedMethodTable`, when the compiler has one)
 const OverridesInterpreter = @static if isdefined(CC, :CachedMethodTable)
     GPUCompiler.GPUInterpreter{<:Union{OverridesTableView, CC.CachedMethodTable{<:OverridesTableView}}}

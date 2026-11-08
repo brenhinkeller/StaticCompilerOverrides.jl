@@ -54,15 +54,25 @@ Base.iswritable(::StaticIO{S}) where {S} = S !== :stdin
 
 ## writing
 
-Base.unsafe_write(io::LibcStream, p::Ptr{UInt8}, n::UInt) = Int(fwrite(filepointer(io), p, 1, Int64(n)))
+# (a write or a flush that libc reports as failed is an error, as it is in Julia: a full disk, a closed pipe. Without this, what could not be written is lost
+# without a word.)
+write_error() = throw(ErrorException("error writing to a stream (the write or flush of libc failed)"))
+
+function Base.unsafe_write(io::LibcStream, p::Ptr{UInt8}, n::UInt)
+    written = Int(fwrite(filepointer(io), p, 1, Int64(n)))
+    written == Int(n) || write_error()
+    return written
+end
 
 function Base.write(io::LibcStream, x::UInt8)
     status = @symbolcall fputc(Int32(x)::Int32, filepointer(io)::Ptr{FILE})::Int32
-    return status < 0 ? 0 : 1
+    status < 0 && write_error()
+    return 1
 end
 
 function Base.flush(io::LibcStream)
-    @symbolcall fflush(filepointer(io)::Ptr{FILE})::Int32
+    status = @symbolcall fflush(filepointer(io)::Ptr{FILE})::Int32
+    status == 0 || write_error()
     return nothing
 end
 

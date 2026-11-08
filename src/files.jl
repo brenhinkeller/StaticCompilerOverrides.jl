@@ -26,8 +26,10 @@ Close it with `close`; `open(f, path, mode)` does, after calling `f(io)`. (The k
 @device_override Base.open(path::AbstractString) = open_file(path, "r")
 
 function Base.close(f::StaticFile)
-    f.fp == C_NULL || fclose(f.fp)
+    fp = f.fp
     f.fp = C_NULL
+    # (`fclose` writes what is buffered, and reports if that failed: the file is closed either way)
+    fp == C_NULL || fclose(fp) == 0 || write_error()
     return nothing
 end
 
