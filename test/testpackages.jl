@@ -88,6 +88,23 @@ sb_case7() = (x = [1, 2]; b = deepcopy([x, x]); b[1][1] = 7; b[2][1])
 sb_case8() = (d = Dict(1 => [1, 2]); e = deepcopy(d); e[1][1] = 8; d[1][1] * 10 + e[1][1])
 sb_case9() = (a = ["a", "bc"]; length(deepcopy(a)[2]))
 
+struct DcInner; v::Vector{Float64}; end
+struct DcImm; a::Vector{Int}; b::Int; end
+mutable struct DcMut; a::Vector{Int}; b::Int; end
+struct DcOuter; i::DcInner; names::Vector{String}; t::Tuple{Int,Vector{Int}}; end
+mutable struct DcNode; v::Int; next::Union{Nothing,DcNode}; end
+mutable struct DcTree; v::Int; kids::Vector{DcTree}; end
+struct DcWrap{T}; x::T; end
+dc_immutable() = (x = DcImm([1, 2], 3); y = deepcopy(x); y.a[1] = 9; x.a[1] * 10 + y.a[1] + y.b)
+dc_mutable() = (x = DcMut([1, 2], 3); y = deepcopy(x); y.a[1] = 9; y.b = 7; x.a[1] * 10 + y.a[1] + y.b)
+dc_nested() = (o = DcOuter(DcInner([1.0, 2.0]), ["a", "bc"], (1, [5, 6])); p = deepcopy(o); p.i.v[1] = 9.0; p.t[2][1] = 0; round(Int, o.i.v[1] * 10 + p.i.v[1] + o.t[2][1] + length(p.names[2])))
+dc_list() = (n = DcNode(1, DcNode(2, nothing)); m = deepcopy(n); (m.next::DcNode).v = 5; ((n.next::DcNode).v * 10 + (m.next::DcNode).v) * 100 + m.v)
+dc_cycle() = (n = DcNode(1, nothing); n.next = n; m = deepcopy(n); Int(m.next === m) + 10 * Int(m !== n))
+dc_tree() = (t = DcTree(1, [DcTree(2, DcTree[]), DcTree(3, [DcTree(4, DcTree[])])]); u = deepcopy(t); u.kids[2].kids[1].v = 40; t.kids[2].kids[1].v + u.kids[2].kids[1].v + u.v)
+dc_shared() = (i = DcInner([1.0]); a = [i, i]; b = deepcopy(a); b[1].v[1] = 5.0; round(Int, b[2].v[1]))
+dc_parametric() = (w = DcWrap([1, 2, 3]); v = deepcopy(w); v.x[1] = 8; w.x[1] + v.x[1])
+dc_ref() = (r = Ref([1, 2]); s = deepcopy(r); s[][1] = 5; r[][1] * 10 + s[][1])
+
 @testset "Found compiling StatsBase.jl" begin
     @testset "reshape with a colon" begin
         @static_test size(reshape(Float64[1, 2, 3, 4, 5, 6], :, 2), 1)
@@ -118,6 +135,16 @@ sb_case9() = (a = ["a", "bc"]; length(deepcopy(a)[2]))
         @static_test sb_case7()
         @static_test sb_case8()
         @static_test sb_case9()
+        # structs (copied field by field, each of its own type), with shared and cyclic references
+        @static_test dc_immutable()
+        @static_test dc_mutable()
+        @static_test dc_nested()
+        @static_test dc_list()
+        @static_test dc_cycle()
+        @static_test dc_tree()
+        @static_test dc_shared()
+        @static_test dc_parametric()
+        @static_test dc_ref()
     end
 end
 

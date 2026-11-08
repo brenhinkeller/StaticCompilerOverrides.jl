@@ -270,3 +270,15 @@ end
     @test read(`$exe $exe_dir`, String) == expected
     @test read(joinpath(host_dir, "data.bin")) == read(joinpath(exe_dir, "data.bin"))
 end
+
+# The object files that are made for macOS say what system they are for (a "platform load command"), as the linker of recent versions of
+# macOS warns about every one that doesn't
+@static if Sys.isapple()
+    @testset "Object files have a platform load command" begin
+        dir = mktempdir()
+        main = StaticCompilerOverrides.make_main(() -> 1)
+        name = string(nameof(main))
+        Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), dir, name)
+        @test occursin("LC_BUILD_VERSION", read(`otool -l $(joinpath(dir, name * ".o"))`, String))
+    end
+end

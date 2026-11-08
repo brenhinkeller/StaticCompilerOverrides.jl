@@ -63,14 +63,24 @@ end
 # not linked by default, as it is on macOS (where it is part of libSystem)
 default_cflags() = Sys.islinux() ? `-lm` : ``
 
+# The target: the host, as StaticCompiler's own default, but, on macOS, with a version in the triple. StaticCompiler's triple for it
+# has none (`aarch64-apple-darwin`), so the object files have no "platform load command", which says what system they are for, and the
+# linker of recent versions of macOS warns about each (`no platform load command found in 'x.o', assuming: macOS`). The oldest version that
+# exists for the architecture is used, which is what the binary says that it needs at least.
+function default_target()
+    Sys.isapple() || return StaticCompiler.StaticTarget()
+    arch, minimum = Sys.ARCH === :x86_64 ? ("x86_64", "10.13.0") : ("aarch64", "11.0.0")
+    return StaticCompiler.StaticTarget(string(arch, "-apple-macosx", minimum), LLVM.host_cpu_name(), LLVM.host_cpu_features())
+end
+
 # StaticCompiler's entry points, with our method table as the default, and the runtime of this
 # package installed in the code that they generate (`llvm_postprocess`)
 for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_typed,
           :static_code_native, :static_llvm_module)
     @eval begin
-        $f(args...; method_table = method_table, params = OverridesParams(), strict::Bool = true, allow = (), gc = default_gc(),
+        $f(args...; method_table = method_table, params = OverridesParams(), strict::Bool = true, allow = (), gc = default_gc(), target = default_target(),
            llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc)), kwargs...) =
-            StaticCompiler.$f(args...; method_table, params, llvm_postprocess,
+            StaticCompiler.$f(args...; method_table, params, target, llvm_postprocess,
                               $(f in (:compile_executable, :compile_shlib) ? :(merge((; cflags = default_cflags()), NamedTuple(kwargs))...) : :(kwargs...)))
         @doc """
             $($f)(args...; method_table = StaticCompilerOverrides.method_table, strict = true, allow = (), kwargs...)

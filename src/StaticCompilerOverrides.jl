@@ -3,6 +3,7 @@ module StaticCompilerOverrides
 using Reexport: @reexport
 using StaticCompiler: StaticCompiler
 using GPUCompiler: GPUCompiler
+using LLVM: LLVM
 # StaticCompiler's own entry points (and `@device_override`) are replaced by ones of ours that
 # use our method table, see `overrides.jl`
 @reexport using StaticCompiler: StaticTarget
@@ -16,6 +17,7 @@ include("io.jl")       # Standard input and output
 include("show.jl")     # show of types and containers
 include("objectid.jl") # objectid, so that a struct can be the key of a Dict
 include("iddict.jl")   # IdDict, and with it deepcopy
+include("deepcopy.jl") # deepcopy of any struct
 include("dispatch.jl") # dynamic dispatch on abstract types, by union splitting
 include("gc.jl")       # The garbage collector, from the program
 include("printf.jl")   # Printf, for formats without `*`

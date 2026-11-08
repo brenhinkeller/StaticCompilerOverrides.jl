@@ -1523,6 +1523,11 @@ const TYPENAME_TAG = Ref{UInt}(0) # the tag of `TypeName` objects
 
 # the type of the Julia object at `addr`, from its type tag, or `nothing` if it doesn't look
 # like an object.
+# The types of the objects that are types (the last is `Union{}`). In Julia 1.14 `Type{T}` is itself an object, of the type `Core.TypeEq`
+# (and `Core.TypeEgal`), that has the type `T` in it.
+const TYPE_OBJECT_KINDS = (DataType, UnionAll, Union, Core.TypeofBottom,
+                           (isdefined(Core, :TypeEq) ? (Core.TypeEq, Core.TypeEgal) : ())...)
+
 function object_type(addr::UInt)
     # All Julia objects are 16-byte aligned, which rules out many addresses that are not objects: in
     # particular the data of strings and arrays, which is 8 bytes after the start of the object. The
@@ -1553,7 +1558,7 @@ function object_type(addr::UInt)
     T = unsafe_pointer_to_objref(ptr)
     T isa DataType && isconcretetype(T) || return nothing
     # the objects that are types (`typeof(Int)` is `DataType`) are objects as well, those of these kinds (the last is `Union{}`)
-    (T <: Type) && !(T === DataType || T === UnionAll || T === Union || T === Core.TypeofBottom) && return nothing
+    (T <: Type) && !(T in TYPE_OBJECT_KINDS) && return nothing
     addr % 16 == 0 && return T
     # (the one instance of a type that has no fields, which has no contents, is allocated where the data of an object would be, 8 bytes in
     # a cell that is 16 aligned: it is the `instance` of its type)
@@ -1602,10 +1607,13 @@ bytes_piece(addr, n) = n == 0 ? nothing :
 nullptr() = LLVM.PointerNull(LLVM.PointerType())
 i64(x) = LLVM.ConstantInt(Int64(x))
 
+# why the objects that could not be embedded could not (for the messages of the ones that refer to them)
+const EMBED_FAILURES = Dict{UInt,String}()
+
 function embed_global!(e::ObjectEmbedder, addr::UInt)
     if haskey(e.globals, addr)
         g = e.globals[addr]
-        g === nothing && throw(EmbedFailure("an object that failed, or that it refers to"))
+        g === nothing && throw(EmbedFailure(string("an object that failed, or that it refers to: ", get(EMBED_FAILURES, addr, "(in progress)"))))
         return g
     end
     wk = well_known_at(addr)
@@ -1618,6 +1626,7 @@ function embed_global!(e::ObjectEmbedder, addr::UInt)
     try
         return embed_new_global!(e, addr)
     catch err
+        err isa EmbedFailure && !haskey(EMBED_FAILURES, addr) && (EMBED_FAILURES[addr] = first(replace(err.reason, '\n' => ' '), 300))
         if err isa EmbedFailure && !isempty(err.reason)
             # (the path, from the object that can't be reproduced to the one we wanted)
             path = count("\n  <- ", err.reason) < 12 ? string(err.reason, "\n  <- ", object_type(addr), " at ", string(addr, base = 16)) : err.reason
@@ -2013,6 +2022,9 @@ const MAX_INTERIOR = 2048
 
 function find_objects(addr::UInt)
     candidates = Tuple{UInt,Int}[]
+    # an address that is the start of an object (a type, say) is that object: an object that has it in its data, nearer or farther, would
+    # be another that something that looks like one found (the tag of the next, or a number in a field)
+    addr % 16 == 0 && object_type(addr) !== nothing && return [(addr, 0)]
     for delta in Int(addr % 8):8:MAX_INTERIOR # (objects are aligned: `addr` may be in the middle of the data of one)
         base = addr - delta
         T = object_type(base)
@@ -2063,6 +2075,23 @@ function embed_address_arguments!(e::ObjectEmbedder)
     return changed
 end
 
+# The number of a constant that is a 64 bit integer: `i64 N`, or, where the code was not optimized as far (`--check-bounds=yes`), the
+# `ptrtoint (ptr inttoptr (i64 N to ptr) to i64)` that it is made of. `nothing` if it is neither.
+function number_of_address_constant(op)
+    if op isa LLVM.ConstantInt
+        LLVM.width(LLVM.value_type(op)) == 64 || return nothing
+        return convert(UInt, op)
+    end
+    if op isa LLVM.ConstantExpr && LLVM.API.LLVMGetConstOpcode(op) == LLVM.API.LLVMPtrToInt
+        inner = first(LLVM.operands(op))
+        if inner isa LLVM.ConstantExpr && LLVM.API.LLVMGetConstOpcode(inner) == LLVM.API.LLVMIntToPtr
+            n = first(LLVM.operands(inner))
+            n isa LLVM.ConstantInt && LLVM.width(LLVM.value_type(n)) == 64 && return convert(UInt, n)
+        end
+    end
+    return nothing
+end
+
 # The constants that are the numbers (`i64`) of the addresses of type objects: code compares and stores the
 # type tags of objects (which are those), as numbers. As (operand number, instruction) of a pair.
 function type_number_constants(mod::LLVM.Module)
@@ -2070,11 +2099,11 @@ function type_number_constants(mod::LLVM.Module)
     for fn in LLVM.functions(mod), bb in LLVM.blocks(fn), inst in LLVM.instructions(bb)
         inst isa LLVM.SwitchInst && continue # (a case of a switch must be an integer)
         for (i, op) in enumerate(LLVM.operands(inst))
-            op isa LLVM.ConstantInt || continue
-            LLVM.width(LLVM.value_type(op)) == 64 || continue
-            n = convert(UInt, op)
+            op = number_of_address_constant(op)
+            op === nothing && continue
+            n = op
             (n >= (64 << 4) && n % 16 == 0) || continue
-            object_type(n) === DataType || continue # the address of a type object
+            object_type(n) in TYPE_OBJECT_KINDS || continue # the address of a type object
             push!(get!(Vector{Tuple{LLVM.Instruction,Int}}, consts, n), (inst, i))
         end
     end
@@ -2349,6 +2378,7 @@ function embed_constants!(e::ObjectEmbedder)
             embed_ref!(e, addr)
         catch err
             err isa EmbedFailure || rethrow()
+            @debug "The number of the address of a type stays, as the type is not in the binary" address = string(addr, base = 16) type = object_type(addr) reason = err.reason
             continue
         end
         number = LLVM.const_ptrtoint(ref, LLVM.Int64Type())

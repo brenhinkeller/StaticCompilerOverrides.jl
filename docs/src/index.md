@@ -484,9 +484,12 @@ handled here, found by compiling [Distributions.jl](https://github.com/JuliaStat
   uses, does). The functions of the math library of the machine are linked by name: the values can differ from openlibm's in the last bit. Those of
   other libraries (OpenSpecFun, Rmath, GMP, ...) are looked up when the program runs, with `dlopen` of the **path that the library had when compiling**:
   the binary needs that file, as it needs libblastrampoline for BLAS. The libraries of the runtime of Julia (libjulia, libuv, ...) are not available.
-* **`IdDict`** (and with it `deepcopy` of arrays, dictionaries and strings, and of arrays of them) works: the table is kept with Julia code, with the address of an object
-  as its hash. What is not a mutable object all has one hash, so an `IdDict` with many keys that are numbers is slow. `deepcopy` of a struct of your own does not work (it
-  reads the fields of the struct by a number that is only known when the program runs).
+* **`IdDict`** works: the table is kept with Julia code, with the address of an object as its hash. What is not a mutable object all has one hash, so an `IdDict` with many
+  keys that are numbers is slow.
+* **`deepcopy`** works for any struct, array, dictionary, tuple or string, with shared and cyclic references kept as in Julia. Base reads the fields of a struct by a number that
+  is only known when the program runs; here each type is copied field by field, each of its own type, made when compiling (`src/deepcopy.jl`). A field of the type `Any` or of an
+  abstract type is copied over the registered types (see [`add_dispatch_candidates!`](@ref)). A method of `deepcopy_internal` that a package defines for its own type is not used
+  (the struct is copied field by field: the methods that there are can't be looked up when compiling), and `BigInt`, `BigFloat`, locks and `SimpleVector`s are not supported.
 * **`reshape(x, :, n)`**, **functions and `Colon()` in messages** (`string(sin)`, `show(:)`), and **`Symbol`s that are not known when compiling** (printing them, or in a `string`).
 
 Compiled and compared with Julia in the survey (the results rounded to 6 digits, because of the last bit of libm):
@@ -497,10 +500,10 @@ Compiled and compared with Julia in the survey (the results rounded to 6 digits,
 * **NaNStatistics.jl**: all the cases of the survey (`nanmean`, `nanstd`, `nanmedian`, `nanquantile`, `nanpctile`, `nancov`, `nancor`, `movmean`, `histcounts`, `nanbinmean`, `nansort!`, ...)
   but `nanmean(A; dim = (1, 2))`: with the dimensions as a tuple the result is an `Array` of a size that is only known when the program runs (a function
   that is not type-stable), see [Dynamic dispatch on abstract types and on `Any`](@ref).
-* **StatsBase.jl**: 91 of the 97 cases of the survey, of which 4 were not valid in Julia either. Weighted and unweighted `mean`, `var`, `std`, `median`, `quantile`,
+* **StatsBase.jl**: 92 of the 97 cases of the survey, of which 4 were not valid in Julia either. Weighted and unweighted `mean`, `var`, `std`, `median`, `quantile`,
   `skewness`, `kurtosis`, `mad`, `iqr`, `cor`, `cov`, `autocor`, `pacf`, `corspearman`, `corkendall`, ranks, `countmap`, `proportionmap`, `entropy`, `kldivergence`, `Histogram`, `ecdf`,
-  `zscore` and `ZScoreTransform`, `sample` and `wsample` (with and without replacement, weighted) with a generator that is given, ... The two that don't: `summarystats` (it splats a
-  `Vector` of a length that is not known into a constructor, `SummaryStats(m, sd, qs..., n)`), and `normalize` of a `Histogram` (a `deepcopy` of a struct).
+  `zscore` and `ZScoreTransform`, `sample` and `wsample` (with and without replacement, weighted) with a generator that is given, ... The one that doesn't: `summarystats` (it splats a
+  `Vector` of a length that is not known into a constructor, `SummaryStats(m, sd, qs..., n)`).
 
 * **[Thermochron.jl](https://github.com/brenhinkeller/Thermochron.jl)** (forward models; 19 cases in the survey): helium diffusion (`SphericalHe`, `PlanarHe`, `ZirconHe`, `ApatiteHe` with RDAAM and ZRDAAM
   annealing, `SphericalAr`), fission track ages (`ZirconFT`, `ApatiteFT` with the Ketcham and Yamada/Guenthner models), vitrinite reflectance with a `NielsenBasinRo` that is a constant, and
@@ -548,7 +551,7 @@ What does not work yet, or works differently from Julia, gathered in one place. 
   program if compiled with `strict = false`.
 * **Values that are only known at run time** (an element of a `Vector{Any}`) can't be the argument of `objectid` or `hash` unless their types
   are registered, nor `===` of types and unions, and `show` of one is limited to the registered types (see [`show` of containers, types and structs](@ref)).
-* **Symbols from strings** (`Symbol("a", "b")`), `deepcopy` of a struct, `titlecase` (it needs the grapheme breaks of utf8proc),
+* **Symbols from strings** (`Symbol("a", "b")`), `titlecase` (it needs the grapheme breaks of utf8proc),
   the `MersenneTwister` generator, and `Random.seed!(seed)` of the default generator need things of libjulia that are not there.
 
 **What a binary starts with**
