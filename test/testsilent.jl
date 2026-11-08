@@ -119,3 +119,64 @@ closed_read() = (path = "/tmp/static_overrides_closed_test.txt"; write(path, "ab
 @testset "Closed files" begin
     @test static_status(closed_read)[1] == :ok
 end
+
+# A number in the code can be the address of an object of the process that compiles (found on aarch64 Linux, where Julia has memory at low addresses:
+# the constant `115938146` was inside a symbol, and the program printed the address of a copy of it instead). A number is only an address if it is used as one.
+const NUMBER_STRING = "a string that is long enough to hold an address"
+@testset "Numbers that are data are not addresses" begin
+    SC = StaticCompilerOverrides.StaticCompiler
+    Runtime = StaticCompilerOverrides.Runtime
+    i64() = LLVM.Int64Type() # (types are made in the context that is active)
+
+    # whether the number `N` is still a number (an integer constant) in the instruction that `make` makes of it, after the constants are embedded
+    function kept(N::UInt, make)
+        SC.GPUCompiler.JuliaContext() do ctx
+            mod = LLVM.Module("number_test")
+            try
+                fn = LLVM.Function(mod, "f", LLVM.FunctionType(i64(), [i64()]))
+                inst, index = nothing, 0
+                @dispose builder = LLVM.IRBuilder() begin
+                    LLVM.position!(builder, LLVM.at_end(LLVM.BasicBlock(fn, "entry")))
+                    inst, index = make(builder, mod, fn, LLVM.ConstantInt(Int64(N)))
+                end
+                Runtime.embed_constants!(mod)
+                return LLVM.operands(inst)[index] isa LLVM.ConstantInt
+            finally
+                LLVM.dispose(mod)
+            end
+        end
+    end
+    add(b, mod, fn, n) = (r = LLVM.add!(b, LLVM.parameters(fn)[1], n); LLVM.ret!(b, r); (r, 2))
+    ret(b, mod, fn, n) = (r = LLVM.ret!(b, n); (r, 1))
+    compare(b, mod, fn, n) = (c = LLVM.icmp!(b, LLVM.API.LLVMIntEQ, LLVM.parameters(fn)[1], n); LLVM.ret!(b, LLVM.zext!(b, c, i64())); (c, 2))
+    function call(b, mod, fn, n)
+        callee = LLVM.Function(mod, "c", LLVM.FunctionType(i64(), [i64()]))
+        c = LLVM.call!(b, LLVM.function_type(callee), callee, [n])
+        LLVM.ret!(b, c)
+        return (c, 1)
+    end
+    function variadic_call(b, mod, fn, n)
+        ft = LLVM.FunctionType(LLVM.Int32Type(), [LLVM.PointerType()]; vararg = true)
+        callee = LLVM.Function(mod, "printf", ft)
+        c = LLVM.call!(b, ft, callee, [LLVM.null(LLVM.PointerType()), n])
+        LLVM.ret!(b, LLVM.sext!(b, c, i64()))
+        return (c, 2)
+    end
+
+    type_address = UInt(pointer_from_objref(Int))               # the address of the type `Int64`
+    symbol_field = UInt(pointer_from_objref(:abc)) + 16         # in the middle of a symbol (its hash)
+    string_data = UInt(pointer_from_objref(NUMBER_STRING)) + 8  # the characters of a string, as a `Cstring` is made
+
+    # the address of a type is replaced where the tag of an object is compared, and not where it is a number to compute with
+    @test !kept(type_address, compare)
+    @test kept(type_address, add)
+    @test kept(type_address, ret)
+    @test kept(type_address, variadic_call)
+    # what is in the middle of a symbol is not an address that a call is given (a number, mostly)
+    @test kept(symbol_field, call)
+    @test kept(symbol_field, add)
+    # the characters of a string are, as a `Cstring` of a literal (but not as an argument of `printf`'s `...`, or in arithmetic)
+    @test !kept(string_data, call)
+    @test kept(string_data, variadic_call)
+    @test kept(string_data, add)
+end

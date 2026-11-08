@@ -2142,9 +2142,34 @@ function find_objects(addr::UInt)
     return candidates
 end
 
+# A number in the code is an address of an object of this process only if it is used as one. A constant that is a count or a seed can be the
+# address of an object (in a process where the memory that Julia has is at low addresses, as on Linux when the executable is not position
+# independent: that of `115938146` was a symbol), and then taking it for one gives a program that quietly computes with another number. So a
+# number that is *data* is never taken for an address: an operand of arithmetic (`add`, `shl`, `xor`, ...), what a function returns, and an argument
+# in the `...` of a function with a variable number of them (`printf("%ld", n)`); what is compared (`icmp`) or stored, as the type tags are, is not.
+const ARITHMETIC_OPCODES = Set([LLVM.API.LLVMAdd, LLVM.API.LLVMSub, LLVM.API.LLVMMul, LLVM.API.LLVMUDiv, LLVM.API.LLVMSDiv, LLVM.API.LLVMURem,
+                                LLVM.API.LLVMSRem, LLVM.API.LLVMShl, LLVM.API.LLVMLShr, LLVM.API.LLVMAShr, LLVM.API.LLVMAnd, LLVM.API.LLVMOr, LLVM.API.LLVMXor])
+function integer_operand_is_data(inst::LLVM.Instruction, i::Int)
+    opcode = LLVM.API.LLVMGetInstructionOpcode(inst)
+    (opcode in ARITHMETIC_OPCODES || opcode == LLVM.API.LLVMRet) && return true
+    if inst isa LLVM.CallInst
+        ft = inst.called_type
+        return LLVM.isvararg(ft) && i > length(LLVM.parameters(ft))
+    end
+    return false
+end
+
 # An address that a call is given as a number (`i64`): a `ccall` passes the `Cstring` of a literal to a C function like that
 # (`ccall(:strlen, Csize_t, (Cstring,), "hello")`), as the number of the address of the string. The object is in the binary, and the
 # number is that of its address there.
+# What a number that is the argument of a call can be the address of: the contents of a `String` (what a `Cstring` is made from) or of a `Memory` (what
+# `pointer` of an array is): the pointer that is passed is to the data, and not to the length that is before it, nor to any other kind of object (a number
+# that is in a symbol, a type or a struct of this process is more likely a number, see `integer_operand_is_data`)
+function address_argument_objects(n::UInt)
+    return [(base, delta) for (base, delta) in find_objects(n) if
+            (object_type(base) === String && delta >= 8) || (object_type(base) <: Core.GenericMemory && delta >= 16)]
+end
+
 function embed_address_arguments!(e::ObjectEmbedder)
     mod = e.mod
     found = Dict{UInt,Vector{Tuple{LLVM.Instruction,Int}}}()
@@ -2156,14 +2181,15 @@ function embed_address_arguments!(e::ObjectEmbedder)
             op isa LLVM.ConstantInt && LLVM.width(LLVM.value_type(op)) == 64 || continue
             n = convert(UInt, op)
             n >= 0x10000 || continue
-            isempty(find_objects(n)) && continue
+            integer_operand_is_data(inst, i) && continue
+            isempty(address_argument_objects(n)) && continue
             push!(get!(Vector{Tuple{LLVM.Instruction,Int}}, found, n), (inst, i))
         end
     end
     changed = false
     for (addr, uses) in found
         replacement = nothing
-        for (base, delta) in find_objects(addr)
+        for (base, delta) in address_argument_objects(addr)
             replacement = try
                 embed_ref!(e, base, delta)
             catch err
@@ -2208,6 +2234,7 @@ function type_number_constants(mod::LLVM.Module)
         for (i, op) in enumerate(LLVM.operands(inst))
             op = number_of_address_constant(op)
             op === nothing && continue
+            integer_operand_is_data(inst, i) && continue # (a count, a seed: not the tag of an object)
             n = op
             (n >= (64 << 4) && n % 16 == 0) || continue
             object_type(n) in TYPE_OBJECT_KINDS || continue # the address of a type object
