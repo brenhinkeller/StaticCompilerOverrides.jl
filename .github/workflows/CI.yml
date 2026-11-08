@@ -35,7 +35,6 @@ jobs:
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
-          - macos-15-intel
           - macos-latest
         # the architecture of each runner: an `include` entry with a key that is not an axis of the matrix is added to *every*
         # combination (and the last one wins), so it has to match one of the `os` values to be added only to those
@@ -44,8 +43,6 @@ jobs:
             arch: x64
           - os: ubuntu-24.04-arm
             arch: aarch64
-          - os: macos-15-intel
-            arch: x64
           - os: macos-latest
             arch: aarch64
     steps:

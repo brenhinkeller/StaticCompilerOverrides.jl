@@ -92,3 +92,26 @@ end
         dlclose(handle)
     end
 end
+
+# The type objects that a program has are there to be told apart (the tag of an object, the type of an `isa`), and to be named: the
+# supertypes, the wrappers and the names of the fields of them are not copied, which is most of the objects of a small program
+@testset "Embedding constants: the types are not copied with their supertypes" begin
+    Runtime = StaticCompilerOverrides.Runtime
+    embedded = Any[]
+    main = StaticCompilerOverrides.make_main(() -> (println(42); 1))
+    mod = Base.invokelatest(static_llvm_module, main, Tuple{Int,Ptr{Ptr{UInt8}}}; llvm_postprocess = mod -> begin
+        Runtime.link_runtime!(mod; strict = true, allow = (), gc = false)
+        for g in LLVM.globals(mod)
+            m = match(r"^static_object_([0-9a-f]+)$", LLVM.name(g))
+            m === nothing && continue
+            addr = parse(UInt, m.captures[1]; base = 16)
+            Runtime.object_type(addr) === DataType && push!(embedded, unsafe_pointer_to_objref(Ptr{Cvoid}(addr)))
+        end
+    end)
+    LLVM.dispose(mod)
+    @test !isempty(embedded)
+    @test !any(T -> T in (Number, Real, Integer, Signed, Any), embedded)
+    # and what a program asks of a type that it has is still there
+    named() = (n = 0; for x in Any[1, [1.5], (1, "a"), "s"]; n += length(String(nameof(typeof(x)))) + length(typeof(x).parameters); end; n)
+    @test static_result(named) == named()
+end

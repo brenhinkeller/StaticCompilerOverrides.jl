@@ -1567,13 +1567,24 @@ end
 # most of what there is: a type refers to the types of its fields (`types`), a type name to the types
 # that were made of it (`cache`), ... Code that reads these in a program that is run gets null, or an
 # empty list, instead.
+#
+# The same for what a program that has a type only to tell the type of an object from another (its tag, or an `isa`
+# that is made at compile time) does not need: the supertype, the wrapper and the names of the fields. They refer to
+# the supertypes (each with a name, a wrapper, ...), and so most of the objects of a small program are there for
+# them: with these cut, `println(42)` has 4.5 kB of data instead of 12 kB. What the type is called (`nameof`), its
+# parameters, and the tests of types are not affected; but `supertype(T)`, `fieldnames(T)` and `T.name.wrapper` of a type
+# that is only known when the program runs are not available in a program (they were not before: calls like these
+# are dynamic).
 const EMPTY_SVEC = Ref{UInt}(0) # the address of the empty `svec()`
 function field_cut(T::Type, name)
     EMPTY_SVEC[] == 0 && (EMPTY_SVEC[] = UInt(ccall(:jl_value_ptr, Ptr{Cvoid}, (Any,), Core.svec())))
     if T === DataType
         name === :types && return :sizedsvec
+        name === :super && return :null # (the chain of supertypes, which a program only has to have if it asks for them)
         return name === :layout ? :egalplan : nothing
     elseif T === Core.TypeName
+        name === :wrapper && return :null # (the `UnionAll` of the type, with its `TypeVar`s)
+        name === :names && return :emptysvec # (the names of the fields)
         name in (:module, :atomicfields, :constfields, :partial, :Typeofwrapper, :mt) && return :null
         name in (:cache, :linearcache) && return :emptysvec
     end

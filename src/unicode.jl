@@ -33,11 +33,39 @@ function RunTable(f, ::Type{T}) where {T}
     return RunTable{T}(starts, values)
 end
 
+"""
+    BoolRunTable
+
+A function of the code points that is `true` or `false`, as the first code point of each run: the runs alternate, so the
+values are not kept (only whether the first is `true`). It is a fraction of the size of a [`RunTable`](@ref) of `Bool`s.
+"""
+struct BoolRunTable
+    starts::Vector{UInt32}
+    first::Bool
+end
+
+@inline lookup(table::BoolRunTable, cp::UInt32) = table.first ⊻ iseven(searchsortedlast(table.starts, cp))
+
+function BoolRunTable(f)
+    starts = UInt32[]
+    last = nothing
+    for cp in UInt32(0):UInt32(0x10ffff)
+        value = f(cp)::Bool
+        value === last && continue
+        push!(starts, cp)
+        last = value
+    end
+    # (`starts[1]` is 0: the code points are all in a run)
+    return BoolRunTable(starts, f(UInt32(0)))
+end
+
 # the properties, by the functions of utf8proc that Base uses
 const CATEGORY = RunTable(cp -> UInt8(Base.Unicode.category_code(cp)), UInt8)
 const CHARWIDTH = RunTable(cp -> UInt8(@ccall utf8proc_charwidth(cp::UInt32)::Cint), UInt8)
-const ISLOWER = RunTable(cp -> !iszero(@ccall utf8proc_islower(cp::UInt32)::Cint), Bool)
-const ISUPPER = RunTable(cp -> !iszero(@ccall utf8proc_isupper(cp::UInt32)::Cint), Bool)
+const ISLOWER = BoolRunTable(cp -> !iszero(@ccall utf8proc_islower(cp::UInt32)::Cint))
+const ISUPPER = BoolRunTable(cp -> !iszero(@ccall utf8proc_isupper(cp::UInt32)::Cint))
+# (`isprint` is a test of the category, which is a table that is five times as large: this is what showing a string needs)
+const ISPRINT = BoolRunTable(cp -> Base.Unicode.UTF8PROC_CATEGORY_LU <= Base.Unicode.category_code(cp) <= Base.Unicode.UTF8PROC_CATEGORY_ZS)
 # the case mappings, as how far the code point is moved: runs are long (`'a':'z'` all move by 32)
 const TOLOWER = RunTable(cp -> Int32(@ccall(utf8proc_tolower(cp::UInt32)::UInt32)) - Int32(cp), Int32)
 const TOUPPER = RunTable(cp -> Int32(@ccall(utf8proc_toupper(cp::UInt32)::UInt32)) - Int32(cp), Int32)
@@ -68,3 +96,4 @@ end
 
 @device_override Base.Unicode.islowercase(c::Char) = Base.ismalformed(c) ? false : lookup(ISLOWER, UInt32(c))
 @device_override Base.Unicode.isuppercase(c::Char) = Base.ismalformed(c) ? false : lookup(ISUPPER, UInt32(c))
+@device_override Base.Unicode.isprint(c::Char) = Base.ismalformed(c) ? false : lookup(ISPRINT, UInt32(c))

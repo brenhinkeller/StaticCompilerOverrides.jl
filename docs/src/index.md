@@ -379,18 +379,23 @@ arrays and `Dict`s, and the type objects that the type tags and `isa` read). Mea
 |:-----------------------------------------|----------------:|--------:|
 | `0`                                      |    56 B         |   5 B   |
 | `println("hello")`                       |   120 B         |  62 B   |
-| `println(42)`                            |   1.4 kB        | 17.2 kB |
-| `println([1, 2, 3])`                     |   2.3 kB        | 17.9 kB |
-| `println(Dict(1 => 2))`                  |   3.8 kB        | 20.7 kB |
-| `Dict` with struct keys, lookup          |   4.3 kB        | 15.0 kB |
-| `x isa Number` on boxed values           |   0.8 kB        | 30.9 kB |
-| `println(Any[1, "a", 2.5])`              |  36 kB          | 65 kB   |
-| `repr([1.5, 2.5])`                       |  14 kB          | 37 kB   |
+| `println(42)`                            |   1.4 kB        |  9.7 kB |
+| `println([1, 2, 3])`                     |   2.3 kB        | 10.2 kB |
+| `println(Dict(1 => 2))`                  |   3.8 kB        | 11.0 kB |
+| `Dict` with struct keys, lookup          |   4.3 kB        |  6.6 kB |
+| `x isa Number` on boxed values           |   0.8 kB        |  2.7 kB |
+| `println(Any[1, "a", 2.5])`              |  36 kB          | 41.5 kB |
+| `repr([1.5, 2.5])`                       |  14 kB          | 22.4 kB |
 
-What is in the data of a program that prints a number is mostly two things: about 12 kB of objects, the type of `Int64`
-that the error for a conversion that fails (an `InexactError`) holds, with the types that it refers to (its supertypes, the names of
-the types and of their fields), and 5 kB that is zero at the start (the stack of the exception handlers and the task that
-the runtime stands in for). A program without any code that can throw (`println("hello")`) has neither.
+What is in the data of a program that prints a number is mostly two things: about 4.5 kB of objects, the type of `Int64`
+that the error for a conversion that fails (an `InexactError`) holds, with the name of it; and 5 kB that is zero at the start (the stack of
+the exception handlers and the task that the runtime stands in for, which are not in the file). A program without any code that can throw
+(`println("hello")`) has neither. The objects that are types are copied for what a program does with them: telling the type of an
+object from another (the tag), its name (`nameof`) and its parameters. Not for what a type refers to: its supertypes, the wrapper
+and the names of the fields. A program does not have these (a call that would need them is dynamic anyway), and with them
+the objects of a small program were more than twice as many. Showing a string needs a table of the characters that can be printed,
+which is about 6 kB (and not that of the categories of all characters, which is 21 kB).
+`%f` of a `Float64` in `@printf` needs the tables of Ryu for the fixed format, which are 190 kB: `%g`, `%e` and `show` have much smaller ones.
 What the program does not use is not there: the plans for `===` of the types, which are about 14% of the objects of a
 program that compares objects, are made only if the code calls `jl_egal__unboxed`; and the table of the types of the small
 tags is made only if the code indexes it with something that is not a constant (`isa` on a boxed value does), and

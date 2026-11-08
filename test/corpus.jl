@@ -109,6 +109,7 @@ const CORPUS = [
     "println Symbol/Float32" => () -> (println(:sym, ' ', 1.5f0, ' ', 0x1f, ' ', -3); 1),
     "show String/Char"      => () -> (show("a \"quoted\"\n string"); show('x'); show('\n'); show('λ'); println(); 1),
     "show escapes"          => () -> (show("tab\there \u00e9 \u2200 \e"); println(); 1),
+    "show unprintable"      => () -> (show("a\u200bb\ue000\u00ad\U0001f600\u0378"); println(); 1),
     "@show String"          => () -> (s = "abc"; @show s; c = 'z'; @show c; 1),
     "lowercase/uppercase"   => () -> (println(lowercase("HeLLo ÀÉÎ"), uppercase("HeLLo àéî"), uppercasefirst("élan")); 1),
     "isletter etc"          => () -> (cs = ('a', 'Z', '5', ' ', 'é', '∑', '\n'); println(count(isletter, cs), count(isuppercase, cs), count(islowercase, cs), count(isdigit, cs), count(isspace, cs)); 1),
