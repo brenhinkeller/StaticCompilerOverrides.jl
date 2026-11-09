@@ -21,6 +21,8 @@ host_string(f, x) = replace(sprint(f, x; context = :module => Main), r"(?<![\w.]
 
 @generated type_name(::Type{T}) where {T} = host_string(show, T)
 Base.show(io::ShowStream, ::Type{T}) where {T} = (print(io, type_name(T)); nothing)
+# (an `IOBuffer` is a stream that a program makes itself, as `summary` does: the name of the type is the same)
+Base.show(io::Base.GenericIOBuffer, ::Type{T}) where {T} = (print(io, type_name(T)); nothing)
 
 ## Singletons: functions, `Colon()`, ...
 ##

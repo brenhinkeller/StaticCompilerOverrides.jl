@@ -546,6 +546,21 @@ Limits: a **finalizer** that is a Julia function (`finalizer(f, x)`) is not supp
 (an address of this process) is null there, with a warning (a `Regex` is compiled when the program first uses it, so those are fine); `setprecision(f, BigFloat, n)`
 (a scoped value) does not work yet. **Linux is untested for the libraries** (the program finds its own folder with `dladdr`, and `/proc/self/exe`).
 
+## Dates and SparseArrays
+
+Both standard libraries compile, and are checked against Julia in `test/testcoverage.jl`.
+
+* **Dates**: `Date`, `DateTime` and `Time` (construction, fields, arithmetic with periods, ranges, `dayofweek` and the like, `monthname`, `show`), parsing a string
+  (`Date("2021-12-25")`, `DateTime(...)`, `tryparse`, and with a format), `now()` and `today()` (the time zone of the machine that runs the program). A format is
+  made when compiling with the macro: `Dates.format(d, dateformat"dd/mm/yyyy")`. `Dates.format(d, "dd/mm/yyyy")` makes it when the program runs, from the characters of
+  the string, which does not compile. (The tokens of a format are of types that differ by a letter, so a package extension of this package registers them for dispatch when
+  `Dates` is loaded.)
+* **SparseArrays**: `sparse`, `spzeros`, `SparseMatrixCSC`, sparse vectors, indexing and `setindex!`, `nnz`, `nonzeros`, `findnz`, sums, products of sparse with dense and with
+  sparse, `transpose`, `kron`, `spdiagm`, `I`, and `show`. **Not yet**: the factorizations (`\`, `lu`, `cholesky`, `qr` of a sparse matrix), which are SuiteSparse's
+  libraries and need their start-up code (`SuiteSparse_jll`'s `LazyLibrary` callbacks) to be made to run first.
+
+Also: `sleep` (as `nanosleep`), `splice!`, and `string(a, b, ...)` / interpolation with a value of `Any` (`"x = $(x)"` where the type of `x` is not known) work.
+
 ## Random numbers
 
 `Random.default_rng()` (a `TaskLocalRNG`) keeps its state in the current task, which does not

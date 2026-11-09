@@ -119,6 +119,20 @@ as that of `show` (see [`add_show_candidates!`](@ref)). Call it before compiling
 """
 add_dispatch_candidates!(types::Type...) = add_show_candidates!(types...)
 
+# Types that a call is made over only when the argument is of a type that they are instances of (`Dates.DatePart{'y'}` for `Dates.DatePart`), and not for `Any`: they are
+# not types that a value of `Any` is likely to have, and a call with two arguments of `Any` is split over the pairs of the types, which there is a limit to (`SPLIT_LIMIT`).
+const FAMILY_CANDIDATES = Type[]
+function add_family_candidates!(types::Type...)
+    for T in types
+        isconcretetype(T) || throw(ArgumentError("$T is not a concrete type"))
+        if !(T in FAMILY_CANDIDATES)
+            push!(FAMILY_CANDIDATES, T)
+            CANDIDATES_VERSION[] += 1
+        end
+    end
+    return nothing
+end
+
 # (without `Vector{Any}`, which `show` needs for lists in lists, but which has methods of arithmetic and the like, that call for much of what is
 # not there, for every call with an `Any` that is a number: register it if you have lists in the values of the calls that you make)
 const DEFAULT_DISPATCH_CANDIDATES = Type[T for T in DEFAULT_SHOW_CANDIDATES if T !== Vector{Any}]
@@ -155,8 +169,11 @@ end
 # The union of the registered types that are subtypes of `T` (`Any`, or an abstract type that can't be listed), or `nothing`. For a call of `show`, which is also made
 # for a `Vector{Any}` in a `Vector{Any}`, they are the types that `show` is registered for (see `add_show_candidates!`): those of calls in general, and `Vector{Any}`.
 function registered_union(@nospecialize(T), show::Bool = false)
-    T isa Type && !(T <: Type) && (T === Any || isabstracttype(Base.unwrap_unionall(T))) || return nothing # (`Type{X}` is not an abstract type of objects)
-    found = Type[C for C in (show ? show_candidates() : dispatch_candidates()) if C <: T]
+    # (a `UnionAll` that is not abstract is a type that has parameters that are not known, `Dates.DatePart`: its instances are of the types of it that were registered)
+    T isa Type && !(T <: Type) && (T === Any || isabstracttype(Base.unwrap_unionall(T)) || T isa UnionAll) || return nothing # (`Type{X}` is not an abstract type of objects)
+    candidates = show ? show_candidates() : dispatch_candidates()
+    T === Any || (candidates = vcat(candidates, FAMILY_CANDIDATES))
+    found = Type[C for C in candidates if C <: T]
     1 <= length(found) <= SPLIT_LIMIT[] || return nothing
     return Union{found...}
 end
@@ -193,6 +210,13 @@ end
 # that is not listed, and what is done with it in that method is a dispatch again. So it is the types of the objects that are
 # tested here, and a type that is not known is an error.)
 function dispatch_needed(interp, arginfo::CC.ArgInfo, @nospecialize(atype), max_methods::Int)
+    # (an argument of a type that has parameters that are not known (`Dates.DatePart`, a parametric struct that inference has merged the instances of) is an
+    # object of one of the registered types of it, whatever the one method is that fits all of them)
+    for i in 2:length(arginfo.argtypes)
+        arginfo.argtypes[i] isa Core.TypeofVararg && continue
+        T = CC.widenconst(arginfo.argtypes[i])
+        T isa UnionAll && !(T <: Type) && return true
+    end
     matches = arginfo.fargs === nothing ?
         CC.find_method_matches(interp, arginfo.argtypes, atype; max_methods) :
         CC.find_method_matches(interp, arginfo.argtypes, atype; max_methods, fargs = arginfo.fargs)

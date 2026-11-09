@@ -101,6 +101,7 @@ What compiles to a standalone binary (the arguments of the command line included
 * **Printing**: `print`, `println`, `show`, `display` and `text/plain` of numbers, strings, symbols, containers, structs, tuples and matrices, with `IOContext` properties known when compiling; `printf` and `@printf(STDOUT, ...)`.
 * **Dynamic dispatch**: calls on `Any` and abstract types are closed over a list of registered types, so they compile (and are exact for abstract types with few concrete subtypes).
 * **Libraries**: BLAS and LAPACK (through libblastrampoline), `BigInt`, `BigFloat`, `Regex`, any JLL or library of your own through `ccall`, with `libraries = :system` or `:bundle`.
+* **Standard libraries**: `Dates` (parsing and formatting with `dateformat"..."`, arithmetic, `now()`), `SparseArrays` (construction, indexing, products; not the factorizations yet), `Statistics`, `LinearAlgebra`, `Random`, `Printf`.
 * **Packages**: code from other packages compiles like Base's; Distributions.jl, StatsBase.jl and NaNStatistics.jl are a survey kept as tests (`test/packages`).
 
 `test/corpus.jl` and `test/` are the up-to-date list of what is checked.

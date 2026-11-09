@@ -62,6 +62,62 @@ for n in 2:32
 end
 @device_override @inline Base.getindex(t::Tuple, i::Int) = tuple_getindex(t, i)
 
+# Base's `iterate` of a tuple is `@nospecialize`d, so it is compiled for any tuple, and its `t[i]` is a `getfield` with an index that is not known: for a tuple
+# that has elements stored inline next to ones that are references (`Tuple{Int,Any}`, which `string(1, x)` is called with), that is not code that can be made
+# without the runtime. This one is specialized for the tuple, and so uses the `getindex` above.
+@device_override @inline Base.iterate(t::Tuple, i::Int = 1) = (1 <= i <= length(t)) ? (@inbounds(t[i]), i + 1) : nothing
+
+# `string(1, x)` (and so `"a=$(1) b=$(x)"`) where `x` is not known when compiling (a value of `Any`): the arguments are a `Tuple{Int,Any}`, which is not a concrete type
+# (the type of the tuple depends on `x`), so making it, and taking an element of it, is a call of the runtime. With the arguments one by one it is not made.
+# (Without an `Any` in them the methods of Base are used as they were: those for strings and characters are more specific.)
+for n in 2:12
+    args = [Symbol(:x, i) for i in 1:n]
+    @eval @device_override function Base.string($(args...))
+        s = IOBuffer()
+        io = BufIO(s) # (the methods of `show` in `show.jl` are for a `BufIO`, as in `print_to_string` above)
+        $([:(print(io, $a)) for a in args]...)
+        return Base.takestring!(s)
+    end
+end
+
+# `splice!` of a vector, written with `deleteat!` and `insert!` (Base's has a tuple of unknown type in it)
+@device_override function Base.splice!(a::Vector, i::Integer, ins = Base._default_splice)
+    v = a[i]
+    deleteat!(a, i)
+    k = 0
+    for x in ins
+        insert!(a, i + k, x)
+        k += 1
+    end
+    return v
+end
+@device_override function Base.splice!(a::Vector, r::AbstractUnitRange{<:Integer}, ins = Base._default_splice)
+    v = a[r]
+    deleteat!(a, r)
+    k = 0
+    for x in ins
+        insert!(a, first(r) + k, x)
+        k += 1
+    end
+    return v
+end
+
+# `sleep` is a timer of libuv, which needs the event loop. Here it is `nanosleep` (started again with the time that is left if a signal interrupts it)
+@device_override function Base.sleep(sec::Real)
+    sec >= 0 || throw(ArgumentError("sleep time must be nonnegative, got $sec"))
+    isnan(sec) && throw(ArgumentError("sleep time must not be NaN"))
+    whole = floor(min(Float64(sec), 1e15))
+    nanos = round(Int64, (min(Float64(sec), 1e15) - whole) * 1e9)
+    whole_s = Int64(whole)
+    nanos >= 1_000_000_000 && (whole_s += 1; nanos -= 1_000_000_000)
+    request = Ref((whole_s, nanos))
+    left = Ref((Int64(0), Int64(0)))
+    while ccall(:nanosleep, Cint, (Ref{NTuple{2,Int64}}, Ref{NTuple{2,Int64}}), request, left) != 0
+        request[] = left[]
+    end
+    return nothing
+end
+
 # Locks. A compiled program has one thread and no tasks, so a lock can never be contended: taking
 # one has no effect. (Without this, `lock` pulls in the whole task scheduler, for the case in
 # which another task holds the lock.) Note that unlocking a lock that is not held is not an error.
@@ -152,4 +208,13 @@ const CLOCK_MONOTONIC = Sys.isapple() ? Int32(6) : Int32(1)
 @device_override Base.depwarn(msg, funcsym; force::Bool = false) = nothing
 @static if isdefined(Base, :depwarn_if_not_pure)
     @device_override Base.depwarn_if_not_pure(args...) = nothing # (the deprecated properties of types, `Type.name`, which `@deprecate` reads)
+end
+
+# The time of day: `jl_gettimeofday` is a function of libjulia; `gettimeofday` is that of the C library (so `Dates.now()` and `today()` work: the zone is
+# that of the machine that runs the program, from `localtime_r`)
+@device_override function Base.Libc.TimeVal()
+    tv = Ref{Base.Libc.TimeVal}()
+    status = ccall(:gettimeofday, Cint, (Ref{Base.Libc.TimeVal}, Ptr{Cvoid}), tv, C_NULL)
+    status != 0 && error("unable to determine current time: ", status)
+    return tv[]
 end

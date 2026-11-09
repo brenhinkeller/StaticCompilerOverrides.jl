@@ -638,7 +638,7 @@ const LIBC_FUNCTIONS = Set([
     "strchr", "strrchr", "strstr", "malloc", "calloc", "realloc", "free", "abort", "exit", "getenv",
     "atoi", "strtol", "strtoul", "strtoll", "strtoull", "strtod", "strtof", "qsort", "bsearch",
     "write", "read", "puts", "putchar", "getchar", "fflush", "fputc", "fputs", "fwrite", "fread",
-    "usleep", "nanosleep", "clock_gettime", "time", "getentropy",
+    "usleep", "nanosleep", "clock_gettime", "time", "getentropy", "gettimeofday", "localtime_r", "gmtime_r",
     # libm
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "asinh", "acosh",
     "atanh", "exp", "exp2", "expm1", "log", "log2", "log10", "log1p", "pow", "sqrt", "cbrt", "hypot",

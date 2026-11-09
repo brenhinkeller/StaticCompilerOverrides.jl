@@ -1,4 +1,4 @@
-using Test, Random, Printf, LinearAlgebra, Libdl
+using Test, Random, Printf, LinearAlgebra, Libdl, Dates, SparseArrays
 using LLVM
 using LLVM: @dispose
 if Base.find_package("StaticCompilerOverrides") === nothing
@@ -102,6 +102,7 @@ include("testsilent.jl")
 include("testsymbols.jl")
 include("testglobals.jl")
 include("testlibraries.jl")
+include("testcoverage.jl")
 include("testtuples.jl")
 include("testarrays.jl")
 include("testplain.jl")
