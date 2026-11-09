@@ -34,7 +34,7 @@ module Loader
 using StaticTools: calloc, free, @symbolcall, @c_str
 
 const RTLD_NOW = Int32(2)
-const S_HANDLES, S_SYMBOLS, S_DIRECTORY = 1, 2, 3 # the handles of the libraries, the functions that were found, the folder of the program (a C string; 1 if not known)
+const S_HANDLES, S_SYMBOLS, S_DIRECTORY, S_LBT = 1, 2, 3, 4 # (S_LBT: whether libblastrampoline has been told what to forward to) # the handles of the libraries, the functions that were found, the folder of the program (a C string; 1 if not known)
 
 @inline table() = Base.llvmcall(("""
     @_static_libs = external hidden global i64
@@ -43,7 +43,7 @@ const S_HANDLES, S_SYMBOLS, S_DIRECTORY = 1, 2, 3 # the handles of the libraries
     }""", "table"), UInt, Tuple{})
 
 @inline state() = Base.llvmcall(("""
-    @_static_library_state = linkonce_odr hidden global [4 x i64] zeroinitializer, align 16
+    @_static_library_state = linkonce_odr hidden global [8 x i64] zeroinitializer, align 16
     define i64 @state() alwaysinline {
       ret i64 ptrtoint (ptr @_static_library_state to i64)
     }""", "state"), UInt, Tuple{})
@@ -219,7 +219,39 @@ end
         GC.@preserve what fail(UInt(pointer(what)), path)
     end
     st(handles, j, h)
+    lbt = ld(tbl, entry + 3)
+    lbt != 0 && sget(S_LBT) == 0 && forward_blas(lbt)
     return h
+end
+
+@inline call_forward(f::UInt, lib::UInt, suffix::UInt) = Base.llvmcall(("""
+    define i32 @fwd(i64 %f, i64 %lib, i64 %suffix) alwaysinline {
+      %fp = inttoptr i64 %f to ptr
+      %lp = inttoptr i64 %lib to ptr
+      %sp = inttoptr i64 %suffix to ptr
+      %r = call i32 %fp(ptr %lp, i32 0, i32 0, ptr %sp)
+      ret i32 %r
+    }""", "fwd"), Int32, Tuple{UInt,UInt,UInt}, f, lib, suffix)
+
+# Tell libblastrampoline, which a library that was loaded is linked to, where the BLAS and LAPACK of the program are: the libraries that it was forwarding to when compiling, in the
+# order that they were loaded in, as Julia does when it starts. `block` is { path of libblastrampoline, number of libraries, (path, suffix or 0)... }.
+@noinline function forward_blas(block::UInt)
+    sset(S_LBT, UInt(1))
+    h = UInt(@symbolcall dlopen(Ptr{UInt8}(ld(block, 0))::Ptr{UInt8}, RTLD_NOW::Int32)::Ptr{Cvoid})
+    if h == 0
+        what = c"cannot open"
+        GC.@preserve what fail(UInt(pointer(what)), ld(block, 0))
+    end
+    name = c"lbt_forward"
+    f = GC.@preserve name UInt(@symbolcall dlsym(Ptr{UInt8}(h)::Ptr{UInt8}, pointer(name)::Ptr{UInt8})::Ptr{Cvoid})
+    f == 0 && return
+    n = ld(block, 1) % Int
+    i = 0
+    while i < n
+        call_forward(f, ld(block, 2 + 2i), ld(block, 3 + 2i))
+        i += 1
+    end
+    return
 end
 
 # the function number `i` (from 0) of the table, found when it is first needed

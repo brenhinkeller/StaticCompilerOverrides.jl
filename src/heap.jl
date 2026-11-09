@@ -33,7 +33,7 @@ const NORMAL, ATOMIC = 0, 1 # the kinds of allocation: the object may have refer
 # the commands that the program can give the heap (see `command`)
 const COLLECT, LIVE_BYTES, COLLECTIONS, HEAP_BYTES, DISABLE, ENABLE = -1, -2, -3, -4, -5, -6
 # (a finalizer is given in two commands: the function, and then the object; a command has one argument, which is the `kind` of an allocation)
-const FINALIZER_FUNCTION, FINALIZER_OBJECT = -7, -8
+const FINALIZER_FUNCTION, FINALIZER_OBJECT, FINALIZER_SITE = -7, -8, -9 # (a C function, the object that it is for, or the number of a site of `finalizer(f, x)`: see `finalizers.jl`)
 const FINALIZER_PRESSURE = UInt(1024)
 
 const CHUNK_SIZE = 1 << 20 # for `alloc_nogc`
@@ -62,7 +62,8 @@ const S_EXT, S_EXT_N, S_EXT_CAP, S_LO, S_HI = 12, 13, 14, 15, 16
 const S_STACK, S_STACK_N, S_STACK_CAP = 17, 18, 19 # the mark stack
 const S_SINCE, S_THRESHOLD, S_LIVE, S_COLLECTIONS, S_COLLECTING = 20, 21, 22, 23, 24
 const S_XROOTS, S_XROOTS_N, S_STRESS, S_STRESS_LEFT, S_SCAN_STACK = 25, 26, 27, 28, 29
-const S_FIN, S_FIN_N, S_FIN_CAP, S_FIN_PENDING = 125, 126, 127, 128 # the finalizers: (object, function) pairs
+const S_FIN, S_FIN_N, S_FIN_CAP, S_FIN_PENDING, S_FIN_KIND = 125, 126, 127, 128, 129 # the finalizers: (object, function or site, kind) triples
+const S_PEND, S_PEND_N, S_PEND_CAP, S_FINALIZING = 130, 131, 132, 133 # objects that wait for their finalizer to run: (object, site)
 const S_DISABLED = 31 # (collections are off: `GC.enable(false)`)
 const S_REGS = 192 # (64 words from here: where the registers are saved, while the stack is scanned)
 const S_CUR = 32 # per kind and class: the block that is allocated from (2 * NCLASSES words)
@@ -234,7 +235,7 @@ end
     sz == HEAP_BYTES && return sget(S_BYTES)
     (sz == COLLECT || sz == LIVE_BYTES || sz == COLLECTIONS) && return UInt(0)
     (sz == DISABLE || sz == ENABLE) && return UInt(1)
-    (sz == FINALIZER_FUNCTION || sz == FINALIZER_OBJECT) && return UInt(0) # (nothing is freed, so nothing is finalized)
+    (sz == FINALIZER_FUNCTION || sz == FINALIZER_OBJECT || sz == FINALIZER_SITE) && return UInt(0) # (nothing is freed, so nothing is finalized)
     out_of_memory()
     return UInt(0)
 end
@@ -472,11 +473,12 @@ end
         sset(S_DISABLED, sz == DISABLE ? UInt(1) : UInt(0))
         return was
     end
-    if sz == FINALIZER_FUNCTION
+    if sz == FINALIZER_FUNCTION || sz == FINALIZER_SITE
         sset(S_FIN_PENDING, arg % UInt)
+        sset(S_FIN_KIND, sz == FINALIZER_SITE ? UInt(1) : UInt(0))
         return UInt(0)
     elseif sz == FINALIZER_OBJECT
-        add_finalizer(arg % UInt, sget(S_FIN_PENDING))
+        add_finalizer(arg % UInt, sget(S_FIN_PENDING), sget(S_FIN_KIND))
         return UInt(0)
     end
     out_of_memory() # (an allocation that is too large)
@@ -485,9 +487,15 @@ end
 
 ## finalizers
 #
-# A finalizer is a C function that takes the object (Julia's `ijl_gc_add_ptr_finalizer`: what `BigInt` and `BigFloat` have to free
-# the memory that their library allocated). When a collection finds the object unreachable, the function is called with it, before
-# the object is freed (the memory is still as it was, and the function does not give the object another reference).
+# There are two kinds. A C function that takes the object (Julia's `ijl_gc_add_ptr_finalizer`: what `BigInt` has to free the memory that GMP
+# allocated) is called, when a collection finds the object unreachable, before the object is freed (the memory is still as it was, and the function
+# does not give the object another reference).
+#
+# A Julia function (`finalizer(f, x)`: what the wrappers of SuiteSparse, PCRE and MPI have) can't be called from here: the collector is compiled
+# apart, and the code of `f` is the program's. The object is kept (it is marked, with what it refers to, as the finalizer may use it) and put in a
+# queue of objects that wait; when the collection is over, each is handed to the program, which has a function that runs the finalizers of the
+# site that registered it (`static_run_finalizer(site, object)`, written when linking: see `finalizers.jl`). The object is freed by the
+# next collection that finds it unreachable, as it is not in the table any more.
 
 @inline call_finalizer(f::UInt, obj::UInt) = Base.llvmcall(("""
     define void @callfin(i64 %f, i64 %o) alwaysinline {
@@ -497,17 +505,30 @@ end
       ret void
     }""", "callfin"), Cvoid, Tuple{UInt,UInt}, f, obj)
 
-@noinline function add_finalizer(obj::UInt, f::UInt)
+# (the function of the program that runs a finalizer of the site: a reference to a symbol that may not be defined, so that this links without)
+@inline call_site_finalizer(site::UInt, obj::UInt) = Base.llvmcall(("""
+    declare extern_weak void @static_run_finalizer(i64, i64)
+    define void @callsite(i64 %site, i64 %o) alwaysinline {
+      %have = icmp ne ptr @static_run_finalizer, null
+      br i1 %have, label %call, label %done
+    call:
+      call void @static_run_finalizer(i64 %site, i64 %o)
+      br label %done
+    done:
+      ret void
+    }""", "callsite"), Cvoid, Tuple{UInt,UInt}, site, obj)
+
+@noinline function add_finalizer(obj::UInt, f::UInt, kind::UInt)
     (obj == 0 || f == 0) && return
     sget(S_INIT) == 0 && init!()
     n = sget(S_FIN_N) % Int
     if n == sget(S_FIN_CAP) % Int
         cap = n == 0 ? 64 : 2 * n
-        new = UInt(calloc(1, cap * 16))
+        new = UInt(calloc(1, cap * 24))
         new == 0 && out_of_memory()
         old = sget(S_FIN)
         i = 0
-        while i < 2n
+        while i < 3n
             st(new, i, ld(old, i))
             i += 1
         end
@@ -516,8 +537,9 @@ end
         sset(S_FIN_CAP, cap % UInt)
     end
     table = sget(S_FIN)
-    st(table, 2n, obj)
-    st(table, 2n + 1, f)
+    st(table, 3n, obj)
+    st(table, 3n + 1, f)
+    st(table, 3n + 2, kind)
     sset(S_FIN_N, (n + 1) % UInt)
     # (what the finalizer frees is memory that the collector doesn't count: each object counts as some, to collect in time)
     sset(S_SINCE, sget(S_SINCE) + FINALIZER_PRESSURE)
@@ -540,18 +562,60 @@ end
     return ld(h, L_MARK) != 0
 end
 
-# run the finalizers of the objects that were not reached (after marking, and before the sweep frees them), and forget them
+# put (object, site) in the queue of those that wait for their finalizer
+@noinline function queue_finalizer(obj::UInt, site::UInt)
+    n = sget(S_PEND_N) % Int
+    if n == sget(S_PEND_CAP) % Int
+        cap = n == 0 ? 64 : 2 * n
+        new = UInt(calloc(1, cap * 16))
+        new == 0 && out_of_memory()
+        old = sget(S_PEND)
+        i = 0
+        while i < 2n
+            st(new, i, ld(old, i))
+            i += 1
+        end
+        old != 0 && free(Ptr{UInt8}(old))
+        sset(S_PEND, new)
+        sset(S_PEND_CAP, cap % UInt)
+    end
+    queue = sget(S_PEND)
+    st(queue, 2n, obj)
+    st(queue, 2n + 1, site)
+    sset(S_PEND_N, (n + 1) % UInt)
+    return
+end
+
+# After marking, and before the sweep frees what was not reached: the objects of Julia finalizers that were not reached are kept and queued (what they refer to is
+# kept as well, and so what the C finalizers of the others are for may be kept by them: so those are looked at after), and the C finalizers of the rest are run.
 @noinline function run_finalizers()
     n = sget(S_FIN_N) % Int
     table = sget(S_FIN)
+    queued = false
+    i = 0
+    while i < n
+        obj = ld(table, 3i)
+        if ld(table, 3i + 2) == 1 && !reached(obj)
+            queue_finalizer(obj, ld(table, 3i + 1))
+            mark_word(obj)
+            st(table, 3i + 2, UInt(2)) # (queued: it leaves the table)
+            queued = true
+        end
+        i += 1
+    end
+    queued && drain()
     keep = 0
     i = 0
     while i < n
-        obj = ld(table, 2i)
-        f = ld(table, 2i + 1)
-        if reached(obj)
-            st(table, 2keep, obj)
-            st(table, 2keep + 1, f)
+        obj = ld(table, 3i)
+        f = ld(table, 3i + 1)
+        kind = ld(table, 3i + 2)
+        if kind == 2
+            # (queued above)
+        elseif kind == 1 || reached(obj)
+            st(table, 3keep, obj)
+            st(table, 3keep + 1, f)
+            st(table, 3keep + 2, kind)
             keep += 1
         else
             call_finalizer(f, obj)
@@ -559,6 +623,23 @@ end
         i += 1
     end
     sset(S_FIN_N, keep % UInt)
+    return
+end
+
+# Hand the objects that wait to the program, one at a time (not inside a collection: the finalizers allocate). One that is being run is not in the queue, and
+# is on the stack of the finalizer, which is what keeps it; a collection that happens in a finalizer does not start another round.
+@noinline function run_pending_finalizers()
+    sget(S_FINALIZING) != 0 && return
+    sset(S_FINALIZING, UInt(1))
+    while sget(S_PEND_N) != 0
+        n = (sget(S_PEND_N) - 1) % Int
+        queue = sget(S_PEND)
+        obj = ld(queue, 2n)
+        site = ld(queue, 2n + 1)
+        sset(S_PEND_N, n % UInt)
+        call_site_finalizer(site, obj)
+    end
+    sset(S_FINALIZING, UInt(0))
     return
 end
 
@@ -774,6 +855,17 @@ end
 
 ## collecting
 
+# Zero the part of the stack below the caller (a function that has returned leaves what it kept there, and the frames of what is called next have slots that they do not
+# write, which then hold what that was: an address of an object that is not used any more, which the collector, that looks at every word, would take for a reference).
+@inline scrub_stack() = Base.llvmcall(("""
+    declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
+    define void @scrub() #0 {
+      %buf = alloca [16384 x i8], align 16
+      call void @llvm.memset.p0.i64(ptr %buf, i8 0, i64 16384, i1 true)
+      ret void
+    }
+    attributes #0 = { noinline }""", "scrub"), Cvoid, Tuple{})
+
 # scan the data that the program has told us about
 @inline function scan_roots()
     table = roots_table()
@@ -788,6 +880,8 @@ end
     end
     xr = sget(S_XROOTS)
     xr != 0 && scan(xr, xr + sget(S_XROOTS_N) * 8)
+    pend = sget(S_PEND)
+    pend != 0 && scan(pend, pend + sget(S_PEND_N) * 16) # (the objects that wait for their finalizer)
     return
 end
 
@@ -795,6 +889,7 @@ end
 # a test of the collector, which has the roots it chooses, does not).
 @noinline function collect(scan_stack::Bool)
     sget(S_INIT) == 0 && init!()
+    scan_stack && scrub_stack()
     if scan_stack
         # The stack is what is looked at, from where it is now to the base of that of this thread. Code that runs on another
         # stack (a library called from a task of Julia, which has a stack of its own, or from a coroutine) has references there that
@@ -823,6 +918,7 @@ end
     sset(S_SINCE, UInt(0))
     sset(S_THRESHOLD, max(MIN_THRESHOLD, live))
     sset(S_COLLECTING, UInt(0))
+    sget(S_PEND_N) != 0 && run_pending_finalizers()
     return
 end
 

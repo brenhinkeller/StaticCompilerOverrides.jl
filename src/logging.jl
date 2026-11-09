@@ -14,8 +14,23 @@ using Base.CoreLogging: AbstractLogger, LogLevel, Info, Warn, Error
 "The logger of compiled programs: writes to the standard error."
 struct StaticLogger <: AbstractLogger end
 
+# whether `with_logger(NullLogger())`, or `global_logger(NullLogger())`, is in effect: no message is written (the one other logger that a program can have: it is the
+# `Logging` of Base without the machinery that makes a logger of another kind work)
+const LOG_SILENT = Ref(false)
+
 @device_override Base.CoreLogging.current_logger_for_env(level::LogLevel, group, _module) =
-    level.level >= Info.level ? StaticLogger() : nothing
+    level.level >= Info.level && !LOG_SILENT[] ? StaticLogger() : nothing
+
+@device_override function Base.CoreLogging.with_logger(f::Function, logger::Base.CoreLogging.NullLogger)
+    old = LOG_SILENT[]
+    LOG_SILENT[] = true
+    try
+        return f()
+    finally
+        LOG_SILENT[] = old
+    end
+end
+@device_override Base.CoreLogging.global_logger(logger::Base.CoreLogging.NullLogger) = (LOG_SILENT[] = true; logger)
 
 Base.CoreLogging.shouldlog(::StaticLogger, level, _module, group, id) = true
 Base.CoreLogging.min_enabled_level(::StaticLogger) = Info

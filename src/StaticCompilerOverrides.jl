@@ -26,9 +26,11 @@ include("regex.jl")    # Regex
 include("dispatch.jl") # dynamic dispatch on abstract types, by union splitting
 include("diagnostics.jl") # Why an entry point does not infer to a concrete type
 include("gc.jl")       # The garbage collector, from the program
+include("finalizers.jl") # finalizer(f, x) of a Julia function
 include("printf.jl")   # Printf, for formats without `*`
 include("unicode.jl")  # Properties of characters, without utf8proc
 include("files.jl")     # Files
+include("filesystem.jl") # The file system, the environment, the process
 include("random.jl")   # Random number generation without tasks
 include("logging.jl")  # @warn, @info and @error, to the standard error
 include("testing.jl")  # Differential testing: compiled executable vs. ordinary Julia

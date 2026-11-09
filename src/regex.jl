@@ -24,8 +24,3 @@ end
     end
     return regex
 end
-
-# A `Regex` that is made when the program runs has a finalizer in Base, to free its compiled code. A finalizer that is a Julia function is not
-# supported (the collector runs C functions: see `heap.jl`), so these are not freed: the code of a pattern (a few kilobytes) stays until the program ends.
-# (The `Regex` that are constants of the program are not freed either way.)
-@device_override Base.finalizer(f, regex::Regex) = regex

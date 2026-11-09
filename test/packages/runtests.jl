@@ -1,4 +1,4 @@
-# What compiles from packages: the code of Distributions.jl, NaNStatistics.jl and StatsBase.jl, as programs that have to give what Julia gives.
+# What compiles from packages: the code of Distributions.jl, NaNStatistics.jl, StatsBase.jl and MPI.jl, as programs that have to give what Julia gives.
 # This is a survey that is kept as tests, so that what works stays working; it takes a while, so it is not part of the tests of the package:
 #
 #     julia --project=test/packages -e 'using Pkg; Pkg.develop(path = "."); Pkg.instantiate(); include("test/packages/runtests.jl")'
@@ -7,7 +7,7 @@
 
 include("common.jl")
 
-const ALL = ["distributions", "nanstatistics", "statsbase"]
+const ALL = ["distributions", "nanstatistics", "statsbase", "mpi"]
 selected = get(ENV, "PACKAGES", "")
 selected = isempty(selected) ? ALL : [lowercase(strip(s)) for s in split(selected, ',')]
 

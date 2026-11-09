@@ -7,6 +7,13 @@ function check_all(cases)
     end
 end
 
+function threads_sum(s)
+    Threads.@threads for i in 1:10
+        Threads.atomic_add!(s, i)
+    end
+    return s[]
+end
+
 @testset "Coverage" begin
     any_value(x) = Base.inferencebarrier(x)
 
@@ -59,6 +66,97 @@ end
             "identity and diagonals"  => () -> (A = sparse(I, 3, 3); nnz(A) + Int(tr(A)) + nnz(spdiagm(0 => [1.0, 2, 3]))),
             "sparse vectors"          => () -> (v = sparsevec([1, 4], [1.0, 2.0], 5); Int(sum(v)) + nnz(v)),
             "show"                    => () -> (println(sparse([1, 2], [1, 2], [1.0, 2.0])); 0),
+        ])
+    end
+
+    @testset "Schur" begin
+        r6(x) = round(Int, 1e6 * x)
+        A = [4.0 1.0; 2.0 3.0]
+        R = [0.0 -1.0; 1.0 0.0] # (complex eigenvalues)
+        check_all([
+            "schur, real eigenvalues"    => () -> (F = schur(A); r6(sum(F.T) + sum(F.Z) + sum(real(F.values)))),
+            "schur, complex eigenvalues" => () -> (F = schur(R); r6(sum(abs, F.T) + sum(abs, F.Z) + sum(abs, imag(F.values)))),
+            "schur of a Float32"         => () -> r6(sum(schur(Float32[4 1; 2 3]).T)),
+            "schur of a complex matrix"  => () -> r6(sum(abs, schur(ComplexF64[4 1im; 2 3]).T)),
+            "ordschur"                   => () -> (F = schur([1.0 2 0; 0 3 1; 1 0 2]); r6(sum(abs, ordschur(F, [false, true, false]).T))),
+            "sqrt, nonsymmetric"         => () -> r6(sum(sqrt(A))),
+            "sqrt, 3 by 3"               => () -> r6(sum(sqrt([1.0 2 0; 0 3 1; 1 0 2]))),
+            "sqrt, negative eigenvalue"  => () -> r6(sum(abs, sqrt([1.0 2; 3 -4]))),
+            "sqrt, symmetric"            => () -> r6(sum(sqrt([2.0 1; 1 2]))),
+            "log, nonsymmetric"          => () -> r6(sum(log(A))),
+            "log, 3 by 3"                => () -> r6(sum(log([1.0 2 0; 0 3 1; 1 0 2]))),
+            "matrix power"               => () -> r6(sum(A^0.5) + sum(A^2.5)),
+            "sqrt(A)^2 == A"             => () -> r6(sum(abs, sqrt(A)^2 - A)),
+            "exp(log(A)) == A"           => () -> r6(sum(abs, exp(log(A)) - A)),
+        ])
+    end
+
+    @testset "Broadcasts and products of complex numbers and rationals" begin
+        r6(x) = round(Int, 1e6 * x)
+        Z = [0.6 0.8; -0.8 0.6]
+        C = ComplexF64[4 1im; 0 3]
+        Q = Rational{Int}[1 2; 3 4]
+        check_all([
+            "abs. of a complex matrix"   => () -> r6(sum(abs.(C))),
+            "real and imag"              => () -> r6(sum(real(C)) + sum(imag(C))),
+            "complex .* complex"         => () -> r6(sum(abs, C .* C)),
+            "complex .+ 1"               => () -> r6(sum(abs, C .+ 1)),
+            "conj."                      => () -> r6(sum(abs, imag.(conj.(C)))),
+            "a real by a complex matrix" => () -> r6(sum(abs, Z * C)),
+            "a complex by a real matrix" => () -> r6(sum(abs, C * Z)),
+            "a rational matrix"          => () -> (R = Q .+ 1; Int(sum(numerator, R)) * 100 + Int(sum(denominator, R))),
+            "a rational product"         => () -> (R = Q * Q; Int(sum(numerator, R)) * 100 + Int(sum(denominator, R))),
+            "complex vectors"            => () -> r6(sum(abs.(ComplexF64[1, 2im] .* 2))),
+        ])
+    end
+
+    @testset "SparseArrays factorizations" begin
+        r6(x) = round(Int, 1e6 * x)
+        poisson(n) = (T = spdiagm(-1 => fill(-1.0, n - 1), 0 => fill(2.0, n), 1 => fill(-1.0, n - 1)); kron(sparse(I, n, n), T) + kron(T, sparse(I, n, n)))
+        check_all([
+            "\\ of a tridiagonal"      => () -> (A = spdiagm(-1 => [1.0, 1], 0 => [4.0, 4, 4], 1 => [1.0, 1]); r6(sum(A \ [1.0, 2, 3]))),
+            "lu and its solve"        => () -> (A = sparse([4.0 1; 1 3.0]); F = lu(A); r6(sum(F \ [1.0, 2.0]))),
+            "determinant of the lu"   => () -> (A = sparse([4.0 1 0; 1 3.0 1; 0 1 5.0]); r6(det(lu(A)))),
+            "cholesky"                => () -> (A = sparse([4.0 1; 1 3.0]); F = cholesky(Symmetric(A)); r6(sum(F \ [1.0, 2.0])) + r6(logdet(F))),
+            "ldlt"                    => () -> (A = sparse([4.0 1; 1 3.0]); r6(sum(ldlt(Symmetric(A)) \ [1.0, 2.0]))),
+            "a 400-unknown system"    => () -> r6(sum(poisson(20) \ ones(400))),
+            "cholesky of 900"         => () -> r6(sum(cholesky(Symmetric(poisson(30))) \ ones(900))),
+            "a matrix of right sides" => () -> (A = sparse([4.0 1; 1 3.0]); r6(sum(A \ [1.0 0; 0 1.0]))),
+            "a random system"         => () -> (A = sprand(MersenneTwister(1), 200, 200, 0.05) + 10I; r6(sum(A \ ones(200)))),
+            "least squares (qr)"      => () -> (A = sparse([1.0 0; 0 1; 1 1]); r6(sum(A \ [1.0, 2, 3]))),
+            "not positive definite"   => () -> (A = sparse([1.0 2; 2 1.0]); try; cholesky(Symmetric(A)); 0; catch e; e isa PosDefException ? 1 : 2; end),
+            "singular"                => () -> (A = sparse([1.0 2; 2 4.0]); try; lu(A) \ [1.0, 2]; 0; catch e; e isa SingularException ? 1 : 2; end),
+            "factorize"               => () -> (A = sparse([4.0 1; 1 3.0]); r6(sum(factorize(A) \ [1.0, 2.0]))),
+            "many factorizations"     => () -> (s = 0.0; for i in 1:300; A = sparse([4.0 + i 1; 1 3.0]); s += sum(lu(A) \ [1.0, 2.0]); end; r6(s)), # (the finalizers free them)
+            "complex"                 => () -> (A = sparse([4.0 + 1im 1; 1 3.0]); r6(real(sum(A \ [1.0 + 0im, 2])))),
+        ])
+    end
+
+    @testset "Standard libraries" begin
+        dir() = (d = joinpath(tempdir(), string("static_cov_", Libc.getpid())); isdir(d) && rm(d; recursive = true); mkdir(d); d)
+        check_all([
+            "Base64 encode"            => () -> (println(base64encode(any_value("hello world")), base64encode(UInt8[]), base64encode("a"), base64encode("ab")); 0),
+            "Base64 decode"            => () -> (println(String(base64decode(any_value("aGVsbG8gd29ybGQ=")))); println(String(base64decode(any_value("aGVsbG8")))); 0),
+            "Base64 round trip"        => () -> (b = Vector{UInt8}(1:200); Int(base64decode(base64encode(b)) == b)),
+            "CRC32c"                   => () -> Int(crc32c(any_value("hello"))) + Int(crc32c(UInt8[1, 2, 3, 4, 5], 0x12345678)),
+            "NullLogger"               => () -> (with_logger(NullLogger()) do; @warn "hidden"; end; 0),
+            "IdSet"                    => () -> (s = Base.IdSet{Any}(); a = [1]; b = [1]; push!(s, a); push!(s, a); push!(s, b); pop!(s, a); length(s) * 10 + Int(b in s) + Int(a in s) * 100),
+            "IdSet of many"            => () -> (s = Base.IdSet{Any}(); xs = [[i] for i in 1:50]; for x in xs; push!(s, x); end; for x in xs[1:10]; delete!(s, x); end; length(s) + count(x -> x in s, xs)),
+            "paths"                    => () -> (println(basename("/a/b.txt"), dirname("/a/b.txt"), splitext("b.txt"), joinpath("a", "b"), normpath("/a/../b")); 0),
+            "mkdir, isdir, rm"         => () -> (d = dir(); r = Int(isdir(d)); rm(d); r + Int(isdir(d)) + Int(ispath(d))),
+            "files: isfile, filesize"  => () -> (d = dir(); p = joinpath(d, "f"); write(p, "hello"); r = Int(isfile(p)) + Int(ispath(p)) + filesize(p) + Int(isdir(p)); rm(d; recursive = true); r),
+            "stat"                     => () -> (d = dir(); p = joinpath(d, "f"); write(p, "abc"); s = stat(p); r = Int(s.size) + Int(mtime(p) > 0) + Int(filemode(p) & 0o400 != 0); rm(d; recursive = true); r),
+            "readdir"                  => () -> (d = dir(); write(joinpath(d, "b.txt"), "y"); write(joinpath(d, "a.txt"), "x"); mkdir(joinpath(d, "sub")); n = readdir(d); println(n); println(readdir(d; join = true) == joinpath.(d, n)); rm(d; recursive = true); length(n)),
+            "cp and mv"                => () -> (d = dir(); p = joinpath(d, "f"); write(p, "abc"); cp(p, p * "2"); mv(p * "2", p * "3"); r = length(read(p * "3", String)) + Int(!ispath(p * "2")); rm(d; recursive = true); r),
+            "cp of a directory"        => () -> (d = dir(); mkdir(joinpath(d, "s")); write(joinpath(d, "s", "x"), "hi"); cp(joinpath(d, "s"), joinpath(d, "t")); r = length(read(joinpath(d, "t", "x"), String)); rm(d; recursive = true); r),
+            "rm of what is not there"  => () -> (d = dir(); rm(joinpath(d, "nothing"); force = true); r = (try; rm(joinpath(d, "nothing")); 0; catch e; 1; end); rm(d); r),
+            "mkdir of one that exists" => () -> (d = dir(); r = (try; mkdir(d); 0; catch e; 1; end); rm(d); r),
+            "pwd and cd"               => () -> (d = realpath(dir()); old = pwd(); cd(d); r = Int(realpath(pwd()) == d); cd(old); rm(d); r + Int(pwd() == old)),
+            "temporary files"          => () -> ((p, io) = mktemp(); close(io); r = Int(isfile(p)); rm(p); q = tempname(); r + Int(!ispath(q)) + Int(isdir(tempdir()))),
+            "mktempdir with a function" => () -> (path = mktempdir(d -> (write(joinpath(d, "x"), "1"); d)); Int(!ispath(path))),
+            "environment"              => () -> (ENV["STATIC_COVERAGE_X"] = "5"; r = parse(Int, ENV["STATIC_COVERAGE_X"]) + Int(haskey(ENV, "STATIC_COVERAGE_X")); delete!(ENV, "STATIC_COVERAGE_X"); r + Int(haskey(ENV, "STATIC_COVERAGE_X"))),
+            "process id and homedir"   => () -> Int(Libc.getpid() > 0) + Int(length(homedir()) > 0),
+            "@threads"                 => () -> (s = Threads.Atomic{Int}(0); threads_sum(s)),
         ])
     end
 end

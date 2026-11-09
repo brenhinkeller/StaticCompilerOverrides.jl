@@ -100,8 +100,8 @@ What compiles to a standalone binary (the arguments of the command line included
   `try`/`catch`/`finally`, non-`const` global variables, `deepcopy`, `IdDict`, `rand`, files and the standard input, and logging (`@warn` and friends).
 * **Printing**: `print`, `println`, `show`, `display` and `text/plain` of numbers, strings, symbols, containers, structs, tuples and matrices, with `IOContext` properties known when compiling; `printf` and `@printf(STDOUT, ...)`.
 * **Dynamic dispatch**: calls on `Any` and abstract types are closed over a list of registered types, so they compile (and are exact for abstract types with few concrete subtypes).
-* **Libraries**: BLAS and LAPACK (through libblastrampoline), `BigInt`, `BigFloat`, `Regex`, any JLL or library of your own through `ccall`, with `libraries = :system` or `:bundle`.
-* **Standard libraries**: `Dates` (parsing and formatting with `dateformat"..."`, arithmetic, `now()`), `SparseArrays` (construction, indexing, products; not the factorizations yet), `Statistics`, `LinearAlgebra`, `Random`, `Printf`.
+* **Libraries**: BLAS and LAPACK (through libblastrampoline), `BigInt`, `BigFloat`, `Regex`, SuiteSparse (sparse `\`, `lu`, `cholesky`, `qr`), **MPI** (MPI.jl programs run under `mpiexec`), any JLL or library of your own through `ccall`, with `libraries = :system` or `:bundle`; and `finalizer(f, x)` frees what they allocate.
+* **Standard libraries**: `Dates` (parsing and formatting with `dateformat"..."`, arithmetic, `now()`), `SparseArrays` (construction, indexing, products, factorizations), the file system (`stat`, `mkdir`, `rm`, `readdir`, `cp`, `mv`, temporary files), `Base64`, `CRC32c`, `Statistics`, `LinearAlgebra`, `Random`, `Printf`.
 * **Packages**: code from other packages compiles like Base's; Distributions.jl, StatsBase.jl and NaNStatistics.jl are a survey kept as tests (`test/packages`).
 
 `test/corpus.jl` and `test/` are the up-to-date list of what is checked.
@@ -124,7 +124,7 @@ Code that can't work in a standalone binary is rejected when compiling, with an 
 The main limits, which the manual has in full:
 
 * **Dynamic behavior**: a value of an unregistered type aborts the program when it reaches a dispatch over registered types (compiling says what it did this way, with `JULIA_DEBUG=StaticCompilerOverrides`; `add_dispatch_candidates!` adds types). Not supported: types that are only known when the program runs and can't be listed, `eval`, tasks, `Channel`s and threads.
-* **Libraries**: by default a program needs its libraries at the paths that they had when compiling (`libraries = :bundle` copies them next to the program; BLAS is not bundled yet). Finalizers that are Julia functions are not supported (C ones are), so a `Regex` made when the program runs is not freed.
+* **Libraries**: by default a program needs its libraries at the paths that they had when compiling (`libraries = :bundle` copies them next to the program; BLAS is not bundled yet). `atexit` functions are not run, and a reduction in MPI with an operator of your own (a C callback into Julia) is not supported.
 * **Platforms**: macOS and Linux for the collector; the machine that compiles is the one that is targeted (no cross-compiling, no Windows). Linux is only tested on CI, and the libraries there are the least tested.
 * **Memory**: the collector is conservative and the heap is not thread-safe (a library called from several threads needs a lock; on a stack that is not its thread's it frees nothing).
 * **Runtime differences**: at most 256 nested `try` blocks, no stack overflow check (infinite recursion crashes), and uncaught exceptions exit with a short message and no backtrace.

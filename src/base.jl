@@ -218,3 +218,77 @@ end
     status != 0 && error("unable to determine current time: ", status)
     return tv[]
 end
+
+# `atexit(f)`: a program that is compiled does not run the functions that were registered when it ends, except the ones that are of the standard libraries
+# (SuiteSparse registers one that shuts it down, which the system does by ending the process): for those it is not needed, and for any other, which would not be run, the
+# program stops when it is reached, and does not go on without what it was asked for.
+@generated function static_atexit(::Type{F}) where {F}
+    parent = parentmodule(F)
+    standard = parent in (Base, Core) || nameof(parent) in (:LibSuiteSparse, :SparseArrays, :CHOLMOD, :UMFPACK, :SPQR)
+    return standard ? :(nothing) : :(error("`atexit` is not supported in compiled programs: the function would not be run"))
+end
+@device_override Base.atexit(f::Function) = static_atexit(typeof(f))
+
+# the path of a `LazyLibrary`, as the compiler has it (see `host_dlpath` in `libraries.jl`)
+@device_override Runtime.Libdl.dlpath(lib::Runtime.Libdl.LazyLibrary) = Runtime.host_dlpath(lib)
+
+# `OncePerProcess` (what a library has to set itself up the first time that it is used: SuiteSparse, ...): Base's takes a lock and tells the system of packages that the value
+# is made (`jl_set_precompile_field_replace`, `__precompile__`), neither of which there is in a program that is compiled, which has one task. The embedded
+# object starts as one that has not run (see `field_cut` in `runtime.jl`).
+@device_override @inline function (once::Base.OncePerProcess{T,F})() where {T,F}
+    if (@atomic once.state) != 0x01
+        once.value = once.initializer()
+        @atomic once.state = 0x01
+    end
+    return once.value::T
+end
+
+# `unsafe_wrap(Array, pointer, dims)`: an `Array` over data that the program does not own (what a C library gave), made of a `Memory` of that data (`jl_ptr_to_genericmemory`,
+# in the runtime), as Julia's own is made of one in `jl_ptr_to_array`, which is not in the binary. The data is never freed with the array (`own = true` is not supported:
+# the library that allocated it has the function that frees it).
+@device_override function Base.unsafe_wrap(::Union{Type{Array},Type{Array{T}},Type{Array{T,N}}}, p::Ptr{T}, dims::NTuple{N,Int}; own::Bool = false) where {T,N}
+    own && error("unsafe_wrap with `own = true` is not supported in compiled programs: free the data with the function of the library that allocated it")
+    mem = Base.unsafe_wrap(Memory{T}, p, prod(dims))
+    return Base.wrap(Array, mem, dims)
+end
+@device_override function Base.unsafe_wrap(::Union{Type{Array},Type{Array{T}},Type{Array{T,1}}}, p::Ptr{T}, d::Integer; own::Bool = false) where {T}
+    own && error("unsafe_wrap with `own = true` is not supported in compiled programs: free the data with the function of the library that allocated it")
+    mem = Base.unsafe_wrap(Memory{T}, p, d)
+    return Base.wrap(Array, mem, (Int(d),))
+end
+
+# CRC-32C (Castagnoli, as the standard library `CRC32c` and the instructions of the processors have it), where Base calls `jl_crc32c`: one byte at a time, with a table. `crc` is
+# the value of the end of the data before, as it is for the C function (it starts as 0), so it is turned about at the start and the end.
+const CRC32C_TABLE = let table = Vector{UInt32}(undef, 256)
+    for i in 0:255
+        c = UInt32(i)
+        for _ in 1:8
+            c = (c & 1) != 0 ? (c >> 1) ⊻ 0x82f63b78 : c >> 1
+        end
+        table[i+1] = c
+    end
+    table
+end
+@device_override function Base.unsafe_crc32c(a, n, crc::UInt32)
+    c = ~crc
+    holder = Base.cconvert(Ptr{UInt8}, a) # (what `ccall` makes of the argument: a pointer to the data of an array, a string, or a `Ref`)
+    GC.@preserve holder begin
+        p = Base.unsafe_convert(Ptr{UInt8}, holder)
+        i = 0
+        while i < n
+            c = @inbounds(CRC32C_TABLE[((c ⊻ unsafe_load(p, i + 1)) & 0xff) + 1]) ⊻ (c >> 8)
+            i += 1
+        end
+    end
+    return ~c
+end
+
+## The type of the result of a broadcast
+#
+# `broadcast` makes the array of the result with the type that `Broadcast._bc_eltype` is inferred to return, which Base gives as
+# `_broadcast_getindex(inferencebarrier(x), i)::eltype(x)`: the barrier makes `x` a value of the type `Any`, and the type assertion is what says what it is. With our
+# compiler an `Any` is closed over the registered types (see dispatch.jl), and the assertion keeps what of them is `eltype(x)`: that is `Float64`, `Int` or `Bool`, which
+# are registered, but is nothing for `ComplexF64` or `Rational`, which are not, so that the result was inferred to be an array of `Union{}` (what `copy` makes when
+# the type is not known) and what used it was a call without a method. The matrix is not hidden here: inference of `getindex` of the matrix gives the type itself, and
+# the assertion says it as before.
+@device_override Base.Broadcast._bc_eltype(x, i) = Base.Broadcast._broadcast_getindex(x, i)::eltype(x)

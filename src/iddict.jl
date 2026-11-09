@@ -132,3 +132,47 @@ end
     end
     return -1
 end
+
+## `IdSet`
+#
+# Base keeps the keys of an `IdSet` in a list in the order that they were added, with a table of their places that `jl_idset_*` of libjulia look in and change. Here the list is looked
+# through for a key (the table is not used, and is left empty): the order, `length`, iteration and the rest are Base's own, and what is added to the set is found as fast as the set is
+# short. A set of many thousands of objects is slow.
+function idset_find(list::Memory{Any}, max::Int, key)
+    i = 1
+    while i <= max
+        isassigned(list, i) && list[i] === key && return i
+        i += 1
+    end
+    return 0
+end
+
+@device_override Base.haskey(s::Base.IdSet, @nospecialize(key)) = idset_find(s.list, s.max, key) != 0
+
+@device_override function Base.push!(s::Base.IdSet, @nospecialize(x))
+    i = idset_find(s.list, s.max, x)
+    if i != 0
+        s.list[i] = x
+    else
+        if s.max >= length(s.list)
+            bigger = Memory{Any}(undef, max(4, 2 * length(s.list)))
+            copyto!(bigger, 1, s.list, 1, s.max)
+            setfield!(s, :list, bigger)
+        end
+        s.max += 1
+        s.list[s.max] = x
+        s.count += 1
+    end
+    return s
+end
+
+@device_override function Base._pop!(s::Base.IdSet, @nospecialize(x))
+    i = idset_find(s.list, s.max, x)
+    i == 0 && return -1
+    Base.unsetindex!(s.list, i)
+    s.count -= 1
+    while s.max > 0 && !isassigned(s.list, s.max)
+        s.max -= 1
+    end
+    return i - 1
+end

@@ -15,7 +15,7 @@
 using Libdl: Libdl
 
 const LIBM_PREFIXES = ("libopenlibm", "libm.", "libm-")
-const RUNTIME_LIBRARIES = ("libjulia", "libuv", "libLLVM", "libccalltest", "libsuitesparse") # (those that need the Julia runtime)
+const RUNTIME_LIBRARIES = ("libjulia", "libuv", "libLLVM", "libccalltest") # (those that need the Julia runtime)
 
 # the Julia object that a constant operand refers to: the address of one, or the value of a global that holds one (a `load` of
 # an address, as a variable that is not a constant is read)
@@ -51,8 +51,19 @@ struct LibraryPlan
     paths::Vector{String}
     needs::Vector{Vector{Int}}
     symbols::Vector{Tuple{Int,String}}
+    lbt::Vector{Bool} # whether the library is linked to libblastrampoline, which has to be told what to forward to before the library calls BLAS
 end
-LibraryPlan() = LibraryPlan(String[], Vector{Int}[], Tuple{Int,String}[])
+LibraryPlan() = LibraryPlan(String[], Vector{Int}[], Tuple{Int,String}[], Bool[])
+
+# whether the file is linked to libblastrampoline (UMFPACK, CHOLMOD, ... call BLAS and LAPACK through it, and it is Julia that tells it where they are)
+function links_blastrampoline(path::String)
+    try
+        out = Sys.isapple() ? read(`otool -L $path`, String) : Sys.islinux() ? read(`ldd $path`, String) : ""
+        return occursin("libblastrampoline", out)
+    catch
+        return false
+    end
+end
 
 # Where a library is that is part of the system: it is not copied with the program, and is found by its name
 system_library(path::AbstractString) = any(p -> startswith(path, p), ("/usr/lib/", "/System/", "/lib/", "/lib64/", "/usr/lib64/", "/usr/lib32/"))
@@ -104,6 +115,7 @@ function register_library!(plan::LibraryPlan, lib, handle, libraries::Symbol)
     i === nothing || return i
     push!(plan.paths, full)
     push!(plan.needs, Int[])
+    push!(plan.lbt, links_blastrampoline(full))
     i = length(plan.paths)
     needs = Int[]
     for (dlib, dh) in library_needs(lib, full, libraries)
@@ -134,8 +146,11 @@ function resolve_library_lookups!(mod::LLVM.Module; libraries::Symbol = :system)
         lib_op = ops[1]
         if LLVM.name(LLVM.called_operand(call)) == "ijl_load_and_lookup"
             libname, name = constant_cstring(lib_op), constant_cstring(ops[2])
-            (libname === nothing || name === nothing) && continue
-            (name in RUNTIME_SHIM_FUNCTIONS || name in LIBC_FUNCTIONS) && continue
+            name === nothing && continue
+            (name in RUNTIME_SHIM_FUNCTIONS || name in LIBC_FUNCTIONS || haskey(LIBJULIA_ALIASES, name)) && continue
+            # (no library: the function is looked for in the ones that are loaded, as a library that was opened with `RTLD_GLOBAL` has it, MPI.jl's `libmpi`: it is the library that has it now)
+            libname === nothing && (libname = symbol_owner(name))
+            libname === nothing && continue
             lib = libname
         else
             lib, sym = constant_object(lib_op), constant_object(ops[2])
@@ -175,6 +190,20 @@ function resolve_library_lookups!(mod::LLVM.Module; libraries::Symbol = :system)
         end
     end
     return plan
+end
+
+# The file of the library that has the function `name` among those that are loaded (the first that the system finds), or `nothing` for one that is of the system or
+# of Julia's runtime, which the lookups of other kinds take care of
+function symbol_owner(name::AbstractString)
+    default = Sys.isapple() ? Ptr{Cvoid}(typemax(UInt) - 1) : C_NULL # (`RTLD_DEFAULT`: -2 on macOS, 0 on Linux)
+    sym = ccall(:dlsym, Ptr{Cvoid}, (Ptr{Cvoid}, Cstring), default, name)
+    sym == C_NULL && return nothing
+    info = zeros(UInt, 4) # (`Dl_info`: the file name is the first word)
+    ccall(:dladdr, Cint, (Ptr{Cvoid}, Ptr{UInt}), sym, info) == 0 && return nothing
+    info[1] == 0 && return nothing
+    path = unsafe_string(Ptr{UInt8}(info[1]))
+    (system_library(path) || any(p -> startswith(basename(path), p), RUNTIME_LIBRARIES)) && return nothing
+    return path
 end
 
 # The handle of a library given as a `LazyLibrary` or as a name, in this process, as Julia finds it (a name like "libz" has the
@@ -220,11 +249,29 @@ function library_table_ir(plan::LibraryPlan, libraries::Symbol)
                     join(("i64 $(d - 1)" for d in plan.needs[j]), ", "), "]")
             push!(words, "i64 ptrtoint (ptr @lib.needs$j to i64)")
         end
-        push!(words, "i64 0")
+        push!(words, plan.lbt[j] ? "i64 ptrtoint (ptr @lib.lbt to i64)" : "i64 0")
     end
     for (j, (lib, name)) in enumerate(plan.symbols)
         print(io, llvm_cstring("lib.name$j", name))
         push!(words, "i64 $(lib - 1)", "i64 ptrtoint (ptr @lib.name$j to i64)")
+    end
+    if any(plan.lbt)
+        # (the libraries that libblastrampoline forwards to, as `blas.jl` has them: its path, how many, and for each its path and suffix, or 0)
+        LA = linear_algebra()
+        lbt, libs = LA === nothing ? ("", Tuple{String,String}[]) : blas_setup(LA)
+        print(io, llvm_cstring("lib.lbtpath", lbt))
+        entries = String["i64 ptrtoint (ptr @lib.lbtpath to i64)", "i64 $(length(libs))"]
+        for (j, (path, suffix)) in enumerate(libs)
+            print(io, llvm_cstring("lib.lbtlib$j", path))
+            push!(entries, "i64 ptrtoint (ptr @lib.lbtlib$j to i64)")
+            if isempty(suffix)
+                push!(entries, "i64 0")
+            else
+                print(io, llvm_cstring("lib.lbtsuffix$j", suffix))
+                push!(entries, "i64 ptrtoint (ptr @lib.lbtsuffix$j to i64)")
+            end
+        end
+        println(io, "@lib.lbt = private constant [$(length(entries)) x i64] [", join(entries, ", "), "], align 8")
     end
     println(io, "@_static_libs = hidden constant [$(length(words)) x i64] [", join(words, ", "), "], align 16")
     return String(take!(io))
@@ -279,3 +326,8 @@ function bundle_libraries(program::AbstractString)
     end
     return copied
 end
+
+# The path of a `LazyLibrary` (`Libdl.dlpath`, which messages of warnings have, as SuiteSparse's does of a library that is too old) is the one that it has when
+# compiling, which is also where the program looks for it (see `loader.jl`): Julia's own function loads the library by calling the function that is the
+# library's callback, which is code of Julia.
+Base.@assume_effects :foldable host_dlpath(lib::Libdl.LazyLibrary) = Libdl.dlpath(lib)

@@ -78,6 +78,13 @@ Printf.@printf(STDOUT, "%s: %d of %d, %5.2f%%\n", "progress", 3, 10^12, 12.345) 
 name = Printf.@sprintf("%s-%03d.txt", "run", 7)
 ```
 
+### The file system
+
+`stat` (and `isfile`, `isdir`, `ispath`, `filesize`, `mtime`, `filemode`), `mkdir`, `rm` (with `force` and `recursive`), `readdir` (with `join` and `sort`), `mv`, `cp` (of a file or a directory), `pwd`, `cd`,
+`realpath`, `homedir`, `tempdir`, `tempname`, `mktemp`, `mktempdir` (and with a function), `ENV[name] = value` and `delete!(ENV, name)`, and `Libc.getpid` are done with the functions of the C library. What is different: an
+error is a `SystemError` with the message of `strerror`, where Base's is an `IOError` that has the code of libuv (a program that catches `IOError` for a missing file catches `SystemError` here), and `symlink`,
+`chmod`, `touch`, `mmap` and starting other programs (`run`, ``read(`cmd`, String)``) are not supported. `Threads.@threads` runs the loop on the one thread, in order.
+
 ### Files
 
 `open` opens a file with libc's `fopen`, as a [`StaticFile`](@ref), which is an `IO` like the standard streams,
@@ -541,8 +548,7 @@ by the finalizer that Base gives it), **`Regex`** (PCRE2: `match`, `occursin`, `
 runs), zlib and any other function that a JLL or library has (`ccall((:name, "libname"), ...)`, a `LazyLibrary` such as `Zlib_jll.libz`, or the path of a file).
 The functions of the math library (`libm`, `libopenlibm`) are linked by name instead. The libraries of the runtime of Julia (libjulia, libuv, ...) are not there.
 
-Limits: a **finalizer** that is a Julia function (`finalizer(f, x)`) is not supported (the collector runs finalizers that are C functions, which is what
-`BigInt` and `BigFloat` have), so a `Regex` that is made when the program runs keeps its compiled code until the program ends; a `Ptr` field of a constant of the program
+Limits: a `Ptr` field of a constant of the program
 (an address of this process) is null there, with a warning (a `Regex` is compiled when the program first uses it, so those are fine); `setprecision(f, BigFloat, n)`
 (a scoped value) does not work yet. **Linux is untested for the libraries** (the program finds its own folder with `dladdr`, and `/proc/self/exe`).
 
@@ -556,10 +562,63 @@ Both standard libraries compile, and are checked against Julia in `test/testcove
   the string, which does not compile. (The tokens of a format are of types that differ by a letter, so a package extension of this package registers them for dispatch when
   `Dates` is loaded.)
 * **SparseArrays**: `sparse`, `spzeros`, `SparseMatrixCSC`, sparse vectors, indexing and `setindex!`, `nnz`, `nonzeros`, `findnz`, sums, products of sparse with dense and with
-  sparse, `transpose`, `kron`, `spdiagm`, `I`, and `show`. **Not yet**: the factorizations (`\`, `lu`, `cholesky`, `qr` of a sparse matrix), which are SuiteSparse's
-  libraries and need their start-up code (`SuiteSparse_jll`'s `LazyLibrary` callbacks) to be made to run first.
+  sparse, `transpose`, `kron`, `spdiagm`, `I`, and `show`, and the **factorizations**: `\` of a sparse matrix, `lu`, `cholesky`, `ldlt`, `qr` (and so least squares), `det`, `logdet`, `factorize`, with
+  their errors (`PosDefException`, `SingularException`). These are SuiteSparse's libraries (UMFPACK, CHOLMOD, SPQR) and are called as any library is (see [Libraries: `BigInt`, `BigFloat`, `Regex`, JLLs and libraries of your own](@ref)):
+  the program sets them up the first time that it needs them, as Julia does (`LibSuiteSparse.init_suitesparse`, with the C library's allocators), and tells libblastrampoline what BLAS it forwards to, as
+  it does for BLAS. What is different: CHOLMOD's error says the code of the failure (a `CHOLMODException("CHOLMOD error (status -3)")`) and not its message, and the settings that CHOLMOD keeps for each task are the program's one.
 
 Also: `sleep` (as `nanosleep`), `splice!`, and `string(a, b, ...)` / interpolation with a value of `Any` (`"x = $(x)"` where the type of `x` is not known) work.
+
+## MPI
+
+Programs that use [MPI.jl](https://github.com/JuliaParallel/MPI.jl) compile, and run on several processes with `mpiexec`:
+
+```julia
+using MPI, StaticCompilerOverrides
+
+function main(args::Vector{String})
+    MPI.Init()
+    comm = MPI.COMM_WORLD
+    rank, size = MPI.Comm_rank(comm), MPI.Comm_size(comm)
+    total = MPI.Allreduce(rank + 1, +, comm)
+    x = Float64[10rank + i for i in 1:4]
+    received = zeros(4)
+    MPI.Sendrecv!(x, received, comm; dest = mod(rank + 1, size), source = mod(rank - 1, size))
+    println("rank ", rank, " of ", size, ": total = ", total, ", received ", received)
+    MPI.Finalize()
+    return 0
+end
+
+compile_executable(main, (Vector{String},), "build", "ring")
+# $ mpiexec -n 3 ./build/ring
+```
+
+The MPI library is a library that the program calls like any other (see [Libraries: `BigInt`, `BigFloat`, `Regex`, JLLs and libraries of your own](@ref)): the one that MPI.jl is set to use (`MPICH_jll` by default, or a system one
+through `MPIPreferences`), opened from the path that it has when compiling, or from the folder `lib` next to the program with `libraries = :bundle`. Run it with the `mpiexec` of the same library (`MPI.mpiexec()` has the environment that
+the library needs). The point-to-point and collective operations (`Send`, `Recv!`, `Sendrecv!`, `Isend`, `Irecv!`, `Waitall`, `Probe`, `Bcast!`, `Reduce`, `Allreduce` with `+`, `*`, `max`, `min`, ..., `Gather`, `Scatter!`, `Gatherv!`, `Allgather`,
+`Alltoall`, `Scan`, `Exscan`, `Barrier`), communicators (`Comm_split`, `Comm_dup`, which are freed by their finalizers, `Cart_create`), one-sided communication (`Win_create`, `Put!`, `Win_fence`), parallel files (`MPI.File`),
+`Wtime`, the status of a message, and MPI errors (an `MPI.MPIError` that can be caught) are compared with Julia's in `test/packages/mpi.jl`. What is different:
+
+* `MPI.Init` does not register `MPI.Finalize` to be called when the program ends (a compiled program does not run `atexit` functions): **call `MPI.Finalize()` at the end** (`finalize_atexit` is ignored).
+* The handles of the constants (`MPI.COMM_WORLD`, `MPI.INT`, `MPI.SUM`, ...) are the numbers that the library has them as when compiling, which are the same on each run for the MPICH family (MPICH, Intel MPI, the MPI ABI libraries);
+  they are addresses in Open MPI, which a compiled program can't use.
+* Not supported: a reduction with an operator that is a function of yours (`MPI.Allreduce(x, f, comm)`: it makes a C function that calls Julia), and `MPI.send` / `MPI.recv` of any object (they use `Serialization`): use the
+  operations on buffers (arrays and numbers).
+
+## Finalizers
+
+`finalizer(f, x)` works, for a Julia function `f` (a closure that captures values too) and a mutable object `x`, and for a C function (`finalizer(ptr, x)`, which is what `BigInt` has). When a collection finds
+`x` unreachable, `f(x)` is run, as Julia does it: after the collection, at an allocation, one finalizer after another and not one inside another, and once. This is what the wrappers of libraries do to free what the
+library allocated (a `Regex` made when the program runs, a sparse factorization, a PCRE or MPI handle). How it works, and what is different:
+
+* The collector can't call the code of the program (it is compiled apart), so the object is kept and queued, and the program runs its finalizer when the collection is over: the call of `finalizer(f, x)` is a *site* of the
+  types of `f` and `x`, which has a list of the finalizers that were registered at it (a function, and the address of the object, as a number: the list does not keep the object alive), and the linker writes a `switch` that gives
+  each object to the function of its site (see `src/finalizers.jl`).
+* A finalizer that throws is ignored (Julia prints the error). One that stores `x` somewhere (resurrection) is run once; `x` stays alive, and a later collection frees it.
+* Finalizers of the objects that are alive when the program ends are not run.
+* The collector is conservative: an object that a word of the stack happens to have the address of is not freed by that collection (so a finalizer may run at a later collection than in Julia, or, for one of the last
+  objects made, not at all in a short program). The collector zeroes the unused part of the stack before it looks at it, which is most of the cases.
+* Memory that a library allocated is not counted by the collector, so an object that has a finalizer counts as 1 KiB of allocation towards the next collection.
 
 ## Random numbers
 
@@ -651,6 +710,14 @@ What does not work yet, or works differently from Julia, gathered in one place. 
   one that is meant to be fixed).
 * Loops with `@simd` (so `sum`, `dot`, `mean`, ...) are vectorized and their reductions reordered, as in Julia, so the results are the same as
   Julia's, to the last digit, when it is run on the same machine type; other machines (SIMD widths) may differ in the last digits, in Julia as here.
+
+**Standard libraries** (a survey of them is kept in `test/testcoverage.jl`)
+
+* Work: Base64 (of a string or bytes), CRC32c, SHA, UUIDs, Statistics, Random, Printf, Logging (`NullLogger`), Dates, SparseArrays (with the factorizations), most of LinearAlgebra (`exp`, `sqrt`, `log` and powers of a matrix, `eigen`, `svd`, `qr`,
+  `cholesky`, `lu`, `schur`, `ordschur`, `hessenberg`, `inv`, `det`, `\`, `opnorm`, ...), Sockets' address types, and the file system (see [The file system](@ref)).
+* Do not: `Unicode.normalize`, `graphemes` and `isequal_normalized` (the tables are in libjulia's copy of utf8proc, which is not a library of its own); `readdlm` / `writedlm`; `Mmap`; `@time` and `@allocated` (use `@elapsed`);
+  `TOML.parse` (the parser keeps a `Module`); `Markdown` (it dispatches on a vector of functions); `Test` (`@test` and `@testset`); `with_logger` with a logger other than `NullLogger`; starting other programs;
+  `Base64` of anything but a string or bytes; `atexit` (the function would not be run, so the program stops when it is registered, except for SuiteSparse's own).
 
 **Threads, tasks and `eval`**
 

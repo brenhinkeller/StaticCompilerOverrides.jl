@@ -406,6 +406,23 @@ define linkonce_odr ptr @jl_cstr_to_string(ptr %p) {
   ret ptr %s
 }
 
+; a Memory of the type `%ty` over data that the program does not own (`unsafe_wrap`): the data is not freed with it, whatever `own` says
+define linkonce_odr ptr @ijl_ptr_to_genericmemory(ptr %ty, ptr %data, i64 %n, i32 %own) {
+  %m = call ptr @gpu_gc_pool_alloc(i64 16)
+  %tagslot = getelementptr inbounds i8, ptr %m, i64 -8
+  %tag = ptrtoint ptr %ty to i64
+  store i64 %tag, ptr %tagslot, align 8
+  store i64 %n, ptr %m, align 8
+  %slot = getelementptr inbounds i8, ptr %m, i64 8
+  store ptr %data, ptr %slot, align 8
+  ret ptr %m
+}
+
+define linkonce_odr ptr @jl_ptr_to_genericmemory(ptr %ty, ptr %data, i64 %n, i32 %own) {
+  %m = call ptr @ijl_ptr_to_genericmemory(ptr %ty, ptr %data, i64 %n, i32 %own)
+  ret ptr %m
+}
+
 ; a Memory{UInt8} aliasing the data of a String
 define linkonce_odr ptr @jl_string_to_genericmemory(ptr %s) {
   %m = call ptr @gpu_gc_pool_alloc(i64 16)
@@ -620,6 +637,7 @@ const RUNTIME_SHIM_FUNCTIONS = (
     "ijl_alloc_string", "ijl_pchar_to_string", "jl_pchar_to_string", "ijl_cstr_to_string", "jl_cstr_to_string", "jl_string_to_genericmemory", "jl_genericmemory_to_string",
     "jl_genericmemory_copyto",
     "ijl_gc_add_ptr_finalizer", "jl_gc_have_pending_finalizers", "jl_gc_run_pending_finalizers",
+    "ijl_ptr_to_genericmemory", "jl_ptr_to_genericmemory",
 )
 
 # The text of a constant C string global, or `nothing`
@@ -639,6 +657,8 @@ const LIBC_FUNCTIONS = Set([
     "atoi", "strtol", "strtoul", "strtoll", "strtoull", "strtod", "strtof", "qsort", "bsearch",
     "write", "read", "puts", "putchar", "getchar", "fflush", "fputc", "fputs", "fwrite", "fread",
     "usleep", "nanosleep", "clock_gettime", "time", "getentropy", "gettimeofday", "localtime_r", "gmtime_r",
+    "stat", "lstat", "stat\$INODE64", "lstat\$INODE64", "access", "mkdir", "rmdir", "unlink", "rename", "opendir", "readdir", "closedir", "getcwd", "chdir", "realpath",
+    "mkstemp", "mkdtemp", "fdopen", "getpid", "setenv", "unsetenv", "strerror", "close", "__error", "__errno_location",
     # libm
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "asinh", "acosh",
     "atanh", "exp", "exp2", "expm1", "log", "log2", "log10", "log1p", "pow", "sqrt", "cbrt", "hypot",
@@ -649,6 +669,10 @@ const LIBC_FUNCTIONS = Set([
                        "fabs", "floor", "ceil", "trunc", "round", "rint", "fmod", "ldexp", "copysign"))...,
 ])
 
+# Functions of libjulia that are the C library's (SuiteSparse is given them as its allocators): they are those, here
+const LIBJULIA_ALIASES = Dict("jl_malloc" => "malloc", "ijl_malloc" => "malloc", "jl_calloc" => "calloc", "ijl_calloc" => "calloc",
+                              "jl_realloc" => "realloc", "ijl_realloc" => "realloc", "jl_free" => "free", "ijl_free" => "free")
+
 # Julia binds `ccall`s lazily, through `ijl_load_and_lookup(lib, name, handle)`. For the symbols the
 # runtime shim implements, and those of the C library, resolve the lookup statically instead.
 function resolve_lazy_lookups!(mod::LLVM.Module)
@@ -658,6 +682,7 @@ function resolve_lazy_lookups!(mod::LLVM.Module)
     for use in collect(LLVM.uses(fns["ijl_load_and_lookup"]))
         call = LLVM.user(use)::LLVM.CallInst
         name = constant_cstring(LLVM.operands(call)[2])
+        name = get(LIBJULIA_ALIASES, name, name)
         (name in RUNTIME_SHIM_FUNCTIONS || name in LIBC_FUNCTIONS) || continue
         target = haskey(fns, name) ? fns[name] :
                  LLVM.Function(mod, name, LLVM.FunctionType(LLVM.VoidType()))
@@ -1394,6 +1419,7 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     queries = subtype_queries(mod)
     embed_constants!(e)
     queries === nothing ? define_subtype_table!(e) : define_subtype!(e, queries)
+    link_finalizers!(mod)
     resolve_lazy_lookups!(mod)
     define_aborting_functions!(mod)
     if strict
@@ -1574,6 +1600,14 @@ function link_heap!(mod::LLVM.Module; gc = false)
         Sys.isapple() || Sys.islinux() || throw(ArgumentError("the garbage collector is not available on this system (use `gc = false`)"))
         define_gc_roots!(mod)
         define_gc_stress!(mod, !(gc isa Bool) && gc isa Integer && gc > 0 ? gc : 0) # (`true` is an `Integer` too)
+        # (the heap refers to the function that runs finalizers: a program that has none gets one that does nothing, as a reference to a symbol that is not defined doesn't link)
+        if !haskey(LLVM.functions(mod), "static_run_finalizer")
+            f = LLVM.Function(mod, "static_run_finalizer", LLVM.FunctionType(LLVM.VoidType(), [LLVM.Int64Type(), LLVM.Int64Type()]))
+            LLVM.@dispose builder = LLVM.IRBuilder() begin
+                LLVM.position!(builder, LLVM.at_end(LLVM.BasicBlock(f, "entry")))
+                LLVM.ret!(builder)
+            end
+        end
     end
     heap = parse(LLVM.Module, heap_ir(collect_garbage))
     LLVM.datalayout!(heap, LLVM.datalayout(mod))
@@ -1952,6 +1986,12 @@ function field_cut(T::Type, name)
         # copied with the value that it has when compiling, as a cell that the program can change; what it says of where it is (its module, the lists of
         # what depends on it, the partitions that say what it is) is the runtime's own and refers to modules, which are not in the binary.
         name in (:globalref, :partitions, :backedges, :owner, :ty) && return :null
+    elseif T <: Base.OncePerProcess
+        # A value that is made when the program first asks for it, and whether that has been done: the program starts as a package image does (Julia
+        # sets these back when it saves one), so what the initializer does (setting up a library) is done by the program, and not taken from this process.
+        name === :value && return :null
+        name === :state && return :zero
+        name === :lock && return :null # (a lock has a task and a condition in it: the program has one task, and the methods of `lock` here do nothing)
     elseif T === Core.TypeName
         name === :wrapper && return :null # (the `UnionAll` of the type, with its `TypeVar`s)
         name === :names && return :emptysvec # (the names of the fields)
@@ -2055,6 +2095,10 @@ function sized_svec(n::Int)
 end
 
 # (`n` structs of the type, one after the other, as the elements of a `Memory` are)
+# whether a pointer is an address in this process, as opposed to a number that stands for something (MPICH's `MPI_STATUS_IGNORE` is 1, and `MPI_IN_PLACE` is -1): the
+# addresses of memory are not small numbers, and not above the 48 bits of the address space
+is_process_address(p::UInt) = UInt(0x10000) <= p < (UInt(1) << 48)
+
 const DANGLING_POINTER_WARNED = Set{Tuple{Any,Symbol}}()
 # (a `Regex` and a `LazyLibrary` make theirs again when the program runs, so that those are not worth a warning)
 function warn_dangling_pointer(T, name::Symbol)
@@ -2079,9 +2123,13 @@ function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt; n::Int=1)
             off, ft = fieldoffset(T, i), fieldtype(T, i)
             add_bytes!(base + pos, off - pos)
             cut = field_cut(T, fieldname(T, i))
+            (cut === :null || cut === :emptysvec) && Base.allocatedinline(ft) && sizeof(ft) == 0 && (cut = nothing) # (a field that holds nothing, as the `value` of a `OncePerProcess{Nothing}`, is not a reference)
             if cut === :null
                 add!(LLVM.PointerType(), g -> nullptr())
                 pos = off + sizeof(Ptr)
+            elseif cut === :zero
+                add!(LLVM.ArrayType(LLVM.Int8Type(), sizeof(ft)), g -> LLVM.ConstantDataArray(LLVM.Int8Type(), zeros(UInt8, sizeof(ft))))
+                pos = off + sizeof(ft)
             elseif cut === :emptysvec
                 add!(LLVM.PointerType(), g -> embed_ref!(e, EMPTY_SVEC[]))
                 pos = off + sizeof(Ptr)
@@ -2112,7 +2160,7 @@ function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt; n::Int=1)
                 mem = unsafe_load(Ptr{UInt}(base + off))
                 add!(LLVM.PointerType(), g -> embed_ref!(e, mem))
                 pos = off + sizeof(Ptr)
-            elseif ft <: Ptr && unsafe_load(Ptr{UInt}(base + off)) != 0
+            elseif ft <: Ptr && is_process_address(unsafe_load(Ptr{UInt}(base + off)))
                 # An address in this process (of memory that a library allocated, of a function): it means nothing in the binary. Julia's own
                 # compiled code (a package image) writes these as null, which is what is done here: what has the pointer made again
                 # when it finds it null (a `Regex` compiles when its `regex` is null) goes on working, and what does not fails on the null.
@@ -2709,6 +2757,47 @@ function define_symbol_texts!(e::ObjectEmbedder)
         n += 1
     end
     return define_symbol_list!(mod, "_static_symbol_texts", LLVM.Constant[i64(n), words...])
+end
+
+# The function that runs the finalizers of the program (see `finalizers.jl`): `static_run_finalizer(site, object)`, a `switch` on the number of the site that
+# calls the function of each. The functions are found by the marker that they have in them (`static_finalizer_marker(number)`), which is taken out.
+function link_finalizers!(mod::LLVM.Module)
+    fns = LLVM.functions(mod)
+    haskey(fns, "static_finalizer_marker") || return false
+    marker = fns["static_finalizer_marker"]
+    runners = Tuple{Int,LLVM.Function}[]
+    for use in collect(LLVM.uses(marker))
+        call = LLVM.user(use)
+        call isa LLVM.CallInst || continue
+        id = convert(Int, LLVM.operands(call)[1])
+        push!(runners, (id, LLVM.parent(LLVM.parent(call))))
+        LLVM.erase!(call)
+    end
+    LLVM.erase!(marker)
+    i64 = LLVM.Int64Type()
+    isempty(runners) && return false
+    LLVM.@dispose builder = LLVM.IRBuilder() begin
+        fty = LLVM.FunctionType(LLVM.VoidType(), [i64, i64])
+        f = haskey(fns, "static_run_finalizer") ? fns["static_run_finalizer"] : LLVM.Function(mod, "static_run_finalizer", fty)
+        LLVM.isdeclaration(f) || return true
+        entry = LLVM.BasicBlock(f, "entry")
+        done = LLVM.BasicBlock(f, "done")
+        LLVM.position!(builder, LLVM.at_end(entry))
+        sw = LLVM.switch!(builder, LLVM.parameters(f)[1], done, length(runners))
+        for (id, runner) in runners
+            block = LLVM.BasicBlock(f, "site$id")
+            LLVM.API.LLVMAddCase(sw, LLVM.ConstantInt(i64, id), block)
+            LLVM.position!(builder, LLVM.at_end(block))
+            nparams = length(LLVM.parameters(runner))
+            args = nparams == 1 ? LLVM.Value[LLVM.parameters(f)[2]] : throw(ArgumentError("the finalizer of a site has $nparams parameters"))
+            c = LLVM.call!(builder, LLVM.function_type(runner), runner, args)
+            LLVM.callconv!(c, LLVM.callconv(runner))
+            LLVM.br!(builder, done)
+        end
+        LLVM.position!(builder, LLVM.at_end(done))
+        LLVM.ret!(builder)
+    end
+    return true
 end
 
 include("blas.jl") # BLAS and LAPACK, through libblastrampoline
