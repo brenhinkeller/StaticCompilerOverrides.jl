@@ -13,6 +13,22 @@
 # `libgmp.so.10`) are those of libraries that are loaded, which the system finds before it looks for files. A library that has a file name is
 # looked for next to the program first, in the folder `lib` of it (where `libraries = :bundle` puts them), and then at its path.
 
+# TODO (come back to this): finalizers that are Julia functions (`finalizer(f, x)`) are not supported; only C functions are (`ijl_gc_add_ptr_finalizer`,
+# which is what BigInt has: see `heap.jl`, `run_finalizers`). The blocker is that the collector is compiled apart, as Julia over raw pointers, and can't call
+# Julia code: `f` is a closure whose type `F`, and the type `T` of `x`, are only known at the `finalizer(f, x)` call, and running it needs the code for that
+# `(F, T)` and a pointer to it, which static compilation has no way to hand out (`@cfunction` needs the types when the macro is expanded, not in a generic overlay).
+# Ways in:
+#   1. A thunk for each call site: the overlay of `finalizer` is specialized on `F` and `T`, and `link_runtime!` finds the calls and takes the address of the
+#      specialized function (an LLVM-level step; the open question is whether that address can be recovered), and registers `(thunk, closure, object)`.
+#   2. A queue that the program drains: the collector keeps what is dead and has a finalizer alive (marks it), queues it, and typed Julia code runs the
+#      finalizers at a safe point (after `GC.gc()`, or the slow path of allocation). That still needs the dispatch of 1 for each entry, but avoids running Julia
+#      code inside a collection.
+# Either way: the registry would have to keep the closure (what it captures) alive, so it is a root and not the weak table of addresses that C finalizers have;
+# an object that a finalizer stores somewhere (resurrection) must live that cycle and be freed in the next; a finalizer may allocate (and so collect), which a
+# queue avoids; and an exception from one is swallowed, as Julia does.
+# Cheaper, for what is needed now: a C-callable shim for each case, as one that loads the `regex` field of a `Regex` and calls `pcre2_code_free_8` (so that a
+# `Regex` made when the program runs is freed; today `finalizer(f, ::Regex)` is a no-op in `regex.jl`, and its compiled code stays until the program ends).
+
 module Loader
 
 using StaticTools: calloc, free, @symbolcall, @c_str

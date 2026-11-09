@@ -523,6 +523,19 @@ compile_executable(f, types, dir, name; libraries = :bundle)
   there first, relative to where *it* is, so the folder of the program can be moved or copied to another machine of the same kind. If a library is not there, the path that
   it had when compiling is tried. Libraries of the system (`/usr/lib`, `/lib`, ...) are not copied. For `compile_shlib`, `lib` is next to the shared library.
 
+```julia
+function main(args::Vector{String})
+    println("30! = ", factorial(big(30)))                      # BigInt (GMP)
+    println("sqrt(2) = ", sqrt(big(2)))                        # BigFloat (MPFR)
+    m = match(r"(?<key>[a-z]+)=(?<val>\d+)", get(args, 1, "answer=42"))   # Regex (PCRE2)
+    m === nothing && return 1
+    println(m[:key], " is ", parse(Int, m[:val]) + 1)
+    return 0
+end
+
+compile_executable(main, (Vector{String},), "build", "bignums"; libraries = :bundle)   # build/lib has libgmp, libmpfr, libpcre2
+```
+
 What works through this, and is tested: **`BigInt`** and **`BigFloat`** (GMP and MPFR; the memory that GMP allocates is freed by the collector when the number is,
 by the finalizer that Base gives it), **`Regex`** (PCRE2: `match`, `occursin`, `replace`, `split`, `eachmatch`, named captures, `Regex(string)` made when the program
 runs), zlib and any other function that a JLL or library has (`ccall((:name, "libname"), ...)`, a `LazyLibrary` such as `Zlib_jll.libz`, or the path of a file).
