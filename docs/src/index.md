@@ -651,7 +651,7 @@ the library needs). The point-to-point and collective operations (`Send`, `Recv!
 * `MPI.Init` does not register `MPI.Finalize` to be called when the program ends (a compiled program does not run `atexit` functions): **call `MPI.Finalize()` at the end** (`finalize_atexit` is ignored).
 * The handles of the constants (`MPI.COMM_WORLD`, `MPI.INT`, `MPI.SUM`, ...) are the numbers that the library has them as when compiling, which are the same on each run for the MPICH family (MPICH, Intel MPI, the MPI ABI libraries);
   they are addresses in Open MPI, which a compiled program can't use.
-* Not supported: a reduction with an operator that is a function of yours (`MPI.Allreduce(x, f, comm)`) is made with a `@cfunction` of a callable object, which compiles (see [Callbacks: `@cfunction`](@ref)) but is **not tested**: MPI.jl does not support it on ARM, where the tests run, and the test on x86 has not been run yet; and `MPI.send` / `MPI.recv` of any object (they use `Serialization`): use the
+* Not supported: a reduction with an operator that is a function of yours (`MPI.Allreduce(x, f, comm)`): MPI.jl makes its C function with `@cfunction($w, ...)` of a value that holds the function, which Julia makes with a trampoline that it generates when the program runs (see [Callbacks: `@cfunction`](@ref)); and `MPI.send` / `MPI.recv` of any object (they use `Serialization`): use the
   operations on buffers (arrays and numbers).
 
 ## Finalizers

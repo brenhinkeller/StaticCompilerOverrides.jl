@@ -146,6 +146,9 @@ dispatch_candidates() = unique!(vcat(DEFAULT_DISPATCH_CANDIDATES, SHOW_CANDIDATE
 const CLOSED_SUBTYPES = Dict{Tuple{Any,UInt},Any}()
 function listed_union(@nospecialize(T))
     T isa DataType && isabstracttype(T) && T !== Any || return nothing
+    # (the types of functions are not listed: there is one for each function and closure, and finding them all, which `subtypes(Function)` does, takes more than a minute the first time
+    # in a process that has this package loaded. The functions that a call can have are the ones of closures.jl.)
+    T <: Function && return nothing
     get!(CLOSED_SUBTYPES, (T, Base.get_world_counter())) do
         found = DataType[]
         function walk(S)

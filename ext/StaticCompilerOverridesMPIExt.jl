@@ -8,6 +8,7 @@
 # * `MPI.Init` registers a function with `atexit` that calls `MPI.Finalize` when the program ends, which a compiled program does not run: call `MPI.Finalize()`
 #   yourself at the end (`finalize_atexit` is ignored).
 #
+#
 # The handles of the constants (`MPI.COMM_WORLD`, `MPI.INT`, `MPI.SUM`, ...) are the numbers that the library has them as when compiling, which are
 # the same each time for the MPICH family (MPICH, Intel MPI, and the libraries of the MPI ABI), and are addresses for Open MPI, which a program that is compiled can't use.
 module StaticCompilerOverridesMPIExt

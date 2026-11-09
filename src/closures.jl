@@ -18,6 +18,9 @@ const SEEN_FUNCTIONS_SET = Set{Type}()
 # Whether the compilation that is made now has a call of a function that is not known, that has been looked at
 const FUNCTION_DISPATCH_REQUESTED = Ref(false)
 
+# Whether a call has been made over the candidates in the compilation that is made now
+const FUNCTION_UNION_USED = Ref(false)
+
 # A type that a function can have that is of interest: not a function of the compiler (the types of builtins and intrinsics have no methods), and not
 # something that the runtime of the program does (the functions of this package that are run when the program starts, or ends)
 function interesting_function_type(@nospecialize(T))
@@ -138,6 +141,8 @@ function function_union(@nospecialize(T), argtypes::Vector{Any}, position::Int =
         length(found) > SPLIT_LIMIT[] && return nothing
     end
     isempty(found) && return nothing
+    # (a call over one type is a call of that function, with no test that `f` is one: the type that is not callable, and that has no method, is the case that the others are tested against)
+    length(found) == 1 && return Union{found[1], Nothing}
     return Union{found...}
 end
 
@@ -156,6 +161,7 @@ function CC.abstract_call_unknown(interp::OverridesInterpreter, @nospecialize(ft
         FUNCTION_DISPATCH_REQUESTED[] = true
         u = isempty(FUNCTION_CANDIDATES) ? nothing : function_union(T, arginfo.argtypes)
         if u !== nothing
+            FUNCTION_UNION_USED[] = true
             argtypes = copy(arginfo.argtypes)
             argtypes[1] = u
             closed = CC.ArgInfo(arginfo.fargs, argtypes)
@@ -178,6 +184,7 @@ function CC.abstract_call_known(interp::OverridesInterpreter, f::typeof(Core.kwc
             FUNCTION_DISPATCH_REQUESTED[] = true
             u = isempty(FUNCTION_CANDIDATES) ? nothing : function_union(T, arginfo.argtypes, 3)
             if u !== nothing
+                FUNCTION_UNION_USED[] = true
                 argtypes = copy(arginfo.argtypes)
                 argtypes[3] = u
                 closed = CC.ArgInfo(arginfo.fargs, argtypes)
@@ -205,20 +212,23 @@ function with_function_candidates(compile; strict::Bool = true)
         empty!(SEEN_FUNCTIONS_SET)
         empty!(SEEN_CFUNCTIONS)
         FUNCTION_DISPATCH_REQUESTED[] = false
+        FUNCTION_UNION_USED[] = false
         failure = nothing
         result = nothing
+        started = time()
         try
             result = compile()
         catch e
             (e isa UnsupportedCodeError || e isa InferenceError) || rethrow()
             failure = e
         end
+        @debug "compilation pass" pass seconds = round(time() - started; digits = 1) candidates = length(FUNCTION_CANDIDATES) cfunctions = length(Runtime.CFUNCTION_ROOTS) failed = failure !== nothing requested = FUNCTION_DISPATCH_REQUESTED[] _id = :static_passes
         new = Type[T for T in SEEN_FUNCTIONS if !(T in FUNCTION_CANDIDATES)]
         newc = [c for c in SEEN_CFUNCTIONS if !any(r -> r.ftype === c[1] && r.args == c[2] && r.ret === c[3], Runtime.CFUNCTION_ROOTS)]
-        retry = pass < MAX_FUNCTION_PASSES &&
-                ((FUNCTION_DISPATCH_REQUESTED[] && !isempty(new) && (failure !== nothing || !strict)) || !isempty(newc))
+        more_functions = FUNCTION_DISPATCH_REQUESTED[] && !isempty(new) && (failure !== nothing || !strict || FUNCTION_UNION_USED[])
+        retry = pass < MAX_FUNCTION_PASSES && (more_functions || !isempty(newc))
         if retry
-            append!(FUNCTION_CANDIDATES, new)
+            more_functions && append!(FUNCTION_CANDIDATES, new)
             for c in newc
                 id = length(Runtime.CFUNCTION_ROOTS) + 1
                 push!(Runtime.CFUNCTION_ROOTS, Runtime.CFunctionRoot(id, c[1], c[2], c[3]))
