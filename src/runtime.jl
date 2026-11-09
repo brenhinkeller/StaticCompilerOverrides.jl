@@ -1858,12 +1858,12 @@ function object_pieces(e::ObjectEmbedder, T::DataType, addr::UInt)
         n = sizeof(T)
         check_readable(addr, n)
         return LLVM.LLVMType[LLVM.ArrayType(LLVM.Int8Type(), n)], g -> LLVM.Constant[bytes_piece(addr, n)]
-    elseif fieldcount(T) > 0
-        return struct_pieces(e, T, addr)
     elseif Base.issingletontype(T)
-        # the one instance of the type (a function, ...), which has no contents: padding, so that the object has an address
+        # the one instance of the type (a function, a tuple of singletons: `(Val(true),)` has a field, and no size), which has no contents: padding, so that the object has an address
         pad = LLVM.ArrayType(LLVM.Int8Type(), 8)
         return LLVM.LLVMType[pad], g -> LLVM.Constant[LLVM.null(pad)]
+    elseif fieldcount(T) > 0
+        return struct_pieces(e, T, addr)
     end
     throw(EmbedFailure("objects of type $T are not supported"))
 end

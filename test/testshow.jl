@@ -90,8 +90,8 @@ StaticCompilerOverrides.add_show_candidates!(ShowPt, Tuple{Int,Float64})
         io = S.BufIO(IOBuffer())
         show(io, [1, 2, 3]); show(io, (1, "a")); show(io, Any[1, :a])
         @test String(take!(io.buf)) == sprint(show, [1, 2, 3]) * sprint(show, (1, "a")) * sprint(show, Any[1, :a])
-        @test S.TypeInfoIO{Int}(io) isa IO
-        @test get(S.TypeInfoIO{Int}(io), :typeinfo, Any) === Int
+        @test S.typeinfo_io(io, Int) isa IO
+        @test get(S.typeinfo_io(io, Int), :typeinfo, Any) === Int
         @test get(io, :typeinfo, Any) === Any
     end
 end

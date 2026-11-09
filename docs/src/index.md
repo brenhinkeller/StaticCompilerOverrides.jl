@@ -119,11 +119,12 @@ data of the Julia that compiles it, and so are the same as in Julia.
 
 Base's `show` for a container asks the `IOContext` of the stream what is known about the types of the
 elements (an `ImmutableDict` of `Any`s), and writes type names by looking up modules and bindings: all
-dynamic. Here the same output is made with what is known when compiling (`src/show.jl`):
+dynamic. Here the same output is made with what is known when compiling (`src/show.jl`, `src/context.jl`), and most of what Base does is Base's own code:
 
 * the name of a type is a constant string made by Base's own `show` when compiling, so it is what Base prints;
-* what the context knows about the type of the elements is in the type of the stream (`TypeInfoIO{T}`), and
-  what Base's `typeinfo_prefix` does with it is done when compiling, for the type of the container;
+* the **properties of the context** (`:typeinfo`, `:compact`, `:limit`, `:displaysize`, ...) are in the type of the stream (`ContextIO`), so that asking for one is a
+  constant (see the next section);
+* what Base's `typeinfo_prefix` does with the type of the elements is done when compiling, for the type of the container;
 * an element of an abstract type (an element of a `Vector{Any}`, a field of a struct of type `Any`) is shown by
   a chain of `isa` over a closed set of types: the numbers, `String`, `Char`, `Symbol`, `Nothing`,
   `Missing`, `Vector{Any}`, and those you add with [`add_show_candidates!`](@ref). Showing a value of another
@@ -137,12 +138,33 @@ main() = (println(Any[1, "a", Point(2, 3.5), (4, 5.0)]); 0)
 # Any[1, "a", Point(2, 3.5), (4, 5.0)]
 ```
 
-Limits: what is shown is not cut (`:limit`) and containers that contain themselves are not detected (they recurse until the program crashes); an
-`IOContext(io, :compact => true)` (or `:limit`, `:displaysize`, ...) of one of these streams is **accepted but ignored**: the output is not compacted or cut; a
+Arrays of any number of dimensions are shown by Base's code (`println(A)`, `repr(A)`, `"$A"`): the overlays only take away what makes Base compile the code once for all
+arrays, a matrix made a value of the type `Any` for the compiler (`inferencebarrier`), which would be a dynamic call. `Dict`s, `Set`s and vectors are Base's too; tuples, pairs and structs are written by
+methods of this package (Base's reads the dictionary of an `IOContext` directly).
+
+### `IOContext`, `text/plain` and `display`
+
+`IOContext(io, :compact => true, :limit => true, ...)` of the streams of the program (`STDOUT`, `STDERR`, files, and what `sprint` writes to) has the properties in its *type*, so asking
+for them (`get(io, :compact, false)`) is a constant when compiling, and what depends on it is decided then. So their **values have to be known when compiling** (a `Bool`, a number, a type, a tuple of
+those): `IOContext(io, :compact => flag)` with a `flag` that is only known when the program runs cannot be resolved (compiling says so). `:SHOWN_SET` (the containers that contain
+themselves, which are not detected) and `:module` are not kept. The properties then do what they do in Julia:
+
+```julia
+show(IOContext(STDOUT, :compact => true), 0.1 + 0.2)          # 0.3
+show(IOContext(STDOUT, :limit => true), collect(1:30))        # [1, 2, 3, 4, 5, 6, 7, 8, 9, 10  …  21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+```
+
+`show(io, MIME"text/plain"(), x)` and `display(x)` (which writes the `text/plain` form to the standard output, as the `TextDisplay` of a Julia script does) write matrices aligned, with the
+size and type above them, and vectors, ranges, dictionaries, sets and structured matrices (`Diagonal`, `Symmetric`, ...) as Julia does. Base lines up the numbers of a column by finding the
+decimal point (or the sign of the imaginary part, or the `//`) with regular expressions, which a program does not have: the same is found by a scan of the text. With `:limit` and
+`:displaysize` the output is cut as Julia cuts it (`display` does not set them, as on a terminal that is not one).
+
+Limits: containers that contain themselves are not detected (they recurse until the program crashes); the keyword `context` of `sprint` with a pair that is written in the call
+(`sprint(show, v; context = :compact => true)`) works for what is not an array, and is not yet supported for the show of an array (give `IOContext` the stream instead, or a context that is
+a stream); `text/plain` of a `UniformScaling` (`2I`) is not supported (it uses a regular expression); a
 `Symbol` that the program makes and that is not a plain ASCII identifier is written as Base writes it only if that is clear without the parser's tables
 (`Symbol("a b")`, `Symbol("1a")`, `Symbol("")`), and else it is an error (the symbols that were there when compiling, such as `:+` or `:α`, are written as Julia writes them: see
-[Symbols](@ref)); and the names of types of modules other
-than `Main` that the program makes visible with `using`/`import` are written with their module (Base writes
+[Symbols](@ref)); and the names of types of modules that are loaded after this package (`using` in the program) are written with their module (Base writes
 `Main`'s view of them).
 
 ## Symbols

@@ -97,3 +97,9 @@ end
 @device_override Base.Unicode.islowercase(c::Char) = Base.ismalformed(c) ? false : lookup(ISLOWER, UInt32(c))
 @device_override Base.Unicode.isuppercase(c::Char) = Base.ismalformed(c) ? false : lookup(ISUPPER, UInt32(c))
 @device_override Base.Unicode.isprint(c::Char) = Base.ismalformed(c) ? false : lookup(ISPRINT, UInt32(c))
+
+# The two letters of the category of a character (`Lu`, `Nd`, ...), which `show(io, MIME"text/plain"(), c)` of a `Char` writes (`display('a')`), are asked of utf8proc by
+# Base; here they come from the number of the category (see `category_code` above), in the order of utf8proc's `UTF8PROC_CATEGORY_*`.
+const CATEGORY_ABBREVIATIONS = ("Cn", "Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Me", "Nd", "Nl", "No", "Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po",
+                                "Sm", "Sc", "Sk", "So", "Zs", "Zl", "Zp", "Cc", "Cf", "Cs", "Co")
+@device_override Base.Unicode.category_abbrev(c::AbstractChar) = @inbounds CATEGORY_ABBREVIATIONS[Base.Unicode.category_code(c) + 1]

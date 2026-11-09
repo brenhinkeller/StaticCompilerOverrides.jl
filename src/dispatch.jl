@@ -71,6 +71,34 @@ GPUCompiler.method_table_view(job::GPUCompiler.CompilerJob{<:StaticCompiler.Stat
 # (the type of the parameters is ours) run them, as Julia does.
 GPUCompiler.can_vectorize(::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}) = true
 
+# The passes of the vectorizers of GPUCompiler (`buildVectorPipeline`) without the SLP vectorizer: that of the LLVM of Julia 1.14 crashes the process (a null
+# pointer in `BoUpSLP::getTreeCost`) on some of the code that is compiled, which showed with `--check-bounds=yes` (what CI uses) and the code of `show` for arrays. The loop
+# vectorizer is what makes the reductions of `@simd` loops those of Julia (the SLP vectorizer makes none of them), and is kept. (Only if the functions of GPUCompiler that this
+# is made of are there: else the pipeline is GPUCompiler's own.)
+@static if all(name -> isdefined(GPUCompiler, name), (:buildVectorPipeline, :simplifycfg_pass, :instcombine_pass, :AggressiveSimplifyCFGOptions))
+    function GPUCompiler.buildVectorPipeline(fpm, job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}, opt_level)
+        LLVM.add!(fpm, LLVM.LoopPassManager()) do lpm
+            LLVM.add!(lpm, LLVM.LoopRotatePass())
+            LLVM.add!(lpm, LLVM.LoopDeletionPass())
+        end
+        LLVM.add!(fpm, LLVM.LoopDistributePass())
+        LLVM.add!(fpm, LLVM.InjectTLIMappings())
+        LLVM.add!(fpm, LLVM.LoopVectorizePass())
+        LLVM.add!(fpm, LLVM.LoopLoadEliminationPass())
+        LLVM.add!(fpm, GPUCompiler.simplifycfg_pass(job, GPUCompiler.AggressiveSimplifyCFGOptions))
+        LLVM.add!(fpm, LLVM.LoopPassManager(; use_memory_ssa = true)) do lpm
+            LLVM.add!(lpm, LLVM.LICMPass())
+        end
+        LLVM.add!(fpm, LLVM.EarlyCSEPass())
+        LLVM.add!(fpm, LLVM.CorrelatedValuePropagationPass())
+        LLVM.add!(fpm, GPUCompiler.instcombine_pass(job))
+        LLVM.add!(fpm, LLVM.VectorCombinePass())
+        LLVM.add!(fpm, LLVM.LoopUnrollPass(; opt_level))
+        LLVM.add!(fpm, LLVM.SROAPass(; preserve_cfg = true))
+        LLVM.add!(fpm, LLVM.InstSimplifyPass())
+    end
+end
+
 # (the interpreter has the view in a cache, `CachedMethodTable`, when the compiler has one)
 const OverridesInterpreter = @static if isdefined(CC, :CachedMethodTable)
     GPUCompiler.GPUInterpreter{<:Union{OverridesTableView, CC.CachedMethodTable{<:OverridesTableView}}}
@@ -124,10 +152,11 @@ function listed_union(@nospecialize(T))
     end
 end
 
-# The union of the registered types that are subtypes of `T` (`Any`, or an abstract type that can't be listed), or `nothing`
-function registered_union(@nospecialize(T))
+# The union of the registered types that are subtypes of `T` (`Any`, or an abstract type that can't be listed), or `nothing`. For a call of `show`, which is also made
+# for a `Vector{Any}` in a `Vector{Any}`, they are the types that `show` is registered for (see `add_show_candidates!`): those of calls in general, and `Vector{Any}`.
+function registered_union(@nospecialize(T), show::Bool = false)
     T isa Type && !(T <: Type) && (T === Any || isabstracttype(Base.unwrap_unionall(T))) || return nothing # (`Type{X}` is not an abstract type of objects)
-    found = Type[C for C in dispatch_candidates() if C <: T]
+    found = Type[C for C in (show ? show_candidates() : dispatch_candidates()) if C <: T]
     1 <= length(found) <= SPLIT_LIMIT[] || return nothing
     return Union{found...}
 end
@@ -141,12 +170,13 @@ function close_abstract_arguments(arginfo::CC.ArgInfo)
     argtypes = copy(arginfo.argtypes)
     changed = false
     registered = false
+    isshow = CC.widenconst(argtypes[1]) === typeof(show)
     for i in 2:length(argtypes)
         argtypes[i] isa Core.TypeofVararg && continue # (a call with the arguments that are the rest of a splat: not known)
         T = CC.widenconst(argtypes[i]) # (a constant is of a concrete type; the rest of what is known of an argument is lost)
         u = listed_union(T)
         if u === nothing
-            u = registered_union(T)
+            u = registered_union(T, isshow)
             u === nothing && continue
             registered = true
         end

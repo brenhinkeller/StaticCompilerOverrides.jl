@@ -1,93 +1,13 @@
 # `show` of types and containers.
 #
 # Base's `show` for a container asks the `IOContext` of the stream what the type of the elements already
-# is (`:typeinfo`, a `Type` in an `ImmutableDict` of `Any`s), and prints type names by looking at modules and
-# bindings. That is all dynamic. Here both are known when compiling:
+# is (`:typeinfo`), and prints type names by looking at modules and bindings. That is all dynamic. Here both are known when compiling:
 #
 # * the name of a type `T` is a constant string, made by Base's own `show` when compiling, so that it is
 #   exactly what Base prints;
-# * what the context knows about the type of the elements is in the type of the stream: a
-#   [`TypeInfoIO{T}`](@ref) holds the stream that is written to, and `T` is in its type.
-#
-# What Base does with the two (`typeinfo_prefix`) is done when compiling, for the type of the container.
+# * what the context knows about the type of the elements is in the type of the stream (`ContextIO`, in `context.jl`),
+#   and what Base does with it (`typeinfo_prefix`) is done when compiling, for the type of the container.
 
-"""
-    TypeInfoIO{T,S}
-
-The stream that `show` of a container passes on to show its elements: it writes to the stream `S`, and has
-the `:typeinfo` of its context, `T`, in its type (so that it is known when compiling).
-"""
-struct TypeInfoIO{T,S<:IO} <: IO
-    io::S
-end
-TypeInfoIO{T}(io::S) where {T,S<:IO} = TypeInfoIO{T,S}(io)
-
-Base.unsafe_write(io::TypeInfoIO, p::Ptr{UInt8}, n::UInt) = unsafe_write(io.io, p, n)
-Base.write(io::TypeInfoIO, x::UInt8) = write(io.io, x)
-Base.flush(io::TypeInfoIO) = flush(io.io)
-Base.isopen(io::TypeInfoIO) = isopen(io.io)
-Base.iswritable(io::TypeInfoIO) = iswritable(io.io)
-Base.lock(::TypeInfoIO) = nothing
-Base.unlock(::TypeInfoIO) = nothing
-
-"""
-    BufIO
-
-The stream that `sprint` and `repr` write to when compiled: an `IOBuffer`, which is not one of the streams
-that the methods of this file are for, inside a type that is.
-"""
-struct BufIO <: IO
-    buf::IOBuffer
-end
-Base.unsafe_write(io::BufIO, p::Ptr{UInt8}, n::UInt) = unsafe_write(io.buf, p, n)
-Base.write(io::BufIO, x::UInt8) = write(io.buf, x)
-Base.flush(::BufIO) = nothing
-Base.isopen(io::BufIO) = isopen(io.buf)
-Base.iswritable(::BufIO) = true
-Base.lock(::BufIO) = nothing
-Base.unlock(::BufIO) = nothing
-
-# `sprint(f, args...)` (and `repr(x)`, which is `sprint(show, x)`) writes to a `BufIO` instead of an `IOBuffer`. What the
-# `context` keyword of Base does (an `IOContext` for what is shown) is not kept for `nothing` or a stream of
-# this file; any other (a `Pair`, a tuple of them, an `IOContext`) is passed on to Base's method
-@device_override function Base.sprint(f::Function, args...; context=nothing, sizehint::Integer=0)
-    s = IOBuffer(sizehint=sizehint)
-    if context === nothing || context isa Union{LibcStream, TypeInfoIO, BufIO}
-        f(BufIO(s), args...)
-    elseif context isa Tuple
-        f(IOContext(s, context...), args...)
-    else
-        f(IOContext(s, context), args...)
-    end
-    return Base.takestring!(s)
-end
-
-# the streams that the methods below are for
-const ShowStream = Union{LibcStream, TypeInfoIO, BufIO}
-
-# what the context of the stream knows about the type of what is shown: `:typeinfo`, as in Base (`Any` for
-# no information). When the key is known (it is, when compiling) this is a constant.
-Base.get(::ShowStream, key::Symbol, default) = default
-Base.get(::TypeInfoIO{T}, key::Symbol, default) where {T} = key === :typeinfo ? T : default
-
-typeinfo_of(::ShowStream) = Any
-typeinfo_of(::TypeInfoIO{T}) where {T} = T
-# the same, from the type of the stream (for the `@generated` functions)
-typeinfo_type(::Type{<:TypeInfoIO{T}}) where {T} = T
-typeinfo_type(::Type) = Any
-
-# the stream that is written to, and the stream for the elements of `v`, which is what `show_vector` and the
-# others of Base make with `IOContext`
-base_io(io::TypeInfoIO) = base_io(io.io)
-base_io(io) = io
-@generated function elements_io(io, ::V) where {V}
-    return :(TypeInfoIO{$(eltype(V))}(base_io(io)))
-end
-
-# The rest of what is in an `IOContext` of Base (`:SHOWN_SET` for the containers that contain themselves,
-# `:compact`, `:limit`, ...) is not kept: what is shown is not cut, and has no cycles of containers
-Base.IOContext(io::ShowStream, ::Pair) = io
-Base.IOContext(io::ShowStream, ::Pair, ::Pair...) = io
 Base.show_circular(::ShowStream, @nospecialize(x)) = false
 
 ## names of types
@@ -96,7 +16,7 @@ Base.show_circular(::ShowStream, @nospecialize(x)) = false
 # not written with their module), made when compiling by the `@generated` functions below. A generator runs in
 # the world age of its definition, in which what the program defines (its types in `Main`, ...) is not visible, so
 # Base's `show` writes `Main.Pt` where it writes `Pt` for the program; the `Main.` is dropped. (Types of other modules that
-# the program makes visible with `using` or `import` do get their module: a difference with Base.)
+# the program makes visible with `using` or `import` (`Diagonal` of `LinearAlgebra`) do get their module: a difference with Base.)
 host_string(f, x) = replace(sprint(f, x; context = :module => Main), r"(?<![\w.])Main\." => "")
 
 @generated type_name(::Type{T}) where {T} = host_string(show, T)
@@ -196,6 +116,7 @@ const DEFAULT_SHOW_CANDIDATES = Type[Int, Float64, String, Bool, Char, Symbol, N
     Missing, Vector{Any}]
 
 const SHOW_CANDIDATES = Type[]
+show_candidates() = unique!(vcat(DEFAULT_SHOW_CANDIDATES, SHOW_CANDIDATES))
 
 """
     add_show_candidates!(types...)
@@ -232,96 +153,7 @@ end
     return body
 end
 
-## the containers: what Base does, without the `IOContext`
-
-function Base.show_vector(io::ShowStream, v, opn='[', cls=']')
-    prefix, implicit = Base.typeinfo_prefix(io, v)
-    print(io, prefix)
-    # (two calls, so that the type of the stream is known in each)
-    if implicit
-        Base.show_delim_array(io, v, opn, ",", cls, false)
-    else
-        Base.show_delim_array(elements_io(io, v), v, opn, ",", cls, false)
-    end
-    return nothing
-end
-
-function Base.show_delim_array(io::ShowStream, itr::Union{AbstractArray,Core.SimpleVector}, op, delim, cl,
-                               delim_one, i1=first(LinearIndices(itr)), l=last(LinearIndices(itr)))
-    print(io, op)
-    first = true
-    i = i1
-    if l >= i1
-        while true
-            if !isassigned(itr, i)
-                print(io, Base.undef_ref_str)
-            else
-                show_element(io, itr[i], eltype(itr))
-            end
-            if i == l
-                delim_one && first && print(io, delim)
-                break
-            end
-            i += 1
-            first = false
-            print(io, delim)
-            print(io, ' ')
-        end
-    end
-    print(io, cl)
-end
-
-# any other iterable (the elements of a `Set`...): each element is shown with the type of the elements
-function Base.show_delim_array(io::ShowStream, itr, op, delim, cl, delim_one, i1=1, n=typemax(Int))
-    print(io, op)
-    first = true
-    i = 0
-    for x in itr
-        i += 1
-        i < i1 && continue
-        first || (print(io, delim); print(io, ' '))
-        first = false
-        show_element(io, x, eltype(itr))
-        i1 + i - i1 + 1 > n && break # (`n` is the number of elements, from `i1`)
-    end
-    delim_one && !first && i - i1 == 0 && print(io, delim)
-    print(io, cl)
-end
-
-# `Dict(k => v, ...)`, and the other dictionaries, as `show` for them in Base, with the pairs shown with the type of the
-# pairs of the dictionary
-function Base.show(io::ShowStream, t::AbstractDict)
-    print(io, Base.typeinfo_prefix(io, t)[1])
-    print(io, '(')
-    if !isempty(t)
-        eio = elements_io(io, t)
-        first = true
-        for pair in t
-            first || print(io, ", ")
-            first = false
-            show_element(eio, pair, eltype(t))
-        end
-    end
-    print(io, ')')
-    return nothing
-end
-
-# `Set([...])` (compare with `show` for a `Set` in Base: `==` of types is a call of libjulia, `===` is the same here)
-function Base.show(io::ShowStream, s::Set)
-    if isempty(s)
-        if typeinfo_of(io) === typeof(s)
-            print(io, "Set()")
-        else
-            show(io, typeof(s))
-            print(io, "()")
-        end
-    else
-        print(io, "Set(")
-        Base.show_vector(io, s)
-        print(io, ')')
-    end
-    return nothing
-end
+## the containers
 
 # the elements of a tuple, each with the type that the tuple has for it
 @generated function Base.show(io::ShowStream, t::T) where {T<:Tuple}
@@ -331,7 +163,7 @@ end
     for i in 1:n
         i > 1 && push!(body.args, :(print(io, ", ")))
         typeinfo = (T <: TI && TI <: Tuple && fieldcount(TI) >= i) ? fieldtype(TI, i) : TI
-        push!(body.args, :(show_element(TypeInfoIO{$typeinfo}(base_io(io)), t[$i], $(fieldtype(T, i)))))
+        push!(body.args, :(show_element(typeinfo_io(io, $typeinfo), t[$i], $(fieldtype(T, i)))))
     end
     n == 1 && push!(body.args, :(print(io, ',')))
     push!(body.args, :(print(io, ')')), :(nothing))
@@ -355,7 +187,7 @@ end
         # (a part of an abstract type is not known to be a pair, and is delimited)
         isdelimited = isconcretetype(T) ? :(Base.isdelimited(io_i, x)) : true
         push!(parts.args, quote
-            io_i = TypeInfoIO{$(infos[i])}(base_io(io))
+            io_i = typeinfo_io(io, $(infos[i]))
             x = p.$name
             d = $isdelimited
             d || print(io, "(")
@@ -385,11 +217,75 @@ end
     for i in 1:n
         i > 1 && push!(body.args, :(print(io, ", ")))
         push!(body.args, :(if isdefined(x, $i)
-            show_element(TypeInfoIO{Any}(base_io(io)), getfield(x, $i), $(fieldtype(T, i)))
+            show_element(typeinfo_io(io, Any), getfield(x, $i), $(fieldtype(T, i)))
         else
             print(io, Base.undef_ref_str)
         end))
     end
     push!(body.args, :(print(io, ')')), :(nothing))
     return body
+end
+
+## arrays of more than one dimension
+
+# Base shows a matrix with `_show_nonempty(io, inferencebarrier(X), ...)`, which makes the matrix a value of the type `Any` for the compiler (so that the code is
+# compiled once for all arrays, and not for each type of them): a dynamic call. The same without the barrier.
+@device_override Base.show_nd(io::IO, a::AbstractArray, print_matrix::Function, show_full::Bool) =
+    Base._show_nd(io, a, print_matrix, show_full, map(Base.unitrange, axes(a)))
+@device_override Base._show_nonempty(io::IO, X::AbstractMatrix, prefix::String) = Base._show_nonempty(io, X, prefix, false, axes(X))
+@device_override function Base._show_nonempty(io::IO, X::AbstractArray, prefix::String)
+    print(io, prefix)
+    Base.show_nd(io, X, (io, slice) -> Base._show_nonempty(io, slice, prefix, true, axes(slice)), false)
+end
+
+## `text/plain`: `display`, and the alignment of what is in a matrix
+
+# `display(x)` of Julia shows `x` with the first of the displays that can: with nothing else, the `TextDisplay` of the standard output, which writes the
+# `text/plain` form of `x` and a newline. (The list of displays is a `Vector` of an abstract type, which can't be resolved when compiling.)
+@device_override Base.display(@nospecialize x) = (show(STDOUT, MIME"text/plain"(), x); println(STDOUT); nothing)
+
+# `print_matrix` makes the matrix a value of the type `Any` for the compiler (`inferencebarrier`), as `show` does (see above)
+@device_override Base.print_matrix(io::IO, X::AbstractVecOrMat, pre::AbstractString = " ", sep::AbstractString = "  ", post::AbstractString = "",
+                                   hdots::AbstractString = "  \u2026  ", vdots::AbstractString = "\u22ee", ddots::AbstractString = "  \u22f1  ",
+                                   hmod::Integer = 5, vmod::Integer = 5) =
+    Base._print_matrix(io, X, pre, sep, post, hdots, vdots, ddots, hmod, vmod, Base.unitrange(axes(X, 1)), Base.unitrange(axes(X, 2)))
+
+# Base lines up the numbers in a column on their decimal points (`1.5` and `22.25`), by finding where the part before the point ends in what `show` writes,
+# with a regular expression, for a `Real`, a `Complex` and a `Rational`. There is no `Regex` in a compiled program, so the same is found with a scan of the
+# text. (`alignment(io, x::Integer)` and the other methods are Base's.) Each is what the regular expression of Base matches, in the comment.
+
+# `^(.*?)((?:[\.eEfF].*)?)$`: up to the first `.`, `e`, `E`, `f` or `F`, and the rest
+@device_override function Base.alignment(io::IO, x::Real)
+    s = sprint(show, x, context = Base.nocolor(io), sizehint = 0)
+    i = findfirst(c -> c in ".eEfF", s)
+    i === nothing && return (textwidth(s), 0)
+    return (textwidth(SubString(s, 1, prevind(s, i))), textwidth(SubString(s, i)))
+end
+
+# `^(.*[^ef][\+\-])(.*)$`: up to the last `+` or `-` that has a character before it that is not `e` or `f` (the sign of the imaginary part, and not that of an exponent),
+# and the rest
+@device_override function Base.alignment(io::IO, x::Complex)
+    s = sprint(show, x, context = Base.nocolor(io), sizehint = 0)
+    i = findlast(c -> c in "+-", s)
+    while i !== nothing
+        j = prevind(s, i)
+        j >= firstindex(s) && !(s[j] in "ef") && return (textwidth(SubString(s, 1, i)), textwidth(SubString(s, nextind(s, i))))
+        i = i == firstindex(s) ? nothing : findprev(c -> c in "+-", s, prevind(s, i))
+    end
+    return (textwidth(s), 0)
+end
+
+# `^(.*?/)(/.*)$`: up to and with the first of the two slashes of the first `//`, and the rest
+@device_override function Base.alignment(io::IO, x::Rational)
+    s = sprint(show, x, context = Base.nocolor(io), sizehint = 0)
+    i = findfirst("//", s)
+    i === nothing && return (textwidth(s), 0)
+    return (textwidth(SubString(s, 1, first(i))), textwidth(SubString(s, last(i))))
+end
+
+# The placeholder that structured matrices (`Diagonal`, `UpperTriangular`, ...) show for the elements that are not stored (`⋅`) is as wide as what would have been
+# there: Base measures that with `textwidth(ANSIIterator(s))`, which skips the codes of colors with a regular expression. The streams here have no colors, so it is the width of `s`.
+@device_override function Base.replace_with_centered_mark(s::AbstractString; c::AbstractChar = '⋅')
+    N = textwidth(s)
+    return N == 0 ? string(c) : join(setindex!([" " for i in 1:N], string(c), ceil(Int, N / 2)))
 end

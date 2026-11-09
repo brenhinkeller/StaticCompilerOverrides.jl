@@ -14,6 +14,7 @@ include("overrides.jl") # Our method table, `@device_override`, and the entry po
 include("tags.jl")     # The type tags of objects
 include("base.jl")     # Base methods that can be written to compile statically
 include("io.jl")       # Standard input and output
+include("context.jl")  # IOContext: streams with properties known when compiling
 include("show.jl")     # show of types and containers
 include("objectid.jl") # objectid, so that a struct can be the key of a Dict
 include("symbols.jl")  # Symbols that are made when the program runs
