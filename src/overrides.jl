@@ -93,7 +93,8 @@ for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_t
                 job_params = explicit_params === nothing ? OverridesParams() : explicit_params
                 $(f in (:compile_executable, :compile_shlib) ?
                     :(length(args) >= 2 && args[1] isa Function && args[2] isa Tuple && check_entry(args[1], args[2]; method_table, params = job_params, target)) : :nothing)
-                StaticCompiler.$f(args...; method_table, params = job_params, target, llvm_postprocess,
+                entry_args = rooted_arguments(args)
+                Base.invokelatest(StaticCompiler.$f, entry_args...; method_table, params = job_params, target, llvm_postprocess,
                                   $(f in (:compile_executable, :compile_shlib) ? :(merge((; cflags = default_cflags()), NamedTuple(kwargs))...) : :(kwargs...)))
             end
             $(f in (:compile_executable, :compile_shlib) ? :(libraries === :bundle && result isa AbstractString && Runtime.bundle_libraries(result)) : :nothing)

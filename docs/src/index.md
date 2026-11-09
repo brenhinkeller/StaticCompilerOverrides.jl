@@ -331,6 +331,29 @@ again with the functions that it found, until it finds no more: it takes longer,
 somewhere that it can't see (a function that a library calls back, a function made by code that is not part of the program) is not one of the cases, and the call
 is rejected when compiling, as before. So is a call that none of the functions has a method for.
 
+### Callbacks: `@cfunction`
+
+`@cfunction` makes a C function pointer of a function of the program, which C code calls (the comparison function of `qsort` and `bsearch`, the callback of a library):
+
+```julia
+cmp(a::Ptr{Cint}, b::Ptr{Cint})::Cint = (x = unsafe_load(a); y = unsafe_load(b); x < y ? -1 : x > y ? 1 : 0)
+
+function main()
+    v = Cint[3, 1, 2]
+    f = @cfunction(cmp, Cint, (Ptr{Cint}, Ptr{Cint}))
+    ccall(:qsort, Cvoid, (Ptr{Cint}, Csize_t, Csize_t, Ptr{Cvoid}), v, 3, 4, f)
+    println(v)
+    return 0
+end
+```
+
+The function is compiled with the types of C, and can allocate and call anything else that the program can (an exception that is thrown in it must be caught in it: it can not unwind the C frames). What Julia generates for it looks the method up
+when it is first called (`jl_get_abi_converter`), which a program can't do; so the code is compiled again with a function for each `@cfunction` that calls the method,
+where the entry point can't reach it, and the C function is made to call that: as with the functions of closures, that takes a second pass, for a program that has a `@cfunction`.
+What it does not do: a function that has captured state (a closure over a variable, `@cfunction($f, ...)` of a `f` that is not a function without fields), a function that is not
+known when compiling, arguments that are not C types (`Ref`, `Any`), and the callback of a library that is called from a thread that Julia did not make. (Callbacks run on the
+stack of the caller, which the collector scans, so what they allocate is collected.)
+
 ## Memory and the garbage collector
 
 Compiled programs have a garbage collector, so memory that the program is not using any more is freed, as in Julia. It is
@@ -628,7 +651,7 @@ the library needs). The point-to-point and collective operations (`Send`, `Recv!
 * `MPI.Init` does not register `MPI.Finalize` to be called when the program ends (a compiled program does not run `atexit` functions): **call `MPI.Finalize()` at the end** (`finalize_atexit` is ignored).
 * The handles of the constants (`MPI.COMM_WORLD`, `MPI.INT`, `MPI.SUM`, ...) are the numbers that the library has them as when compiling, which are the same on each run for the MPICH family (MPICH, Intel MPI, the MPI ABI libraries);
   they are addresses in Open MPI, which a compiled program can't use.
-* Not supported: a reduction with an operator that is a function of yours (`MPI.Allreduce(x, f, comm)`: it makes a C function that calls Julia), and `MPI.send` / `MPI.recv` of any object (they use `Serialization`): use the
+* Not supported: a reduction with an operator that is a function of yours (`MPI.Allreduce(x, f, comm)`) is made with a `@cfunction` of a callable object, which compiles (see [Callbacks: `@cfunction`](@ref)) but is **not tested**: MPI.jl does not support it on ARM, where the tests run, and the test on x86 has not been run yet; and `MPI.send` / `MPI.recv` of any object (they use `Serialization`): use the
   operations on buffers (arrays and numbers).
 
 ## Finalizers
@@ -747,8 +770,7 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 
 **Threads, tasks and `eval`**
 
-* There are **no tasks, `Channel`s, `@async` or `Threads.@spawn`**, no `eval`, and no keyword form of `invokelatest`; **`@cfunction`** gives a pointer, but calling it fails (the wrapper looks up the method when it is called: there is no
-  support yet for callbacks into Julia, so no custom MPI reduction operators). (`Regex`, `BigInt` and `BigFloat` work: see
+* There are **no tasks, `Channel`s, `@async` or `Threads.@spawn`**, no `eval`, and no keyword form of `invokelatest`; **`@cfunction`** of a function with captured state (a closure over a variable) does not work (see [Callbacks: `@cfunction`](@ref)). (`Regex`, `BigInt` and `BigFloat` work: see
   [Libraries: `BigInt`, `BigFloat`, `Regex`, JLLs and libraries of your own](@ref).)
 * **The heap is not thread-safe.** A program, or a library from `compile_shlib`, allocates from one thread at a time. A library that
   is called on a stack that is not that of the thread (a task of Julia running on another thread) **frees nothing** in that call

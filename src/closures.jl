@@ -194,13 +194,16 @@ function CC.abstract_call_known(interp::OverridesInterpreter, f::typeof(Core.kwc
 end
 
 # Compile with the types of functions that the code has: `compile` is run, and again with what it found if it has a call of an unknown function that it could not
-# resolve (it failed, or it is not `strict`: such a call aborts the program), until it finds no more
+# resolve (it failed, or it is not `strict`: such a call aborts the program), or a `@cfunction` (see cfunctions.jl), until it finds no more
 function with_function_candidates(compile; strict::Bool = true)
     empty!(FUNCTION_CANDIDATES)
+    empty!(Runtime.CFUNCTION_ROOTS)
+    empty!(CFUNCTION_FUNCTIONS)
     local failure = nothing
     for pass in 1:MAX_FUNCTION_PASSES
         empty!(SEEN_FUNCTIONS)
         empty!(SEEN_FUNCTIONS_SET)
+        empty!(SEEN_CFUNCTIONS)
         FUNCTION_DISPATCH_REQUESTED[] = false
         failure = nothing
         result = nothing
@@ -211,9 +214,16 @@ function with_function_candidates(compile; strict::Bool = true)
             failure = e
         end
         new = Type[T for T in SEEN_FUNCTIONS if !(T in FUNCTION_CANDIDATES)]
-        retry = FUNCTION_DISPATCH_REQUESTED[] && !isempty(new) && (failure !== nothing || !strict) && pass < MAX_FUNCTION_PASSES
+        newc = [c for c in SEEN_CFUNCTIONS if !any(r -> r.ftype === c[1] && r.args == c[2] && r.ret === c[3], Runtime.CFUNCTION_ROOTS)]
+        retry = pass < MAX_FUNCTION_PASSES &&
+                ((FUNCTION_DISPATCH_REQUESTED[] && !isempty(new) && (failure !== nothing || !strict)) || !isempty(newc))
         if retry
             append!(FUNCTION_CANDIDATES, new)
+            for c in newc
+                id = length(Runtime.CFUNCTION_ROOTS) + 1
+                push!(Runtime.CFUNCTION_ROOTS, Runtime.CFunctionRoot(id, c[1], c[2], c[3]))
+                push!(CFUNCTION_FUNCTIONS, c[4])
+            end
             continue
         end
         failure === nothing || throw(failure)

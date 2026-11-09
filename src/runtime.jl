@@ -656,7 +656,7 @@ const LIBC_FUNCTIONS = Set([
     "strchr", "strrchr", "strstr", "malloc", "calloc", "realloc", "free", "abort", "exit", "getenv",
     "atoi", "strtol", "strtoul", "strtoll", "strtoull", "strtod", "strtof", "qsort", "bsearch",
     "write", "read", "puts", "putchar", "getchar", "fflush", "fputc", "fputs", "fwrite", "fread",
-    "usleep", "nanosleep", "clock_gettime", "time", "getentropy", "gettimeofday", "localtime_r", "gmtime_r",
+    "usleep", "nanosleep", "atexit", "clock_gettime", "time", "getentropy", "gettimeofday", "localtime_r", "gmtime_r",
     "stat", "lstat", "stat\$INODE64", "lstat\$INODE64", "access", "mkdir", "rmdir", "unlink", "rename", "opendir", "readdir", "closedir", "getcwd", "chdir", "realpath",
     "mkstemp", "mkdtemp", "fdopen", "getpid", "setenv", "unsetenv", "strerror", "close", "__error", "__errno_location",
     # libm
@@ -1406,6 +1406,7 @@ end
 
 # Define the runtime functions that `mod` calls but does not define.
 function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux(), libraries::Symbol = :system)
+    link_cfunctions!(mod) && run!(GlobalDCEPass(), mod)
     blas = resolve_blas_lookups!(mod) # (before what they are given is embedded)
     library_plan = resolve_library_lookups!(mod; libraries)
     define_field_index!(mod)
@@ -2803,5 +2804,6 @@ end
 include("blas.jl") # BLAS and LAPACK, through libblastrampoline
 include("loader.jl") # the functions of libraries, found when the program needs them
 include("libraries.jl") # the functions of libraries that are called by their library: libm, and the others loaded when the program runs
+include("cfunctions_link.jl") # the wrappers of `@cfunction`, that call the functions of the program
 
 end # module Runtime

@@ -15,7 +15,8 @@ function mpi_lines(cmd)
     return sort(filter(!isempty, split(out, '\n')))
 end
 
-const MPI_BROKEN = (:c_customop, :c_objects)
+# (`MPI.Op` of a function makes a C function from a closure, which Julia does not do on ARM, where MPI.jl raises an error: there it can't be compared)
+const MPI_BROKEN = Sys.ARCH === :x86_64 ? (:c_objects,) : (:c_customop, :c_objects)
 
 @testset "MPI.jl" begin
     dir = mktempdir()
