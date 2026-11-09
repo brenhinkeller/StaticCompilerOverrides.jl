@@ -1032,6 +1032,22 @@ allow these (see `compile_executable`), or `allow = (...)` to allow specific run
 struct UnsupportedCodeError <: Exception
     dynamic::Vector{Pair{String,Vector{String}}} # runtime function => where it is called from
     pointers::Vector{Tuple{String,String}}       # (function, instruction) that use an address
+    globals::Vector{String}                      # the global variables that are not `const` that the code uses (a likely cause of types that are not known)
+end
+UnsupportedCodeError(dynamic, pointers) = UnsupportedCodeError(dynamic, pointers, String[])
+
+# the names (with their modules) of the global variables that are not `const` that the code reads or writes: their bindings are in the binary
+function nonconst_globals(mod::LLVM.Module)
+    names = String[]
+    for g in LLVM.globals(mod)
+        name = LLVM.name(g)
+        startswith(name, "static_object_") || continue
+        addr = tryparse(UInt, first(split(name[15:end], '.')), base = 16)
+        (addr === nothing || object_type(addr) !== Core.Binding) && continue
+        ref = unsafe_pointer_to_objref(Ptr{Cvoid}(addr)).globalref
+        ref isa GlobalRef && !isconst(ref.mod, ref.name) && push!(names, string(ref.mod, ".", ref.name))
+    end
+    return sort!(unique!(names))
 end
 
 function Base.showerror(io::IO, e::UnsupportedCodeError)
@@ -1055,6 +1071,11 @@ function Base.showerror(io::IO, e::UnsupportedCodeError)
         print(io, "\n\nHint: `stdout`, `stderr` and `stdin` of Base are globals of the abstract type `IO`, so what is done with them cannot be resolved when compiling. ",
               "Use `print`, `println` and `show` without an `IO` (which write to the standard output), or `STDOUT`, `STDERR` and `STDIN` of StaticCompilerOverrides, as in `println(STDERR, \"message\")`. ",
               "For `@printf`, which uses `stdout` if it has no `io`: `@printf(STDOUT, \"...\", x)`, or `printf(c\"...\", x)` of StaticTools.")
+    end
+    if !isempty(e.globals) && !isempty(e.dynamic)
+        print(io, "\n\nHint: the code uses global variables that are not `const` (", join(string.("`", e.globals, "`"), ", "), "). An untyped global of that kind can hold a value of ",
+              "any type, which is only known when the program runs, so a call on it can't be resolved when compiling. Make it `const` (`const x = ...`; a `Ref` or a container ",
+              "can still be changed), or give it a type (`x::Vector{Int} = ...`: then a read of it is known to be of that type, and it can be assigned).")
     end
     print(io, "\n\nPass `strict = false` to compile it anyway: calls that need the runtime will then abort the program if they are reached, and the addresses will crash it.")
     print(io, " Use `allow = (\"function_name\", ...)` to allow specific runtime functions only.")
@@ -1161,9 +1182,11 @@ function unresolved_pointer_uses(mod::LLVM.Module)
                 n = convert(UInt, op)
                 n >= 0x10000 && n % 16 == 0 && object_type(n) === DataType ? n : nothing
             elseif op isa LLVM.ConstantInt && inst isa LLVM.CallInst && LLVM.width(LLVM.value_type(op)) == 64
-                # an address that is passed as a number (see `embed_address_arguments!`), if it is that of an object
+                # an address that is passed as a number (see `embed_address_arguments!`), if it is that of an object, and is not used as data
                 n = convert(UInt, op)
-                n >= 0x10000 && !isempty(find_objects(n)) ? n : nothing
+                args = LLVM.arguments(inst)
+                used_as_address = any(i -> args[i] == op && !integer_operand_is_data(inst, i), eachindex(args))
+                n >= 0x10000 && used_as_address && !isempty(address_argument_objects(n)) ? n : nothing
             else
                 nothing
             end
@@ -1353,7 +1376,7 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     if strict
         dynamic = dynamic_runtime_calls(mod; allow)
         pointers = unresolved_pointer_uses(mod)
-        isempty(dynamic) && isempty(pointers) || throw(UnsupportedCodeError(dynamic, pointers))
+        isempty(dynamic) && isempty(pointers) || throw(UnsupportedCodeError(dynamic, pointers, isempty(dynamic) ? String[] : nonconst_globals(mod)))
     end
     define_dynamic_stubs!(mod)
     needed = filter(RUNTIME_SHIM_FUNCTIONS) do name
@@ -1740,10 +1763,19 @@ function address_hashed_reason(T::DataType, addr::UInt)
     return nothing
 end
 
+# The global variables that are not `const` of Julia itself (`stdout`, `stderr` and `stdin`, which are the streams of libuv of the process that compiles) are
+# its own state and are not copied into a binary: a program that uses them has its own (see `STDOUT`).
+function runtime_binding_reason(T::DataType, addr::UInt)
+    T === Core.Binding || return nothing
+    ref = unsafe_pointer_to_objref(Ptr{Cvoid}(addr)).globalref
+    ref isa GlobalRef && (ref.mod === Base || ref.mod === Core) || return nothing
+    return string("the global variable `", ref.mod, ".", ref.name, "`, which is part of the state of the Julia that compiles (for the standard streams: use `STDOUT`, `STDERR` and `STDIN`)")
+end
+
 function embed_new_global!(e::ObjectEmbedder, addr::UInt)
     T = object_type(addr)
     T === nothing && throw(EmbedFailure("not an object, at $(string(addr, base = 16)): tag word $(repr(safe_load(addr - 8)))"))
-    reason = address_hashed_reason(T, addr)
+    reason = something(address_hashed_reason(T, addr), runtime_binding_reason(T, addr), Some(nothing))
     reason === nothing || throw(EmbedFailure(reason))
     # `values` needs the global, since objects may refer to themselves or to each other
     types, values = object_pieces(e, T, addr)
@@ -1891,6 +1923,11 @@ function field_cut(T::Type, name)
         name === :types && return :sizedsvec
         name === :super && return :null # (the chain of supertypes, which a program only has to have if it asks for them)
         return name === :layout ? :egalplan : nothing
+    elseif T === Core.Binding
+        # A global variable that is not a `const` is read and written as the `value` of its binding (the code has the address of that field). The binding is
+        # copied with the value that it has when compiling, as a cell that the program can change; what it says of where it is (its module, the lists of
+        # what depends on it, the partitions that say what it is) is the runtime's own and refers to modules, which are not in the binary.
+        name in (:globalref, :partitions, :backedges, :owner, :ty) && return :null
     elseif T === Core.TypeName
         name === :wrapper && return :null # (the `UnionAll` of the type, with its `TypeVar`s)
         name === :names && return :emptysvec # (the names of the fields)

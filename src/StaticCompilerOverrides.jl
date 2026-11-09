@@ -18,6 +18,7 @@ include("show.jl")     # show of types and containers
 include("objectid.jl") # objectid, so that a struct can be the key of a Dict
 include("symbols.jl")  # Symbols that are made when the program runs
 include("iddict.jl")   # IdDict, and with it deepcopy
+include("dict.jl")     # Dicts made of pairs of different types
 include("deepcopy.jl") # deepcopy of any struct
 include("dispatch.jl") # dynamic dispatch on abstract types, by union splitting
 include("diagnostics.jl") # Why an entry point does not infer to a concrete type

@@ -111,7 +111,8 @@ end
 rlimit_stack() = Int(StaticCompilerOverrides.Runtime.Heap.rlimit_stack_size())
 @testset "Size limit of the stack" begin
     @test 1 << 16 <= rlimit_stack() <= 1 << 40
-    @test static_status(rlimit_stack)[1] == :ok
+    # (compiling it says nothing: an address that is made by adding to that of the state of the heap was reported as a pointer to a Julia object, in the log)
+    @test_logs (@test static_status(rlimit_stack)[1] == :ok)
 end
 
 # A file that was closed has no `FILE*`: reading it was a call of libc with a null pointer

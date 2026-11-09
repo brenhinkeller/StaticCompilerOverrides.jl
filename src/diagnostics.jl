@@ -38,10 +38,17 @@ function Base.showerror(io::IO, e::InferenceError)
               "give it as a constant, or in the type of an argument. `strict = false` does not help here: the return type has to be concrete.")
 end
 
+# the global variable that is not `const` that an argument is (read directly, or by a statement before), or `nothing`
+function nonconst_global(ci::Core.CodeInfo, a)
+    a isa Core.SSAValue && a.id <= length(ci.code) && (a = ci.code[a.id])
+    return a isa GlobalRef && isdefined(a.mod, a.name) && !isconst(a.mod, a.name) ? a : nothing
+end
+
 function type_of_argument(ci::Core.CodeInfo, a)
     a isa Core.SSAValue && return CC.widenconst(ci.ssavaluetypes[a.id])
     a isa Core.Argument && return CC.widenconst(ci.slottypes[a.n])
-    a isa GlobalRef && return isdefined(a.mod, a.name) ? Core.Typeof(getglobal(a.mod, a.name)) : Any
+    # (the type of a global that is not `const` is not known: it is whatever it is when the program runs)
+    a isa GlobalRef && return isdefined(a.mod, a.name) ? (isconst(a.mod, a.name) ? Core.Typeof(getglobal(a.mod, a.name)) : Any) : Any
     a isa QuoteNode && return Core.Typeof(a.value)
     return Core.Typeof(a)
 end
@@ -100,6 +107,12 @@ function explain_inference!(path::Vector{String}, notes::Vector{String}, f, tt::
             callee_builtin = callee_name(ci, callee) == "throw"
             callee_builtin && continue # (a `throw` is the end of a path that throws: the call before it is what is looked for)
             push!(path, line)
+            for a in st.args[2:end]
+                g = nonconst_global(ci, a)
+                g === nothing || push!(notes, string("`", g.mod, ".", g.name, "` is a global variable that is not `const` and has no declared type, so its type is not known when compiling (it can ",
+                                                     "hold any type when the program runs). Make it `const` (a `Ref` or a container in a `const` can still be changed), or give it a type: `",
+                                                     g.name, "::T = ...`."))
+            end
             abstract = [T for T in argtypes if !isconcretetype(T) && !(T isa Union && all(isconcretetype, Base.uniontypes(T)))]
             if !isempty(abstract)
                 push!(notes, string("The call `", line, "` has arguments whose types are not concrete (", join(unique(string.(abstract)), ", "),

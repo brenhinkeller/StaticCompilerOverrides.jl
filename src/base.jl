@@ -43,6 +43,25 @@ function vect_fill!(a, i, x, xs...)
     return vect_fill!(a, i + 1, xs...)
 end
 
+# `t[i]` of a tuple (and so a loop over one, `iterate`, `collect`, `enumerate`, `Dict(pairs...)`) with an `i` that is not known when compiling is `getfield(t, i)`,
+# which for the elements of different types has a type that depends on `i`: Julia makes it a call of the runtime that looks the field up and boxes it.
+# One comparison for each element gives each its own type, and the result is the union of them, which is split when it is used (as the value of a
+# `Union` is); for a constant `i` the comparisons are folded, and for a tuple of one type they are selects. There is a method for each number of
+# elements up to 32 (more are `getfield`), written out: a recursion over the tuple is not inlined, and then a constant `i` no longer finds the element
+# without making the tuple, which for a type of element that is a `Union` is made by the runtime (the `iterate` of an array returns such a tuple, and
+# the element is taken out of it by `y[1]`); nor is the method that calls these, unless it is `@inline`. Not a generated function: they can't be
+# inferred for a tuple type that is not concrete, as `Tuple{Union{Int,String},Int}`, the type of what `iterate` returns, is not.
+@inline tuple_getindex(t::Tuple, i::Int) = getfield(t, i)
+for n in 2:32
+    pattern = Expr(:curly, :Tuple, ntuple(_ -> :Any, n)...)
+    chain = :(throw(BoundsError(t, i)))
+    for k in n:-1:1
+        chain = :(i == $k ? getfield(t, $k) : $chain)
+    end
+    @eval @inline tuple_getindex(t::$pattern, i::Int) = $chain
+end
+@device_override @inline Base.getindex(t::Tuple, i::Int) = tuple_getindex(t, i)
+
 # Locks. A compiled program has one thread and no tasks, so a lock can never be contended: taking
 # one has no effect. (Without this, `lock` pulls in the whole task scheduler, for the case in
 # which another task holds the lock.) Note that unlocking a lock that is not held is not an error.
