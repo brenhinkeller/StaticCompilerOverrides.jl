@@ -25,7 +25,12 @@ struct OverridesParams <: GPUCompiler.AbstractCompilerParams
     candidates::Int
 end
 const CANDIDATES_VERSION = Ref(0)
-OverridesParams() = OverridesParams(CANDIDATES_VERSION[])
+
+# The types of functions (the types of closures, `typeof(sin)`) that a call of a function that is not known when compiling (`f(x)` of an `f` of the type `Function` or `Any`, from a
+# `Vector{Function}`, a `Dict`, a variable that a closure captures and is changed) is made over: those that were found in the code that is compiled (see closures.jl). The
+# list is the one of the compilation that is made now, and what is inferred is kept apart for each (`OverridesParams()` has a number made from it).
+const FUNCTION_CANDIDATES = Type[]
+OverridesParams() = OverridesParams(hash(FUNCTION_CANDIDATES, hash(CANDIDATES_VERSION[])) % Int)
 
 Base.Experimental.@MethodTable(method_table)
 @doc """
@@ -83,11 +88,14 @@ for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_t
                     llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc, libraries)), kwargs...)
             libraries in (:system, :bundle) || throw(ArgumentError("`libraries` is `:system` or `:bundle`, not `$(repr(libraries))`"))
             register_custom_deepcopy!() # (this can change the parameters: they have the version of the lists of types)
-            params === nothing && (params = OverridesParams())
-            $(f in (:compile_executable, :compile_shlib) ?
-                :(length(args) >= 2 && args[1] isa Function && args[2] isa Tuple && check_entry(args[1], args[2]; method_table, params, target)) : :nothing)
-            result = StaticCompiler.$f(args...; method_table, params, target, llvm_postprocess,
-                              $(f in (:compile_executable, :compile_shlib) ? :(merge((; cflags = default_cflags()), NamedTuple(kwargs))...) : :(kwargs...)))
+            explicit_params = params
+            result = with_function_candidates(; strict) do
+                job_params = explicit_params === nothing ? OverridesParams() : explicit_params
+                $(f in (:compile_executable, :compile_shlib) ?
+                    :(length(args) >= 2 && args[1] isa Function && args[2] isa Tuple && check_entry(args[1], args[2]; method_table, params = job_params, target)) : :nothing)
+                StaticCompiler.$f(args...; method_table, params = job_params, target, llvm_postprocess,
+                                  $(f in (:compile_executable, :compile_shlib) ? :(merge((; cflags = default_cflags()), NamedTuple(kwargs))...) : :(kwargs...)))
+            end
             $(f in (:compile_executable, :compile_shlib) ? :(libraries === :bundle && result isa AbstractString && Runtime.bundle_libraries(result)) : :nothing)
             return result
         end

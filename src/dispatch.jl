@@ -329,6 +329,7 @@ end
 # (before optimizing: the statements of `invokelatest` are the calls that inference took them for)
 function CC.optimize(interp::OverridesInterpreter, opt::CC.OptimizationState, caller::CC.InferenceResult)
     code = opt.src.code
+    note_functions_of!(code, opt.src.ssavaluetypes, caller.linfo) # (the functions that the code has: see closures.jl)
     for pc in eachindex(code)
         st = code[pc]
         st isa Expr && st.head === :call && length(st.args) >= 2 || continue

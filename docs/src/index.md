@@ -305,6 +305,32 @@ Still dynamic, and rejected when compiling:
 * Calls that compute a type from the types of the arguments at run time (`Dict(k => v)` of pairs with abstract values, `typejoin`,
   `sum(f, v)` of a `Vector{Any}`, whose element type is a union of the results).
 
+### Functions that are not known: closures in collections and in boxes
+
+A call `f(x)` of an `f` whose type is not known when compiling (a `Function` from a `Vector{Function}`, a `Dict` of functions, a field of the
+type `Function`, a `Ref{Function}`, a value of `Any`, and a closure that calls itself, whose variable is boxed) is a call of the method that fits the
+function that `f` is when the program runs. It is made over the types of the functions that the code has, which the compiler tests for one after the other, as it
+does for the registered types above. Those are the closures that the code of the program makes, the functions that it passes or stores (`sin` in
+`Function[sin, cos]`, `Base.Fix2(+, 1)`), and the ones in the constants that it refers to (`const FS = Function[sin, x -> 2x]`): not those of Base and the standard
+libraries, which pass the functions of the program around and are the ones that call them.
+
+```julia
+fs = Function[sin, cos, x -> 2x]
+function main()
+    s = 0.0
+    for f in fs        # f is a Function: a case for each function of the program that has a method for a Float64
+        s += f(1.0)
+    end
+    printf(c"%.3f\n", s)
+    return 0
+end
+```
+
+Where the functions are is not known before the code has been inferred, so a compilation that has such a call and fails (or, with `strict = false`, would abort at the call) is made
+again with the functions that it found, until it finds no more: it takes longer, but only for a program that has such a call. A function that the program only gets from
+somewhere that it can't see (a function that a library calls back, a function made by code that is not part of the program) is not one of the cases, and the call
+is rejected when compiling, as before. So is a call that none of the functions has a method for.
+
 ## Memory and the garbage collector
 
 Compiled programs have a garbage collector, so memory that the program is not using any more is freed, as in Julia. It is
@@ -721,7 +747,8 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 
 **Threads, tasks and `eval`**
 
-* There are **no tasks, `Channel`s, `@async` or `Threads.@spawn`**, no `eval`, and no keyword form of `invokelatest`. (`Regex`, `BigInt` and `BigFloat` work: see
+* There are **no tasks, `Channel`s, `@async` or `Threads.@spawn`**, no `eval`, and no keyword form of `invokelatest`; **`@cfunction`** gives a pointer, but calling it fails (the wrapper looks up the method when it is called: there is no
+  support yet for callbacks into Julia, so no custom MPI reduction operators). (`Regex`, `BigInt` and `BigFloat` work: see
   [Libraries: `BigInt`, `BigFloat`, `Regex`, JLLs and libraries of your own](@ref).)
 * **The heap is not thread-safe.** A program, or a library from `compile_shlib`, allocates from one thread at a time. A library that
   is called on a stack that is not that of the thread (a task of Julia running on another thread) **frees nothing** in that call
@@ -745,8 +772,7 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 
 * **What the compiling Julia has is copied.** A `const` container, a `Ref`, a string, ... is in the binary as it was when compiling, and
   the program changes its own copy (so `ARGS` is set by the program, from its command line; and a global that the program changes
-  does not change the Julia that compiled it). Only what is of a type that can be reproduced is copied: not a `Module`, a function
-  with captured state, a `Task`, ...
+  does not change the Julia that compiled it). Only what is of a type that can be reproduced is copied: not a `Module`, a `Task`, ...
 * **The collector is conservative:** it finds references by what looks like an address, so a number can keep an object that is not
   used, and a reference that is hidden (not in the stack, the registers, the data copied from the compiler, or an object of the heap)
   is not found. Memory that is allocated with `malloc` is not looked at (see [Memory and the garbage collector](@ref)). **The blocks of small objects

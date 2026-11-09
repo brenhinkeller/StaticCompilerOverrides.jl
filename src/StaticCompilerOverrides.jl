@@ -24,6 +24,7 @@ include("deepcopy.jl") # deepcopy of any struct
 include("bignum.jl")   # BigInt and BigFloat
 include("regex.jl")    # Regex
 include("dispatch.jl") # dynamic dispatch on abstract types, by union splitting
+include("closures.jl") # calls of functions that are not known: closures in collections, in boxes
 include("diagnostics.jl") # Why an entry point does not infer to a concrete type
 include("gc.jl")       # The garbage collector, from the program
 include("finalizers.jl") # finalizer(f, x) of a Julia function
