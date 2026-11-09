@@ -21,6 +21,8 @@ include("symbols.jl")  # Symbols that are made when the program runs
 include("iddict.jl")   # IdDict, and with it deepcopy
 include("dict.jl")     # Dicts made of pairs of different types
 include("deepcopy.jl") # deepcopy of any struct
+include("bignum.jl")   # BigInt and BigFloat
+include("regex.jl")    # Regex
 include("dispatch.jl") # dynamic dispatch on abstract types, by union splitting
 include("diagnostics.jl") # Why an entry point does not infer to a concrete type
 include("gc.jl")       # The garbage collector, from the program

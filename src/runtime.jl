@@ -32,7 +32,10 @@ declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)
 @_static_oom_msg = private unnamed_addr constant [20 x i8] c"Out of memory error\00"
 ; a zeroed dummy task: `julia.get_pgcstack` points into the middle of it, since compiled code
 ; addresses the task and its fields relative to that pointer
-@_static_task = internal global [128 x i64] zeroinitializer, align 16
+; (the field of the task that has the current scope, 152 bytes before it, is `nothing`, the object that the program has (see `link_runtime!`): the
+; values of a `ScopedValue` are not set, as it is in a task that none has set one in)
+@static_jl_nothing = external hidden global i8
+@_static_task = internal global { [45 x i64], ptr, [82 x i64] } { [45 x i64] zeroinitializer, ptr getelementptr inbounds (i8, ptr @static_jl_nothing, i64 16), [82 x i64] zeroinitializer }, align 16
 
 define internal void @_static_oom() noreturn {
   %s = call i32 @puts(ptr @_static_oom_msg)
@@ -379,6 +382,25 @@ define linkonce_odr ptr @ijl_cstr_to_string(ptr %p) {
   ret ptr %s
 }
 
+; A finalizer that is a C function (`BigInt` has one, to free what GMP allocated): the heap has it called with the object when
+; a collection finds that nothing refers to the object (see `heap.jl`). Finalizers of Julia functions are not supported.
+define linkonce_odr void @ijl_gc_add_ptr_finalizer(ptr %ptls, ptr %obj, ptr %f) {
+  %fi = ptrtoint ptr %f to i64
+  %oi = ptrtoint ptr %obj to i64
+  %r1 = call ptr @static_alloc(i64 -7, i64 %fi)
+  %r2 = call ptr @static_alloc(i64 -8, i64 %oi)
+  ret void
+}
+
+; (nothing is waiting to be run: finalizers are run by the collection)
+define linkonce_odr i32 @jl_gc_have_pending_finalizers() {
+  ret i32 0
+}
+
+define linkonce_odr void @jl_gc_run_pending_finalizers(ptr %ptls) {
+  ret void
+}
+
 define linkonce_odr ptr @jl_cstr_to_string(ptr %p) {
   %s = call ptr @ijl_cstr_to_string(ptr %p)
   ret ptr %s
@@ -597,6 +619,7 @@ const RUNTIME_SHIM_FUNCTIONS = (
     "ijl_box_int8", "ijl_box_uint8", "ijl_box_int16", "ijl_box_uint16", "ijl_box_float32", "ijl_box_float64",
     "ijl_alloc_string", "ijl_pchar_to_string", "jl_pchar_to_string", "ijl_cstr_to_string", "jl_cstr_to_string", "jl_string_to_genericmemory", "jl_genericmemory_to_string",
     "jl_genericmemory_copyto",
+    "ijl_gc_add_ptr_finalizer", "jl_gc_have_pending_finalizers", "jl_gc_run_pending_finalizers",
 )
 
 # The text of a constant C string global, or `nothing`
@@ -1357,9 +1380,9 @@ function define_well_known_objects!(e::ObjectEmbedder)
 end
 
 # Define the runtime functions that `mod` calls but does not define.
-function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux())
+function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux(), libraries::Symbol = :system)
     blas = resolve_blas_lookups!(mod) # (before what they are given is embedded)
-    library_paths, library_symbols = resolve_library_lookups!(mod)
+    library_plan = resolve_library_lookups!(mod; libraries)
     define_field_index!(mod)
     define_subtype_builtins!(mod)
     null_methoderror_arguments!(mod)
@@ -1384,13 +1407,14 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     end
     linked = !isempty(needed)
     if linked
+        well_known_object!(e, "jl_nothing", nothing) # (the shim refers to it, from the task)
         shim = parse(LLVM.Module, shim_ir())
         LLVM.datalayout!(shim, LLVM.datalayout(mod))
         LLVM.triple!(shim, LLVM.triple(mod))
         LLVM.link!(mod, shim) # consumes `shim`
     end
     linked |= link_blas!(mod, blas)
-    linked |= link_libraries!(mod, library_paths, library_symbols)
+    linked |= link_libraries!(mod, library_plan; libraries)
     linked |= link_heap!(mod; gc) # (the shim, and the code, call `static_alloc`)
     haskey(LLVM.functions(mod), "gpu_gc_pool_alloc") && inline_allocation!(mod, gc)
     linked && run!(GlobalDCEPass(), mod)
@@ -2031,6 +2055,17 @@ function sized_svec(n::Int)
 end
 
 # (`n` structs of the type, one after the other, as the elements of a `Memory` are)
+const DANGLING_POINTER_WARNED = Set{Tuple{Any,Symbol}}()
+# (a `Regex` and a `LazyLibrary` make theirs again when the program runs, so that those are not worth a warning)
+function warn_dangling_pointer(T, name::Symbol)
+    (T <: Regex && name === :regex) && return
+    (T <: Libdl.LazyLibrary && name === :handle) && return
+    (T, name) in DANGLING_POINTER_WARNED && return
+    push!(DANGLING_POINTER_WARNED, (T, name))
+    @warn "The field `$name` of a constant of the type `$T` holds an address of this process, which means nothing in the program: it is null there." maxlog = 1
+    return
+end
+
 function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt; n::Int=1)
     types = LLVM.LLVMType[]
     thunks = Function[]
@@ -2076,6 +2111,13 @@ function struct_pieces(e::ObjectEmbedder, T::DataType, addr::UInt; n::Int=1)
             elseif T <: Core.GenericMemoryRef && i == 2
                 mem = unsafe_load(Ptr{UInt}(base + off))
                 add!(LLVM.PointerType(), g -> embed_ref!(e, mem))
+                pos = off + sizeof(Ptr)
+            elseif ft <: Ptr && unsafe_load(Ptr{UInt}(base + off)) != 0
+                # An address in this process (of memory that a library allocated, of a function): it means nothing in the binary. Julia's own
+                # compiled code (a package image) writes these as null, which is what is done here: what has the pointer made again
+                # when it finds it null (a `Regex` compiles when its `regex` is null) goes on working, and what does not fails on the null.
+                warn_dangling_pointer(T, fieldname(T, i))
+                add!(LLVM.PointerType(), g -> nullptr())
                 pos = off + sizeof(Ptr)
             elseif Base.allocatedinline(ft) && ft isa Union # a Union of types without pointers, and a byte that says which
                 stop = i < fieldcount(T) ? Int(fieldoffset(T, i + 1)) : sizeof(T)
@@ -2204,7 +2246,8 @@ end
 # that is in a symbol, a type or a struct of this process is more likely a number, see `integer_operand_is_data`)
 function address_argument_objects(n::UInt)
     return [(base, delta) for (base, delta) in find_objects(n) if
-            (object_type(base) === String && delta >= 8) || (object_type(base) <: Core.GenericMemory && delta >= 16)]
+            (object_type(base) === String && delta >= 8) || (object_type(base) === Symbol && delta >= 24) ||
+             (object_type(base) <: Core.GenericMemory && delta >= 16)]
 end
 
 function embed_address_arguments!(e::ObjectEmbedder)
@@ -2669,6 +2712,7 @@ function define_symbol_texts!(e::ObjectEmbedder)
 end
 
 include("blas.jl") # BLAS and LAPACK, through libblastrampoline
+include("loader.jl") # the functions of libraries, found when the program needs them
 include("libraries.jl") # the functions of libraries that are called by their library: libm, and the others loaded when the program runs
 
 end # module Runtime

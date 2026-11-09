@@ -61,7 +61,7 @@ end
 
 # The math library: on Linux its functions (`erfc`, which Julia code calls by name, see `libraries.jl`) are in `libm`, which is
 # not linked by default, as it is on macOS (where it is part of libSystem)
-default_cflags() = Sys.islinux() ? `-lm` : ``
+default_cflags() = Sys.islinux() ? `-lm -ldl` : ``
 
 # The target: the host, as StaticCompiler's own default, but, on macOS, with a version in the triple. StaticCompiler's triple for it
 # has none (`aarch64-apple-darwin`), so the object files have no "platform load command", which says what system they are for, and the
@@ -79,13 +79,17 @@ for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_t
           :static_code_native, :static_llvm_module)
     @eval begin
         function $f(args...; method_table = method_table, params = nothing, strict::Bool = true, allow = (), gc = default_gc(), target = default_target(),
-                    llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc)), kwargs...)
+                    libraries::Symbol = :system,
+                    llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc, libraries)), kwargs...)
+            libraries in (:system, :bundle) || throw(ArgumentError("`libraries` is `:system` or `:bundle`, not `$(repr(libraries))`"))
             register_custom_deepcopy!() # (this can change the parameters: they have the version of the lists of types)
             params === nothing && (params = OverridesParams())
             $(f in (:compile_executable, :compile_shlib) ?
                 :(length(args) >= 2 && args[1] isa Function && args[2] isa Tuple && check_entry(args[1], args[2]; method_table, params, target)) : :nothing)
-            return StaticCompiler.$f(args...; method_table, params, target, llvm_postprocess,
+            result = StaticCompiler.$f(args...; method_table, params, target, llvm_postprocess,
                               $(f in (:compile_executable, :compile_shlib) ? :(merge((; cflags = default_cflags()), NamedTuple(kwargs))...) : :(kwargs...)))
+            $(f in (:compile_executable, :compile_shlib) ? :(libraries === :bundle && result isa AbstractString && Runtime.bundle_libraries(result)) : :nothing)
+            return result
         end
         @doc """
             $($f)(args...; method_table = StaticCompilerOverrides.method_table, strict = true, allow = (), kwargs...)
@@ -100,6 +104,10 @@ for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_t
         `allow` is a collection of names of runtime functions (as in the error message) to accept even
         in strict mode. A call on a value of `Any` (or of an abstract type that can't be listed) is made over the registered types (see
         [`add_dispatch_candidates!`](@ref)), and compiling says so in a debug message (`JULIA_DEBUG=StaticCompilerOverrides`).
+
+        `libraries` is where a program looks for the libraries that it calls functions of (BigInt, Regex, a JLL, a library of yours): `:system` (the default)
+        at the path that they have when compiling, or `:bundle`, in the folder `lib` next to the program, where they are copied (those that they need as
+        well), and, if they are not there, at that path.
 
         By default (`gc = true`, where the collector is available) the program has a garbage collector: memory that is not
         used any more is freed (see the section on memory in the manual). `gc = false` never frees it. A number

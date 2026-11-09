@@ -506,6 +506,33 @@ The element types and sizes are the ones that BLAS and LAPACK take (`Float64`, `
 types use generic Julia code, which compiles like any other. Functions of other packages that call into their own
 libraries (SuiteSparse, Arpack, ...) need those libraries, and don't work yet.
 
+## Libraries: `BigInt`, `BigFloat`, `Regex`, JLLs and libraries of your own
+
+A `ccall` into a library is a function that the program looks up when it first needs it. Where that library is, is a choice that the compiler takes as
+`libraries`:
+
+```julia
+compile_executable(f, types, dir, name)                       # libraries = :system, the default
+compile_executable(f, types, dir, name; libraries = :bundle)
+```
+
+* `:system` — the program opens the library at the **path that it had when compiling** (the file of the JLL in `~/.julia/artifacts`, or your own
+  `libfoo.so`). The program is not independent of that file. If the library has gone, the program says `Cannot use a library that the program calls
+  functions of: cannot open <path>` on the standard error and exits (the same if a function is not in it).
+* `:bundle` — the libraries (and those that they need: `libmpfr` needs `libgmp`) are copied to the folder `lib` next to the program, and the program looks
+  there first, relative to where *it* is, so the folder of the program can be moved or copied to another machine of the same kind. If a library is not there, the path that
+  it had when compiling is tried. Libraries of the system (`/usr/lib`, `/lib`, ...) are not copied. For `compile_shlib`, `lib` is next to the shared library.
+
+What works through this, and is tested: **`BigInt`** and **`BigFloat`** (GMP and MPFR; the memory that GMP allocates is freed by the collector when the number is,
+by the finalizer that Base gives it), **`Regex`** (PCRE2: `match`, `occursin`, `replace`, `split`, `eachmatch`, named captures, `Regex(string)` made when the program
+runs), zlib and any other function that a JLL or library has (`ccall((:name, "libname"), ...)`, a `LazyLibrary` such as `Zlib_jll.libz`, or the path of a file).
+The functions of the math library (`libm`, `libopenlibm`) are linked by name instead. The libraries of the runtime of Julia (libjulia, libuv, ...) are not there.
+
+Limits: a **finalizer** that is a Julia function (`finalizer(f, x)`) is not supported (the collector runs finalizers that are C functions, which is what
+`BigInt` and `BigFloat` have), so a `Regex` that is made when the program runs keeps its compiled code until the program ends; a `Ptr` field of a constant of the program
+(an address of this process) is null there, with a warning (a `Regex` is compiled when the program first uses it, so those are fine); `setprecision(f, BigFloat, n)`
+(a scoped value) does not work yet. **Linux is untested for the libraries** (the program finds its own folder with `dladdr`, and `/proc/self/exe`).
+
 ## Random numbers
 
 `Random.default_rng()` (a `TaskLocalRNG`) keeps its state in the current task, which does not
@@ -532,14 +559,14 @@ handled here, found by compiling [Distributions.jl](https://github.com/JuliaStat
 * **Deprecated methods** can be called: the warning (`Base.depwarn`) is not shown, as it is not in Julia by default.
 * **Functions of libraries that a package calls by the name of the library** (`ccall((:erfc, libopenlibm), ...)`, as SpecialFunctions.jl, which Distributions.jl
   uses, does). The functions of the math library of the machine are linked by name: the values can differ from openlibm's in the last bit. Those of
-  other libraries (OpenSpecFun, Rmath, GMP, ...) are looked up when the program runs, with `dlopen` of the **path that the library had when compiling**:
-  the binary needs that file, as it needs libblastrampoline for BLAS. The libraries of the runtime of Julia (libjulia, libuv, ...) are not available.
+  other libraries (OpenSpecFun, Rmath, GMP, ...) are looked up when the program runs (see [Libraries: `BigInt`, `BigFloat`, `Regex`, JLLs and libraries of your own](@ref)):
+  by default the binary needs the file at the **path that the library had when compiling**, as it needs libblastrampoline for BLAS; `libraries = :bundle` copies them next to the program.
 * **`IdDict`** works: the table is kept with Julia code, with the address of an object as its hash. What is not a mutable object all has one hash, so an `IdDict` with many
   keys that are numbers is slow.
 * **`deepcopy`** works for any struct, array, dictionary, tuple or string, with shared and cyclic references kept as in Julia. Base reads the fields of a struct by a number that
   is only known when the program runs; here each type is copied field by field, each of its own type, made when compiling (`src/deepcopy.jl`). A field of the type `Any` or of an
   abstract type is copied over the registered types (see [`add_dispatch_candidates!`](@ref)). A method of `deepcopy_internal` that a package defines for its own type can't be used:
-  compiling warns, and the program stops if it reaches the copy of such a type (it is not copied field by field, which would be a different result). And `BigInt`, `BigFloat`, locks and `SimpleVector`s are not supported.
+  compiling warns, and the program stops if it reaches the copy of such a type (it is not copied field by field, which would be a different result). Locks and `SimpleVector`s are not supported.
 * **`reshape(x, :, n)`**, and **functions and `Colon()` in messages** (`string(sin)`, `show(:)`).
 
 Compiled and compared with Julia in the survey (the results rounded to 6 digits, because of the last bit of libm):
@@ -580,7 +607,8 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 * **The host is the target.** The heap and the runtime are made for the machine that compiles, so cross-compiling (a `target` that is
   not the host) is not supported.
 * BLAS and LAPACK need LBT and the libraries that back it **at the same paths when the program is run** (see
-  [Linear algebra and BLAS](@ref)); they are not in the binary.
+  [Linear algebra and BLAS](@ref)); they are not in the binary. The same is true of any other library that the program calls, unless `libraries = :bundle`
+  is used (see [Libraries: `BigInt`, `BigFloat`, `Regex`, JLLs and libraries of your own](@ref)); BLAS is not bundled yet.
 
 **Refused, because the answer would otherwise differ from Julia's**
 
@@ -598,8 +626,8 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 
 **Threads, tasks and `eval`**
 
-* There are **no tasks, `Channel`s, `@async` or `Threads.@spawn`**, no `eval`, no keyword form of `invokelatest`, and no `Regex`, `BigInt` or `BigFloat` (they
-  need libraries that are not there: PCRE, GMP and MPFR; see [Code from packages](@ref) for calling functions of libraries).
+* There are **no tasks, `Channel`s, `@async` or `Threads.@spawn`**, no `eval`, and no keyword form of `invokelatest`. (`Regex`, `BigInt` and `BigFloat` work: see
+  [Libraries: `BigInt`, `BigFloat`, `Regex`, JLLs and libraries of your own](@ref).)
 * **The heap is not thread-safe.** A program, or a library from `compile_shlib`, allocates from one thread at a time. A library that
   is called on a stack that is not that of the thread (a task of Julia running on another thread) **frees nothing** in that call
   (see [Memory and the garbage collector](@ref)).

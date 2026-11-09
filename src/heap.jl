@@ -32,6 +32,9 @@ const NORMAL, ATOMIC = 0, 1 # the kinds of allocation: the object may have refer
 
 # the commands that the program can give the heap (see `command`)
 const COLLECT, LIVE_BYTES, COLLECTIONS, HEAP_BYTES, DISABLE, ENABLE = -1, -2, -3, -4, -5, -6
+# (a finalizer is given in two commands: the function, and then the object; a command has one argument, which is the `kind` of an allocation)
+const FINALIZER_FUNCTION, FINALIZER_OBJECT = -7, -8
+const FINALIZER_PRESSURE = UInt(1024)
 
 const CHUNK_SIZE = 1 << 20 # for `alloc_nogc`
 const LARGE_SIZE = CHUNK_SIZE >> 2
@@ -59,6 +62,7 @@ const S_EXT, S_EXT_N, S_EXT_CAP, S_LO, S_HI = 12, 13, 14, 15, 16
 const S_STACK, S_STACK_N, S_STACK_CAP = 17, 18, 19 # the mark stack
 const S_SINCE, S_THRESHOLD, S_LIVE, S_COLLECTIONS, S_COLLECTING = 20, 21, 22, 23, 24
 const S_XROOTS, S_XROOTS_N, S_STRESS, S_STRESS_LEFT, S_SCAN_STACK = 25, 26, 27, 28, 29
+const S_FIN, S_FIN_N, S_FIN_CAP, S_FIN_PENDING = 125, 126, 127, 128 # the finalizers: (object, function) pairs
 const S_DISABLED = 31 # (collections are off: `GC.enable(false)`)
 const S_REGS = 192 # (64 words from here: where the registers are saved, while the stack is scanned)
 const S_CUR = 32 # per kind and class: the block that is allocated from (2 * NCLASSES words)
@@ -230,6 +234,7 @@ end
     sz == HEAP_BYTES && return sget(S_BYTES)
     (sz == COLLECT || sz == LIVE_BYTES || sz == COLLECTIONS) && return UInt(0)
     (sz == DISABLE || sz == ENABLE) && return UInt(1)
+    (sz == FINALIZER_FUNCTION || sz == FINALIZER_OBJECT) && return UInt(0) # (nothing is freed, so nothing is finalized)
     out_of_memory()
     return UInt(0)
 end
@@ -457,7 +462,7 @@ end
 # allocator is the same: -1 collects, -2 is the number of bytes that were alive after the last collection, -3 the number of
 # collections, -4 the bytes that the heap has from the system, -5 and -6 turn collections off and on (the answer is whether they
 # were on). The numbers that are the answers are returned as an address.
-@noinline function command(sz::Int)
+@noinline function command(sz::Int, arg::Int)
     sz == COLLECT && (collect(sget(S_SCAN_STACK) != 0); return UInt(0))
     sz == LIVE_BYTES && return sget(S_LIVE)
     sz == COLLECTIONS && return sget(S_COLLECTIONS)
@@ -467,8 +472,94 @@ end
         sset(S_DISABLED, sz == DISABLE ? UInt(1) : UInt(0))
         return was
     end
+    if sz == FINALIZER_FUNCTION
+        sset(S_FIN_PENDING, arg % UInt)
+        return UInt(0)
+    elseif sz == FINALIZER_OBJECT
+        add_finalizer(arg % UInt, sget(S_FIN_PENDING))
+        return UInt(0)
+    end
     out_of_memory() # (an allocation that is too large)
     return UInt(0)
+end
+
+## finalizers
+#
+# A finalizer is a C function that takes the object (Julia's `ijl_gc_add_ptr_finalizer`: what `BigInt` and `BigFloat` have to free
+# the memory that their library allocated). When a collection finds the object unreachable, the function is called with it, before
+# the object is freed (the memory is still as it was, and the function does not give the object another reference).
+
+@inline call_finalizer(f::UInt, obj::UInt) = Base.llvmcall(("""
+    define void @callfin(i64 %f, i64 %o) alwaysinline {
+      %fp = inttoptr i64 %f to ptr
+      %op = inttoptr i64 %o to ptr
+      call void %fp(ptr %op)
+      ret void
+    }""", "callfin"), Cvoid, Tuple{UInt,UInt}, f, obj)
+
+@noinline function add_finalizer(obj::UInt, f::UInt)
+    (obj == 0 || f == 0) && return
+    sget(S_INIT) == 0 && init!()
+    n = sget(S_FIN_N) % Int
+    if n == sget(S_FIN_CAP) % Int
+        cap = n == 0 ? 64 : 2 * n
+        new = UInt(calloc(1, cap * 16))
+        new == 0 && out_of_memory()
+        old = sget(S_FIN)
+        i = 0
+        while i < 2n
+            st(new, i, ld(old, i))
+            i += 1
+        end
+        old != 0 && free(Ptr{UInt8}(old))
+        sset(S_FIN, new)
+        sset(S_FIN_CAP, cap % UInt)
+    end
+    table = sget(S_FIN)
+    st(table, 2n, obj)
+    st(table, 2n + 1, f)
+    sset(S_FIN_N, (n + 1) % UInt)
+    # (what the finalizer frees is memory that the collector doesn't count: each object counts as some, to collect in time)
+    sset(S_SINCE, sget(S_SINCE) + FINALIZER_PRESSURE)
+    return
+end
+
+# whether the object at `p` was reached by the collection (what is not in the heap is not freed by it)
+@inline function reached(p::UInt)
+    (p < sget(S_LO) || p > sget(S_HI)) && return true
+    e = find_extent(p)
+    e > 0 || return true
+    p <= ld(sget(S_EXT), 3 * (e - 1) + 1) || return true
+    h = ld(sget(S_EXT), 3 * (e - 1) + 2)
+    if ld(h, B_TYPE) == TYPE_BLOCK
+        ld(h, B_POOLED) != 0 && return false
+        data = h + HEADER
+        p >= data || return true
+        return bitmap_get(h, B_MARK, ((p - data) ÷ ld(h, B_CELL)) % Int)
+    end
+    return ld(h, L_MARK) != 0
+end
+
+# run the finalizers of the objects that were not reached (after marking, and before the sweep frees them), and forget them
+@noinline function run_finalizers()
+    n = sget(S_FIN_N) % Int
+    table = sget(S_FIN)
+    keep = 0
+    i = 0
+    while i < n
+        obj = ld(table, 2i)
+        f = ld(table, 2i + 1)
+        if reached(obj)
+            st(table, 2keep, obj)
+            st(table, 2keep + 1, f)
+            keep += 1
+        else
+            call_finalizer(f, obj)
+        end
+        i += 1
+    end
+    sset(S_FIN_N, keep % UInt)
+    return
 end
 
 # `gpu_gc_pool_alloc`, with the collector: the object of `sz` bytes (after the header), of the `kind`, as a pointer
@@ -485,7 +576,7 @@ function alloc(sz::Int, kind::Int)
         sget(S_STRESS) != 0 && stress_step()
         return Ptr{UInt8}(alloc_small_slow(c, kind) + 16)
     end
-    sz < 0 && return Ptr{UInt8}(command(sz))
+    sz < 0 && return Ptr{UInt8}(command(sz, kind))
     sget(S_STRESS) != 0 && stress_step()
     return Ptr{UInt8}(alloc_large(usz + 16, kind) + 16)
 end
@@ -725,6 +816,7 @@ end
         scan(stack_pointer(), stack_base()) # (the base of the stack of the thread that is collecting, where that is known: a library may be called from other threads than that of the first allocation)
     end
     drain()
+    sget(S_FIN_N) != 0 && run_finalizers()
     live = sweep()
     sset(S_LIVE, live)
     sset(S_COLLECTIONS, sget(S_COLLECTIONS) + 1)
