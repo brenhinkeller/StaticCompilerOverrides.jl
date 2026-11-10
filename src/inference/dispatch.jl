@@ -338,5 +338,6 @@ end
 #
 # `Tuple{Union{Vector{Float64},Vector{ComplexF64}},Int}` is not a concrete type, so Julia builds such a tuple with `jl_f_tuple`, which gives it the type of the values that it is made of when the program runs:
 # an executable has no way to make that type. When the function that makes the tuple is inlined the tuple is not made at all (its elements are separate values, each of them a `Union`). Julia inlines
-# a function that returns such a tuple for a bonus on the size that is allowed; the bonus here is large enough for the functions of the packages (`inline_tupleret_bonus` is 400 in Julia).
-CC.OptimizationParams(interp::OverridesInterpreter) = CC.OptimizationParams(interp.opt_params; inline_tupleret_bonus = 20_000)
+# a function that returns such a tuple for a bonus on the size that is allowed (`inline_tupleret_bonus`, 400 in Julia). The bonus here is 10 times that, which is more than enough for `eigs` of Graphs.jl.
+
+CC.OptimizationParams(interp::OverridesInterpreter) = CC.OptimizationParams(interp.opt_params; inline_tupleret_bonus = 4_000)
