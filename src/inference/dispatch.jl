@@ -333,3 +333,10 @@ function assert_field_receivers!(ir::CC.IRCode)
     end
     return changed ? CC.compact!(ir) : ir
 end
+
+## Tuples that have a `Union` as an element
+#
+# `Tuple{Union{Vector{Float64},Vector{ComplexF64}},Int}` is not a concrete type, so Julia builds such a tuple with `jl_f_tuple`, which gives it the type of the values that it is made of when the program runs:
+# an executable has no way to make that type. When the function that makes the tuple is inlined the tuple is not made at all (its elements are separate values, each of them a `Union`). Julia inlines
+# a function that returns such a tuple for a bonus on the size that is allowed; the bonus here is large enough for the functions of the packages (`inline_tupleret_bonus` is 400 in Julia).
+CC.OptimizationParams(interp::OverridesInterpreter) = CC.OptimizationParams(interp.opt_params; inline_tupleret_bonus = 20_000)

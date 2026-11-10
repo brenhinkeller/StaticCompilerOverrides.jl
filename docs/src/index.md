@@ -722,6 +722,15 @@ Compiled and compared with Julia in the survey (the results rounded to 6 digits,
   `DefaultDict`, `counter`, `OrderedDict`, `OrderedSet`, `RobinDict`, `SwissDict`, `MultiDict`, `SparseIntSet`; `SortedDict`, `SortedSet`, `SortedMultiDict` (with semitokens and ranges); `IntDisjointSet`,
   `DisjointSet`, `FenwickTree`; and the balanced trees `AVLTree`, `RBTree` and `SplayTree`, whose nodes keep `Union{Node,Nothing}` fields. The methods that DataStructures has deprecated still work (the warning is not in the program).
 
+* **StaticArrays.jl**: 27 of 27 cases of the survey: `SVector`, `MVector`, `SMatrix`, `MMatrix` and `SArray` (arithmetic, broadcasts, `map`, `push` and `pop`, `vcat` and `hcat`, `sort`, as `Dict` keys,
+  in a `Vector`), `FieldVector` structs, the macros `@SVector` and `@SMatrix`, and `det`, `inv`, `\`, `eigvals`, `qr`, `svdvals`, `cholesky` and `lu` of small matrices.
+* **OrderedCollections.jl**: 12 of 12 cases: `OrderedDict` (insertion, deletion, order of iteration, `merge`, `sort`, `pop!`), `OrderedSet` and `LittleDict`. The one that doesn't: `freeze` (it makes a tuple
+  that has as many elements as the dictionary has, which is not known until the program runs).
+
+* **Graphs.jl**: 42 of 42 cases of the survey: `SimpleGraph` and `SimpleDiGraph` (building, querying, subgraphs, the generators, `erdos_renyi` with a seed), `bfs_tree`, `dfs_tree`, `dijkstra`, `bellman_ford`,
+  `floyd_warshall`, `a_star`, connected and strongly connected components, `topological_sort`, `kruskal_mst` and `prim_mst`, `maximal_cliques`, `greedy_color`, `label_propagation`, `pagerank`, `betweenness_centrality`,
+  `closeness_centrality`, `eigenvector_centrality`, and the adjacency and Laplacian matrices.
+
 * **[Thermochron.jl](https://github.com/brenhinkeller/Thermochron.jl)** (forward models; 19 cases in the survey): helium diffusion (`SphericalHe`, `PlanarHe`, `ZirconHe`, `ApatiteHe` with RDAAM and ZRDAAM
   annealing, `SphericalAr`), fission track ages (`ZirconFT`, `ApatiteFT` with the Ketcham and Yamada/Guenthner models), vitrinite reflectance with a `NielsenBasinRo` that is a constant, and
   `model!` over a `Vector` of one concrete type of chronometer (`Vector{ApatiteHe{...}}`), with the chronometers built when compiling or by the program. Not yet: `model!` over a vector
