@@ -1,97 +1,5 @@
-# The minimal runtime of statically compiled code (src/runtime.jl): allocation, the entry point and the standard streams, and the files that a program reads and writes.
-
-
-@testset "Runtime: allocation" begin
-    # all of these used to fail to link
-    @eval alloc_vector(argc::Int, argv::Ptr{Ptr{UInt8}}) = (printf(c"%d\n", sum(collect(1:argc+3))); 0)
-    @eval alloc_push(argc::Int, argv::Ptr{Ptr{UInt8}}) = (v = Int[]; for i in 1:20; push!(v, i); end; printf(c"%d\n", sum(v)); 0)
-    @eval alloc_dict(argc::Int, argv::Ptr{Ptr{UInt8}}) = (d = Dict(1 => 2, 3 => 4); printf(c"%d\n", d[1] + d[3]); 0)
-    @eval alloc_string(argc::Int, argv::Ptr{Ptr{UInt8}}) = (printf(c"%d\n", length(string(12345))); 0)
-    @test run_main(alloc_vector) == "10"
-    @test run_main(alloc_push) == "210"
-    @test run_main(alloc_dict) == "6"
-    @test run_main(alloc_string) == "5"
-end
-
-@testset "Entry point with arguments and standard streams" begin
-    @eval function args_main(args::Vector{String})
-        println(length(args))
-        for arg in args
-            println(arg)
-        end
-        println(length(ARGS))
-        return length(args)
-    end
-    # (the `ARGS` of the program must not have the arguments of the Julia that compiled it: its vector is embedded as it is)
-    push!(Base.ARGS, "an argument of the process that compiles")
-    exe = try
-        Base.invokelatest(compile_executable, args_main, (Vector{String},), mktempdir())
-    finally
-        pop!(Base.ARGS)
-    end
-    @test read(`$exe`, String) == "0\n0\n"
-    @test read(ignorestatus(`$exe one two three`), String) == "3\none\ntwo\nthree\n3\n"
-    @test run(ignorestatus(pipeline(`$exe a b`; stdout = devnull))).exitcode == 2 # the return value
-    @test success(pipeline(`$exe`; stdout = devnull))
-
-    # standard input
-    @eval function stdin_main(args::Vector{String})
-        total = 0
-        while !eof(STDIN)
-            total += read(STDIN, UInt8)
-        end
-        println(total)
-        return 0
-    end
-    exe = Base.invokelatest(compile_executable, stdin_main, (Vector{String},), mktempdir())
-    @test read(pipeline(`$exe`; stdin = IOBuffer("abc")), String) == "$(sum(codeunits("abc")))\n"
-    @test read(pipeline(`$exe`; stdin = IOBuffer("")), String) == "0\n"
-
-    @eval function readline_main(args::Vector{String})
-        while !eof(STDIN)
-            line = readline(STDIN)
-            println(length(line), ": ", line)
-        end
-        return 0
-    end
-    exe = Base.invokelatest(compile_executable, readline_main, (Vector{String},), mktempdir())
-    @test read(pipeline(`$exe`; stdin = IOBuffer("hello\nworld wide\n\nlast")), String) == "5: hello\n10: world wide\n0: \n4: last\n"
-end
-
-# The runtime allocates objects with a header before them, where compiled code writes the type tag.
-# If it didn't, that would overwrite the metadata of the allocator, which makes the program fail now
-# and then (depending on the layout of memory), so run a program that allocates, with the checks
-# of the allocator of the system on (macOS, glibc)
-@testset "Heap integrity" begin
-    @eval function heap_work()
-        total = 0
-        for i in 1:300
-            v = collect(1:i)
-            push!(v, i)
-            total += sum(v)
-            total += length(string(i, "x", 1.5, :sym, 'c'))
-            d = Dict{Int,String}()
-            d[i] = string(i)
-            d[-i] = "negative"
-            total += length(d[i]) + length(d[-i])
-            r = Ref(i)
-            r[] += 1
-            total += r[]
-        end
-        return total
-    end
-    @eval function heap_main(args::Vector{String})
-        println(heap_work())
-        return 0
-    end
-    exe = Base.invokelatest(compile_executable, heap_main, (Vector{String},), mktempdir())
-    checks = ("MallocCheckHeapStart" => "1", "MallocCheckHeapEach" => "1", "MallocCheckHeapAbort" => "1",
-              "MallocScribble" => "1", "MALLOC_CHECK_" => "3", "MALLOC_PERTURB_" => "165")
-    expected = "$(Base.invokelatest(heap_work))\n"
-    for _ in 1:5
-        @test read(setenv(`$exe`, checks...), String) == expected
-    end
-end
+# Files and streams (src/files.jl, src/io.jl): what a program does with files, compared with Julia's. The same function runs in Julia (with the streams of Base) and compiled (with libc's);
+# they write and read files in different directories, and print what they find, which must be the same. Also the standard streams as files, binary data, and what is said of errors.
 
 # Files: what a program does with them is compared with Julia's. The same function runs in Julia (with
 # the streams of Base) and compiled (with libc's); they write and read files in different directories,
@@ -247,34 +155,18 @@ end
     @test read(joinpath(host_dir, "data.bin")) == read(joinpath(exe_dir, "data.bin"))
 end
 
-# The object files that are made for macOS say what system they are for (a "platform load command"), as the linker of recent versions of
-# macOS warns about every one that doesn't
-@static if Sys.isapple()
-    @testset "Object files have a platform load command" begin
-        dir = mktempdir()
-        main = StaticCompilerOverrides.make_main(() -> 1)
-        name = string(nameof(main))
-        Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), dir, name)
-        @test occursin("LC_BUILD_VERSION", read(`otool -l $(joinpath(dir, name * ".o"))`, String))
+# Errors of libc that were ignored: a file that can't be written (a full disk) was closed without a word
+@static if Sys.islinux()
+    full_disk() = (io = open("/dev/full", "w"); write(io, "data"); close(io); 1)
+    full_disk_flush() = (io = open("/dev/full", "w"); write(io, "data"); flush(io); close(io); 1)
+    @testset "Write errors" begin
+        @test static_status(full_disk)[1] == :runtime_error
+        @test static_status(full_disk_flush)[1] == :runtime_error
     end
 end
 
-# An entry point that does not infer to a concrete type says where in the program that comes from
-inference_leaf(x::Int) = x > 0 ? x : error("negative")
-inference_always() = inference_leaf(-1) + error("never")
-@testset "Entry points that do not infer to a concrete type" begin
-    function message(f)
-        main = StaticCompilerOverrides.make_main(f)
-        err = try
-            Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)))
-            nothing
-        catch e
-            e
-        end
-        return err, err === nothing ? "" : sprint(showerror, err)
-    end
-    err, text = message(inference_always)
-    @test err isa InferenceError
-    @test err.rt === Union{}
-    @test occursin("inference_always()", text) && occursin("inference_leaf(::Int64)", text) && occursin("always throws", text)
+# A file that was closed has no `FILE*`: reading it was a call of libc with a null pointer
+closed_read() = (path = "/tmp/static_overrides_closed_test.txt"; write(path, "abc"); io = open(path); close(io); try; read(io, UInt8); 0; catch; 1; end)
+@testset "A file that is closed" begin
+    @test static_status(closed_read)[1] == :ok
 end

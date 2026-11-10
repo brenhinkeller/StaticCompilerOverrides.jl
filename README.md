@@ -135,7 +135,7 @@ See [Known limitations](https://brenhinkeller.github.io/StaticCompilerOverrides.
 
 `] test` runs all of them: the tests of the compiler, the runtime and the language (`test/core`), and those of the standard libraries and the packages that programs use (`test/packages`).
 Most of them compile a program and compare what it prints with what Julia prints for the same code. Set `GROUP=Core` or `GROUP=Packages` to run one of the two, `PACKAGES=Dates,MPI`
-to run some of the files of `Packages` (the MPI tests need an MPI library, which MPI.jl installs), and `TEST_TIMING=1` to print the time that each file took. `STATIC_COMPILER_OVERRIDES_GC=3`
+to run some of the files of `Packages` (the MPI tests need an MPI library, which MPI.jl installs), `TEST_TIMING=1` to print the time that each file took, and `TEST_FOLDED=1` to fail the cases whose program is only a print of an answer that the compiler found (`opaque` in `test/helpers.jl` makes values that it does not know). `STATIC_COMPILER_OVERRIDES_GC=3`
 runs the programs with the collector in stress mode.
 
 [docs-dev-img]: https://img.shields.io/badge/docs-dev-blue.svg

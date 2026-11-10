@@ -4,6 +4,7 @@
 # Most of the tests compile a program to an executable and compare what it prints with what Julia prints for the same code (`check_cases`, in `helpers.jl`).
 
 using Test, Random, Printf, LinearAlgebra, Libdl, Dates, SparseArrays, Base64, CRC32c, Logging, Statistics
+using SHA, UUIDs, Sockets, Unicode, TOML, Markdown, Mmap
 using LLVM
 using LLVM: @dispose
 if Base.find_package("StaticCompilerOverrides") === nothing

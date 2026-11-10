@@ -1,5 +1,5 @@
-# The heap that allocation comes from, and the garbage collector (src/heap.jl): the allocators themselves, on the host, and
-# what they do to programs. Included by runtests.jl.
+# The heap that allocation comes from, and the garbage collector (src/heap.jl): the allocators themselves, on the host, what they do to programs, and what the runtime does with
+# the memory of a program (the header of its objects, sizes that are refused, the limit of the stack).
 
 const Heap = StaticCompilerOverrides.Runtime.Heap
 
@@ -245,4 +245,83 @@ end
     out = read(ignorestatus(pipeline(cmd; stderr = errors)), String)
     isempty(out) && print(stderr, read(errors, String))
     @test endswith(out, "ok")
+end
+
+# ---- the allocation of programs: the runtime's allocation functions, the header of the objects, and what is refused
+
+@testset "Allocation by the runtime: collections, dictionaries and strings, with the size taken from the arguments" begin
+    # (the sizes depend on the arguments of the program, so that they are not known when compiling)
+    @eval alloc_vector(argc::Int, argv::Ptr{Ptr{UInt8}}) = (printf(c"%d\n", sum(collect(1:argc+3))); 0)
+    @eval alloc_push(argc::Int, argv::Ptr{Ptr{UInt8}}) = (v = Int[]; for i in 1:20; push!(v, i); end; printf(c"%d\n", sum(v)); 0)
+    @eval alloc_dict(argc::Int, argv::Ptr{Ptr{UInt8}}) = (d = Dict(1 => 2, 3 => 4); printf(c"%d\n", d[1] + d[3]); 0)
+    @eval alloc_string(argc::Int, argv::Ptr{Ptr{UInt8}}) = (printf(c"%d\n", length(string(12345))); 0)
+    @test run_main(alloc_vector) == "10"
+    @test run_main(alloc_push) == "210"
+    @test run_main(alloc_dict) == "6"
+    @test run_main(alloc_string) == "5"
+end
+
+# The runtime allocates objects with a header before them, where compiled code writes the type tag.
+# If it didn't, that would overwrite the metadata of the allocator, which makes the program fail now
+# and then (depending on the layout of memory), so run a program that allocates, with the checks
+# of the allocator of the system on (macOS, glibc)
+@testset "Heap integrity: the header of an object does not overwrite the allocator's" begin
+    @eval function heap_work()
+        total = 0
+        for i in 1:300
+            v = collect(1:i)
+            push!(v, i)
+            total += sum(v)
+            total += length(string(i, "x", 1.5, :sym, 'c'))
+            d = Dict{Int,String}()
+            d[i] = string(i)
+            d[-i] = "negative"
+            total += length(d[i]) + length(d[-i])
+            r = Ref(i)
+            r[] += 1
+            total += r[]
+        end
+        return total
+    end
+    @eval function heap_main(args::Vector{String})
+        println(heap_work())
+        return 0
+    end
+    exe = Base.invokelatest(compile_executable, heap_main, (Vector{String},), mktempdir())
+    checks = ("MallocCheckHeapStart" => "1", "MallocCheckHeapEach" => "1", "MallocCheckHeapAbort" => "1",
+              "MallocScribble" => "1", "MALLOC_CHECK_" => "3", "MALLOC_PERTURB_" => "165")
+    expected = "$(Base.invokelatest(heap_work))\n"
+    for _ in 1:5
+        @test read(setenv(`$exe`, checks...), String) == expected
+    end
+end
+
+# Memory safety. The size of a string or of the memory of an array has the header added to it, which wraps around for a size that is negative
+# (as a number of bytes, one that is far too large): the object was then a few bytes, and what was written in it was not.
+function exit_status_and_output(f)
+    main = StaticCompilerOverrides.make_main(f)
+    exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)))
+    out = IOBuffer()
+    proc = run(pipeline(ignorestatus(`$exe`); stdout = out, stderr = out))
+    return proc.exitcode, String(take!(out))
+end
+huge_string() = (s = Base._string_n(Base.inferencebarrier(-1)::Int); ncodeunits(s))
+huge_memory() = (m = Memory{UInt8}(undef, Base.inferencebarrier(typemax(Int) >> 1)::Int); m[1] = 0x01; Int(m[1]))
+@testset "Allocation sizes that are too large are refused" begin
+    for f in (huge_string, huge_memory)
+        @testset "$(nameof(f))" begin
+            code, out = exit_status_and_output(f)
+            @test code != 0 # (the program stops: with a message of its own, or an uncaught exception)
+            @test !isempty(out)
+        end
+    end
+end
+
+# On Linux the collector decides whether it is on the stack of the main thread by how far the stack pointer is from the base of the stack: the
+# limit of the size of the stack is the far end (`getrlimit`), which it reads
+rlimit_stack() = Int(StaticCompilerOverrides.Runtime.Heap.rlimit_stack_size())
+@testset "The collector reads the size limit of the stack" begin
+    @test 1 << 16 <= rlimit_stack() <= 1 << 40
+    # (compiling it says nothing: an address that is made by adding to that of the state of the heap was reported as a pointer to a Julia object, in the log)
+    @test_logs (@test static_status(rlimit_stack)[1] == :ok)
 end

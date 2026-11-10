@@ -1,6 +1,6 @@
 # `objectid`, so that a struct can be the key of a `Dict` or a `Set` (src/objectid.jl): the number is exactly Julia's
 # (a `Dict` made when compiling is in the binary, and looked up in with the numbers that the program makes), and what
-# uses it compiles. Included by runtests.jl.
+# uses it compiles.
 
 struct OidPt; x::Int; y::Float64; end
 struct OidPad; a::UInt8; b::Int64; end

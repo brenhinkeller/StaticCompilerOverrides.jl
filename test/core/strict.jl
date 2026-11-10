@@ -56,3 +56,23 @@ end
     ok_main = StaticCompilerOverrides.make_main(ok)
     @test isfile(Base.invokelatest(compile_executable, ok_main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(ok_main))))
 end
+
+# An entry point that does not infer to a concrete type says where in the program that comes from
+inference_leaf(x::Int) = x > 0 ? x : error("negative")
+inference_always() = inference_leaf(-1) + error("never")
+@testset "Entry points that do not infer to a concrete type" begin
+    function message(f)
+        main = StaticCompilerOverrides.make_main(f)
+        err = try
+            Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)))
+            nothing
+        catch e
+            e
+        end
+        return err, err === nothing ? "" : sprint(showerror, err)
+    end
+    err, text = message(inference_always)
+    @test err isa InferenceError
+    @test err.rt === Union{}
+    @test occursin("inference_always()", text) && occursin("inference_leaf(::Int64)", text) && occursin("always throws", text)
+end

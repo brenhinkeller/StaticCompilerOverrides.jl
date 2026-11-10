@@ -59,7 +59,8 @@ const PLAIN_CASES = [pl_matrix_int, pl_matrix_float, pl_matrix_compact_floats, p
                      pl_ctx_displaysize]
 
 @testset "text/plain and the properties of a context" begin
-    check_cases(PLAIN_CASES)
+    # (the properties of a context are in the type of its stream, so asking for them is done when compiling: what the three of them ask has no program left)
+    check_cases(PLAIN_CASES; folded_ok = ("pl_ctx_query", "pl_ctx_nested", "pl_ctx_displaysize"))
 end
 
 # `display(x)` of Julia writes to the terminal that Julia was started with, which a test can't capture: the output of the program is compared with the `text/plain` text instead

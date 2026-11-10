@@ -181,3 +181,9 @@ call_only_vector(x) = only_vector(x)
 @testset "Calls over the registered types that no method fits" begin
     @test static_result(() -> call_only_vector(Base.inferencebarrier([1, 2, 3]))) == 3
 end
+
+# `invokelatest(f, args...)` is the call `f(args...)` (inference takes it for that: there are no newer methods in a program)
+invokelatest_square(x) = x * x
+@testset "invokelatest" begin
+    @test static_result(() -> Base.invokelatest(invokelatest_square, Base.inferencebarrier(7)::Int)) == 49
+end

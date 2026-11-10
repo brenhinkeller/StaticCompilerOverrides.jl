@@ -11,13 +11,13 @@ const SY_TYPES = Dict(Int => 1, Float64 => 2, Number => 3, Vector{Int} => 4, Tup
 const SY_NT = (alpha = 1, beta = 2.5)
 const SY_LIST = [:red, :green, :blue]
 
-sy_struct_a() = (s = Pair(:a, 3); getfield(s, Base.inferencebarrier(:first)::Symbol) === :a)
+sy_struct_a() = @opaque((s = Pair(:a, 3); getfield(s, Base.inferencebarrier(:first)::Symbol) === :a))
 
 # the symbols of a binary: in tables made when compiling, and used by a program that makes its own
-sy_dict_get() = SY_DICT[:b] + get(SY_DICT, :zz, 100) + SY_DICT[:end]
-sy_set_in() = (:x in SY_SET) + 2 * (:q in SY_SET)
-sy_dict_runtime() = (d = Dict{Symbol,Int}(); d[:a] = 1; d[:b] = 2; d[:a] + d[:b] + length(d))
-sy_dict_mixed() = (d = Dict(:a => 1, :b => 2); d[Symbol("a")] + d[Symbol(sy_word()[1:1] == "h" ? "b" : "a")])
+sy_dict_get() = @opaque(SY_DICT[:b] + get(SY_DICT, :zz, 100) + SY_DICT[:end])
+sy_set_in() = @opaque((:x in SY_SET) + 2 * (:q in SY_SET))
+sy_dict_runtime() = @opaque((d = Dict{Symbol,Int}(); d[:a] = 1; d[:b] = 2; d[:a] + d[:b] + length(d)))
+sy_dict_mixed() = @opaque((d = Dict(:a => 1, :b => 2); d[Symbol("a")] + d[Symbol(sy_word()[1:1] == "h" ? "b" : "a")]))
 sy_symbol_list() = (n = 0; for s in SY_LIST; n += length(string(s)); end; n)
 
 # a name made by the program is the symbol that the binary has (`===`, a key of a table that was made when compiling)
@@ -35,8 +35,8 @@ sy_string() = sy_p(string(sy_sym()))
 sy_string_made() = sy_p(string(Symbol("made_" * sy_word())))
 sy_symbol_parts() = sy_p(Symbol("x", sy_num(), "_", sy_sym(), 'c', 2.5))
 sy_symbol_upper() = sy_p(Symbol(uppercase(string(sy_sym()))))
-sy_symbol_bytes() = sy_p(Symbol(UInt8[0x61, 0x62, 0x63]))
-sy_symbol_sub() = sy_p(Symbol(SubString(sy_word(), 2, 4)))
+sy_symbol_bytes() = @opaque(sy_p(Symbol(UInt8[0x61, 0x62, 0x63])))
+sy_symbol_sub() = @opaque(sy_p(Symbol(SubString(sy_word(), 2, 4))))
 sy_symbol_char() = sy_p(Symbol(Base.inferencebarrier('q')))
 sy_symbol_empty() = sy_p(string(Symbol(Base.inferencebarrier(""))))
 sy_symbol_unicode() = sy_p(Symbol("α", sy_word()))
@@ -58,12 +58,12 @@ sy_show_made() = (show(Symbol("with space " * sy_word())); println(); show(Symbo
 sy_show_container() = (println(Any[:a, Symbol("b c"), :+, 1]); println(Dict(:x => 1, Symbol("y z") => 2)); println((:a, :+)); 0)
 
 # types: `==` of them, `hash`, and `Dict`s and `Set`s of them
-sy_types_eq() = (Int == Int) + 2 * (Int == Float64) + 4 * (Number == Number) + 8 * (Vector{Int} == Vector{Int}) + 16 * (Vector{Int} == Vector{Float64}) + 32 * (Int == Number)
-sy_types_eq_runtime() = (T = Base.inferencebarrier(Int)::DataType; S = Base.inferencebarrier(Float64)::DataType; (T == T) + 2 * (T == S) + 4 * (T === T))
-sy_types_dict_const() = SY_TYPES[Float64] + SY_TYPES[Number] + SY_TYPES[Vector{Int}] + SY_TYPES[Tuple{Int,String}] + get(SY_TYPES, Bool, 100)
-sy_types_dict_runtime() = (d = Dict{DataType,Int}(); d[Int] = 1; d[Float64] = 2; d[Number] = 3; d[Int] + d[Float64] + d[Number] + length(d))
-sy_types_dict_lookup() = (T = Base.inferencebarrier(Float64)::DataType; SY_TYPES[T] + SY_TYPES[Base.inferencebarrier(Vector{Int})::DataType])
-sy_types_set() = (s = Set{DataType}([Int, Float64, Int]); length(s) + (Int in s) + 2 * (Bool in s))
+sy_types_eq() = @opaque((Int == Int) + 2 * (Int == Float64) + 4 * (Number == Number) + 8 * (Vector{Int} == Vector{Int}) + 16 * (Vector{Int} == Vector{Float64}) + 32 * (Int == Number))
+sy_types_eq_runtime() = @opaque((T = Base.inferencebarrier(Int)::DataType; S = Base.inferencebarrier(Float64)::DataType; (T == T) + 2 * (T == S) + 4 * (T === T)))
+sy_types_dict_const() = @opaque(SY_TYPES[Float64] + SY_TYPES[Number] + SY_TYPES[Vector{Int}] + SY_TYPES[Tuple{Int,String}] + get(SY_TYPES, Bool, 100))
+sy_types_dict_runtime() = @opaque((d = Dict{DataType,Int}(); d[Int] = 1; d[Float64] = 2; d[Number] = 3; d[Int] + d[Float64] + d[Number] + length(d)))
+sy_types_dict_lookup() = @opaque((T = Base.inferencebarrier(Float64)::DataType; SY_TYPES[T] + SY_TYPES[Base.inferencebarrier(Vector{Int})::DataType]))
+sy_types_set() = @opaque((s = Set{DataType}([Int, Float64, Int]); length(s) + (Int in s) + 2 * (Bool in s)))
 sy_types_hash() = (hash(Int) == hash(Int)) + 2 * (hash(Int) != hash(Float64)) + 4 * (hash(Base.inferencebarrier(Int)::DataType) == hash(Int))
 
 const SYMBOL_CASES = [
@@ -91,4 +91,13 @@ end
     for name in names
         @test StaticCompilerOverrides.Runtime.plain_symbol_name(codeunits(name)) == StaticCompilerOverrides.symbol_is_plain(Symbol(name))
     end
+end
+
+# a `Symbol` that is taken from a vector, so that it is not known when compiling (AliasTables, which `sample` uses, makes messages with one)
+symbol_name(x::Vector{Symbol}) = x[1]
+@testset "Symbols that are not known when compiling" begin
+    check_cases([
+        "printed and made into strings" => () -> (v = Base.inferencebarrier([:abcd, :ef])::Vector{Symbol}; s = symbol_name(v); ncodeunits(string("x ", s, " y")) + 100 * ncodeunits(sprint(print, s))),
+        "printed"                       => () -> (v = Base.inferencebarrier([:abcd])::Vector{Symbol}; print(symbol_name(v)); 0),
+    ])
 end

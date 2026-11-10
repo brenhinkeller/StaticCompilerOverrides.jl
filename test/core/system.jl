@@ -1,4 +1,5 @@
-# The file system, the environment and the process: paths, `stat`, directories, copying, temporary files, `ENV`, and `Threads.@threads` (which runs the iterations one after another).
+# The operating system: the file system (paths, `stat`, directories, copying, temporary files), the environment (`ENV`), the process, the clock, `sleep`, and `Threads.@threads` (which runs
+# the iterations one after another).
 # The functions are the ones of Base, written with the functions of the C library (src/filesystem.jl); what they do is compared with Julia's (a directory is made for each case).
 
 function threads_sum(s)
@@ -29,3 +30,12 @@ end
     ])
 end
 
+
+@testset "Time and threads" begin
+    check_cases([
+    "time_ns/time"          => () -> (t = time_ns(); Int(time_ns() >= t) + Int(time() > 1e9)),
+    "nthreads"              => () -> Threads.nthreads(),
+        "sleep"                   => () -> (t = time(); sleep(0.05); println(time() - t >= 0.04); 0),
+        "sleep with a bad time"   => () -> (try; sleep(-1); catch e; println(e isa ArgumentError); end; 0),
+    ], folded_ok = ("nthreads",)) # (the number of threads is the same for the whole run: a constant)
+end

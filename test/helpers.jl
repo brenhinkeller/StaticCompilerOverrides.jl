@@ -43,20 +43,88 @@ end
 # a value that the compiler does not know the type of
 any_value(x) = Base.inferencebarrier(x)
 
+# A number that is `x`, and that neither Julia nor LLVM can know when compiling (it is added to the top bit of the clock, which is zero until the year 2262). A program whose values are
+# constants is run by the compiler, and what is compiled is a print of the answer: so what a case has to run (an exception, an allocation, a loop) has to depend on a number like this.
+opaque(x::Integer) = x + oftype(x, time_ns() >> 63)
+opaque(x::AbstractFloat) = x + oftype(x, time_ns() >> 63)
+# (a value that is chosen when the program runs, between `x` and another: the clock is not at 2262 yet)
+opaque(x::Symbol) = time_ns() >> 63 == 0 ? x : :opaque_other
+opaque(x::String) = time_ns() >> 63 == 0 ? x : "opaque_other"
+
+# The calls whose arguments stay as they are in `@opaque`: the ones that have to be constants for the types to be known (`Val(3)`, `ntuple(f, 3)`), the fields that are named, and the calls to C
+const OPAQUE_KEEP = (:Val, :ntuple, :getfield, :setfield!, :getproperty, :setproperty!, :fieldtype, :hasfield, :NamedTuple, :ccall, :Symbol, :Tuple, :NTuple, :reshape, :zeros, :ones, :fill, :Matrix, :Vector, :Array, :ones, :rand, :randn)
+
+"""
+    @opaque expr
+
+`expr` with the literal numbers, strings and symbols made `opaque`: values that are the same when the program runs, and that the compiler does not know. A function of constants is run by
+the compiler, and the program is a print of its answer; with this, what the case does (an allocation, a lookup, a loop) is done by the program. The arguments of the calls that need a
+constant (`Val`, `ntuple`, the name of a field, the dimensions of an array) and of `@`-macros are left as they are.
+"""
+macro opaque(ex)
+    return esc(opaque_literals(ex))
+end
+function opaque_literals(ex)
+    ex isa Union{Bool, Char} && return ex
+    ex isa Number && return :($opaque($ex))
+    ex isa String && return :($opaque($ex))
+    ex isa QuoteNode && ex.value isa Symbol && return :($opaque($ex))
+    ex isa Expr || return ex
+    head, args = ex.head, ex.args
+    head in (:quote, :macrocall, :curly, :ccall, :where, :local, :global, :import, :using, :meta, :inbounds, :loopinfo, :$) && return ex
+    if head === :.  # `x.name` (the name stays), and `f.(args)`
+        return args[2] isa QuoteNode ? Expr(:., opaque_literals(args[1]), args[2]) : Expr(:., args[1], opaque_literals(args[2]))
+    end
+    if head === :(::)
+        return length(args) == 2 ? Expr(:(::), opaque_literals(args[1]), args[2]) : ex # (the type stays)
+    elseif head === :string
+        return Expr(:string, (a isa String ? a : opaque_literals(a) for a in args)...)
+    elseif head === :call
+        f = args[1]
+        name = f isa Symbol ? f : (f isa Expr && f.head === :. && f.args[end] isa QuoteNode ? f.args[end].value : nothing)
+        name in OPAQUE_KEEP && return ex
+        return Expr(:call, f, (opaque_literals(a) for a in args[2:end])...)
+    elseif head === :(->)
+        return Expr(:(->), args[1], opaque_literals(args[2]))
+    elseif head === :function || (head === :(=) && args[1] isa Expr && args[1].head === :call)
+        return Expr(head, args[1], opaque_literals(args[2]))
+    end
+    return Expr(head, (opaque_literals(a) for a in args)...)
+end
+
 # (libm can differ from Julia's in the last bit: results of functions of it are compared to 6 digits)
 r6(x) = round(Int, 1e6 * x)
 
+# The number of instructions in the program of the zero-argument `f` (without the runtime, which is added when the program is made): a program that only prints a constant has a few,
+# because the compiler has run `f`.
+function program_size(f)
+    main = StaticCompilerOverrides.make_main(f)
+    return Base.invokelatest() do
+        StaticCompilerOverrides.StaticCompiler.GPUCompiler.JuliaContext() do ctx
+            mod = Base.invokelatest(static_llvm_module, main, ENTRY_TYPES; strict = false, llvm_postprocess = m -> nothing)
+            try
+                fns = [fn for fn in LLVM.functions(mod) if !LLVM.isdeclaration(fn) && !startswith(LLVM.name(fn), "j_")]
+                sum(count(_ -> true, (i for bb in LLVM.blocks(fn) for i in LLVM.instructions(bb))) for fn in fns)
+            finally
+                LLVM.dispose(mod)
+            end
+        end
+    end
+end
+const FOLDED_LIMIT = 14 # (a program that prints a constant has about 10)
+check_folded() = !isempty(get(ENV, "TEST_FOLDED", ""))
+
 """
-    check_cases(cases; broken = (), batch = true, chunk = 24, kwargs...)
+    check_cases(cases; broken = (), folded_ok = (), batch = true, chunk = 24, kwargs...)
 
 Each element of `cases` is a testset: the program of a zero-argument function has to compile, and give what the function gives in Julia (what it writes, and its result: see
 `static_status`). An element is `name => f`, or a function (named by its name). The names in `broken` are the cases that don't work yet: when one does, it is an unexpected pass
-that has to be taken off the list.
+that has to be taken off the list. With `TEST_FOLDED=1` a case fails if the compiler runs it (see `opaque`), unless it is in `folded_ok`.
 
 The cases have to be independent of each other: they are compiled in groups of `chunk` (`batch = true`), each group as one program that runs them in turn, which is much faster than a
 program for each; a group that does not pass is compiled again case by case, so that what is said of a case is what it would be on its own. `kwargs` are the options of the compilation.
 """
-function check_cases(cases; broken = (), batch::Bool = true, chunk::Int = 24, kwargs...)
+function check_cases(cases; broken = (), folded_ok = (), batch::Bool = true, chunk::Int = 24, kwargs...)
     named = [c isa Pair ? c : string(nameof(c)) => c for c in cases]
     isbroken = [name in broken for (name, _) in named]
     statuses = Vector{Tuple{Symbol,String}}(undef, length(named))
@@ -72,6 +140,15 @@ function check_cases(cases; broken = (), batch::Bool = true, chunk::Int = 24, kw
             else
                 status, detail = statuses[i]
                 @test (status, first(replace(string(detail), '\n' => ' '), 300)) == (:ok, "")
+                # (with `TEST_FOLDED=1`) the program has to do what the case does: not print an answer that the compiler found, which `opaque` values are for
+                if check_folded() && status == :ok && !(name in folded_ok)
+                    n = program_size(f)
+                    if get(ENV, "TEST_FOLDED", "") == "report" # (lists them, and goes on)
+                        n > FOLDED_LIMIT || println("FOLDED ", name, " (", n, " instructions)")
+                    else
+                        @test n > FOLDED_LIMIT # the program of this case is only a constant
+                    end
+                end
             end
         end
     end

@@ -9,16 +9,16 @@ tu_for_print() = (for x in (1, "a", 2.5); println(x); end; 0)
 tu_for_lengths() = (n = 0; for x in ("ab", 'c', :sym); n += length(string(x)); end; n)
 tu_for_const() = (n = 0; for x in TU_HET; n += length(string(x)); end; n)
 tu_index_runtime() = (i = Base.inferencebarrier(2)::Int; length(string(TU_HET[i])) + length(string(TU_HET[Base.inferencebarrier(4)::Int])))
-tu_index_bounds() = (i = Base.inferencebarrier(9)::Int; try; TU_HET[i]; 0; catch e; e isa BoundsError ? 1 : 2; end)
-tu_index_zero() = (i = Base.inferencebarrier(0)::Int; try; TU_HET[i]; 0; catch e; e isa BoundsError ? 1 : 2; end)
+tu_index_bounds() = @opaque((i = Base.inferencebarrier(9)::Int; try; TU_HET[i]; 0; catch e; e isa BoundsError ? 1 : 2; end))
+tu_index_zero() = @opaque((i = Base.inferencebarrier(0)::Int; try; TU_HET[i]; 0; catch e; e isa BoundsError ? 1 : 2; end))
 tu_collect() = length(collect((1, "a", 2.5)))
 tu_collect_values() = (v = collect(TU_HET); length(v) + length(string(v[2])))
-tu_homogeneous() = (s = 0; for x in (1, 2, 3); s += x; end; s)
-tu_union_field() = (s = 0; for x in (1, 2.5, 3); s += round(Int, x); end; s)
+tu_homogeneous() = @opaque((s = 0; for x in (1, 2, 3); s += x; end; s))
+tu_union_field() = @opaque((s = 0; for x in (1, 2.5, 3); s += round(Int, x); end; s))
 tu_map() = sum(length, map(string, TU_HET))
-tu_reverse_first() = length(string(first(reverse(TU_HET)))) + length(TU_HET)
-tu_zip_same() = (s = 0; for (a, b) in zip((1, 2), ("x", "yy")); s += a + length(b); end; s)
-tu_in() = (1 in (1, "a")) + 2 * ("a" in (1, "a")) + 4 * (:q in (1, "a"))
+tu_reverse_first() = (t = (opaque(7), "str", opaque(2.5)); length(string(first(reverse(t)))) + length(t)) # (a tuple of values that are made when the program runs: a constant one is reversed by the compiler)
+tu_zip_same() = @opaque((s = 0; for (a, b) in zip((1, 2), ("x", "yy")); s += a + length(b); end; s))
+tu_in() = @opaque((1 in (1, "a")) + 2 * ("a" in (1, "a")) + 4 * (:q in (1, "a")))
 
 # `Dict` of pairs of different types
 di_mixed() = (d = Dict(:a => 1, :b => "x"); length(d))
@@ -39,12 +39,12 @@ di_types() = (println(typeof(Dict(:a => 1, :b => 2.5))); println(typeof(Dict(:a 
               println(typeof(Dict(1 => 1, 2.0 => 2))); println(typeof(Dict("a" => 1, "b" => nothing))); println(typeof(Dict("a" => 1, "b" => missing))); 0)
 di_empty_and_single() = (println(typeof(Dict())); println(Dict(:a => 1)); println(typeof(Dict(1 => "a", 2 => "b"))); 0)
 di_merge() = (d = merge(Dict(:a => 1), Dict(:b => "x")); length(d))
-di_setindex_mixed() = (d = Dict{Symbol,Any}(); d[:a] = 1; d[:b] = "x"; d[:c] = 2.5; length(d))
-di_from_pairs_const() = (d = Dict(TU_PAIRS...); length(d) + length(d[:b]))
+di_setindex_mixed() = @opaque((d = Dict{Symbol,Any}(); d[:a] = 1; d[:b] = "x"; d[:c] = 2.5; length(d)))
+di_from_pairs_const() = @opaque((d = Dict(TU_PAIRS...); length(d) + length(d[:b])))
 di_vector_of_tuples() = (d = Dict([(1, "a"), (2, "b")]); length(d))
-di_generator() = (d = Dict(i => i^2 for i in 1:5); length(d))
+di_generator() = @opaque((d = Dict(i => i^2 for i in 1:5); length(d)))
 di_zip() = (d = Dict(zip([1, 2, 3], ["a", "b", "c"])); length(d))
-di_pairs_namedtuple() = (d = Dict(pairs((a = 1, b = 2))); length(d))
+di_pairs_namedtuple() = @opaque((d = Dict(pairs((a = 1, b = 2))); length(d)))
 
 const TUPLE_CASES = [tu_for_print, tu_for_lengths, tu_for_const, tu_index_runtime, tu_index_bounds, tu_index_zero, tu_collect, tu_collect_values, tu_homogeneous,
                      tu_union_field, tu_map, tu_reverse_first, tu_zip_same, tu_in,
@@ -62,4 +62,11 @@ end
     ours = last(first(StaticCompilerOverrides.static_code_typed(t_iter, (Int,))))
     @test ours == only(Base.return_types(t_iter, (Int,)))
     @test ours != Any
+end
+
+@testset "Iterating a tuple of different types" begin
+    check_cases([
+        "iterating a mixed tuple" => () -> (s = 0; for x in (1, 2.5, 3); s += x; end; println(s); 0),
+    "tuple/loop" => @opaque(() -> (s = 0; for x in (1, 2, 3); s += x; end; s)),
+    ])
 end

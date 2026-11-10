@@ -130,7 +130,7 @@ using Libdl
     end
 end
 
-# Functions of libraries that are called by the name of the library (src/libraries.jl): libm's, and the ones of a library that is loaded when the program runs
+# Functions that are called by the name of a library (src/libraries.jl): libm's, and the ones of a library that is loaded when the program runs, from the path that it had when compiling
 const TEST_MPFR = Libdl.LazyLibrary("libmpfr")
 mpfr_version() = unsafe_string(ccall((:mpfr_get_version, TEST_MPFR), Cstring, ()))
 const TEST_LIBM = Libdl.LazyLibrary(Base.libm_name)
@@ -148,4 +148,8 @@ const TEST_LIBM = Libdl.LazyLibrary(Base.libm_name)
     else
         @info "Skipping the test of another library: libmpfr is not found"
     end
+end
+
+@testset "A literal as a C string" begin
+    check_cases(["ccall with a Cstring literal" => () -> Int(ccall(:strlen, Csize_t, (Cstring,), "hello"))]) # (the address of the literal is passed as a number)
 end

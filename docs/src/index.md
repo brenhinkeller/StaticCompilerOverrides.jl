@@ -603,7 +603,7 @@ Limits: a `Ptr` field of a constant of the program
 
 ## Dates and SparseArrays
 
-Both standard libraries compile, and are checked against Julia in `test/testcoverage.jl`.
+Both standard libraries compile, and are checked against Julia in `test/packages/dates.jl` and `test/packages/sparsearrays.jl`.
 
 * **Dates**: `Date`, `DateTime` and `Time` (construction, fields, arithmetic with periods, ranges, `dayofweek` and the like, `monthname`, `show`), parsing a string
   (`Date("2021-12-25")`, `DateTime(...)`, `tryparse`, and with a format), `now()` and `today()` (the time zone of the machine that runs the program). A format is
@@ -760,12 +760,12 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 * Loops with `@simd` (so `sum`, `dot`, `mean`, ...) are vectorized and their reductions reordered, as in Julia, so the results are the same as
   Julia's, to the last digit, when it is run on the same machine type; other machines (SIMD widths) may differ in the last digits, in Julia as here.
 
-**Standard libraries** (a survey of them is kept in `test/testcoverage.jl`)
+**Standard libraries** (a survey of them is kept in `test/packages`, and what does not work, and what happens then, in `test/core/limitations.jl`)
 
 * Work: Base64 (of a string or bytes), CRC32c, SHA, UUIDs, Statistics, Random, Printf, Logging (`NullLogger`), Dates, SparseArrays (with the factorizations), most of LinearAlgebra (`exp`, `sqrt`, `log` and powers of a matrix, `eigen`, `svd`, `qr`,
   `cholesky`, `lu`, `schur`, `ordschur`, `hessenberg`, `inv`, `det`, `\`, `opnorm`, ...), Sockets' address types, and the file system (see [The file system](@ref)).
-* Do not: `Unicode.normalize`, `graphemes` and `isequal_normalized` (the tables are in libjulia's copy of utf8proc, which is not a library of its own); `readdlm` / `writedlm`; `Mmap`; `@time` and `@allocated` (use `@elapsed`);
-  `TOML.parse` (the parser keeps a `Module`); `Markdown` (it dispatches on a vector of functions); `Test` (`@test` and `@testset`); `with_logger` with a logger other than `NullLogger`; starting other programs;
+* Do not: `Unicode.normalize`, `graphemes` and `isequal_normalized` (the tables are in libjulia's copy of utf8proc, which is not a library of its own); `readdlm` / `writedlm`; `@time` and `@allocated` (use `@elapsed`);
+  `TOML.parse` (the parser keeps a `Module`); `Random.RandomDevice` (it reads the entropy of the system with libuv), so `uuid4()` needs a generator (`uuid4(rng)`); `Markdown` and `Mmap` compile, and stop when they are run; `Test` (`@test` and `@testset`); `with_logger` with a logger other than `NullLogger`; starting other programs;
   `Base64` of anything but a string or bytes; `atexit` (the function would not be run, so the program stops when it is registered, except for SuiteSparse's own).
 
 **Threads, tasks and `eval`**

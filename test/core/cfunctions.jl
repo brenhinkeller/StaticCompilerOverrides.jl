@@ -25,6 +25,6 @@ cov_inc(x::Cint)::Cint = x + Cint(1)
         "called from Julia"         => () -> (f = @cfunction(cov_inc, Cint, (Cint,)); Int(ccall(f, Cint, (Cint,), 41))),
         "a callback of no value"    => () -> (cov_flag[] = 0; ccall(@cfunction(cov_set_flag, Cvoid, (Cint,)), Cvoid, (Cint,), 7); cov_flag[]),
         "a lambda"                  => () -> (f = @cfunction(x -> x * Cint(2), Cint, (Cint,)); Int(ccall(f, Cint, (Cint,), 21))),
-        "the pointer is not null"   => () -> Int(@cfunction(cov_inc, Cint, (Cint,)) != C_NULL),
+        "the pointer is not null"   => () -> Int(UInt(@cfunction(cov_inc, Cint, (Cint,))) > opaque(UInt(4096))),
     ]; batch = false)
 end
