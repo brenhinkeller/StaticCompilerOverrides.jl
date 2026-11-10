@@ -1,19 +1,20 @@
-# What compiles from packages: the code of Distributions.jl, NaNStatistics.jl, StatsBase.jl and MPI.jl, as programs that have to give what Julia gives.
-# This is a survey that is kept as tests, so that what works stays working; it takes a while, so it is not part of the tests of the package:
+# What compiles from the standard libraries and from the packages that programs use: a survey that is kept as tests, so that what works stays working. The programs compile to
+# executables and have to print what Julia gives for the same code. It takes a few minutes (`GROUP=Packages`, or `GROUP=Core` for the tests of the package alone).
 #
-#     julia --project=test/packages -e 'using Pkg; Pkg.develop(path = "."); Pkg.instantiate(); include("test/packages/runtests.jl")'
-#
-# `PACKAGES=Distributions,StatsBase` (or the names of the files) runs only some of them.
+# `PACKAGES=Dates,StatsBase` (the names of the files, or parts of them) runs only some of them.
 
-include("common.jl")
+@isdefined(check_cases) || include(joinpath(@__DIR__, "..", "helpers.jl"))
+include_timed("common.jl")
 
-const ALL = ["distributions", "nanstatistics", "statsbase", "mpi"]
+const STDLIBS = ["linearalgebra", "sparsearrays", "dates", "printf", "logging", "encoding"]
+const PACKAGES_TESTED = ["distributions", "nanstatistics", "statsbase", "mpi"]
+const ALL = [STDLIBS; PACKAGES_TESTED]
 selected = get(ENV, "PACKAGES", "")
 selected = isempty(selected) ? ALL : [lowercase(strip(s)) for s in split(selected, ',')]
 
 @testset "Packages" begin
     for name in ALL
         any(s -> occursin(s, name) || occursin(name, s), selected) || continue
-        include("$name.jl")
+        include_timed("$name.jl")
     end
 end

@@ -2,18 +2,6 @@ using Libdl
 
 # Libraries that the program calls: by name (`"libz"`), BigInt and BigFloat (GMP and MPFR), Regex (PCRE2).
 
-# each `name => f`: the program of `f()` compiles and gives what `f()` gives in Julia (the names in `broken` don't yet)
-function check_cases(cases; broken = ())
-    @testset "$name" for (name, f) in cases
-        if name in broken
-            @test_broken static_status(f)[1] == :ok
-        else
-            status, detail = static_status(f)
-            @test (status, first(replace(string(detail), '\n' => ' '), 300)) == (:ok, "")
-        end
-    end
-end
-
 @testset "Libraries" begin
     s(x) = Base.inferencebarrier(x)::String
     sy(x) = Base.inferencebarrier(x)::Symbol
@@ -139,5 +127,25 @@ end
                 mv(lib_a * ".moved", lib_a)
             end
         end
+    end
+end
+
+# Functions of libraries that are called by the name of the library (src/libraries.jl): libm's, and the ones of a library that is loaded when the program runs
+const TEST_MPFR = Libdl.LazyLibrary("libmpfr")
+mpfr_version() = unsafe_string(ccall((:mpfr_get_version, TEST_MPFR), Cstring, ()))
+const TEST_LIBM = Libdl.LazyLibrary(Base.libm_name)
+@testset "Functions of libraries" begin
+    # libm: called by name
+    erfc_value(x) = ccall((:erfc, TEST_LIBM), Float64, (Float64,), x)
+    f = () -> round(Int, 1e6 * erfc_value(Base.inferencebarrier(0.3)))
+    @test static_result(f) == f()
+    @test isempty(undefined_symbols(f) ∩ ["ijl_lazy_load_and_lookup", "ijl_load_and_lookup"])
+    # another library: loaded when the program runs, from the path that it had when compiling
+    if Libdl.dlopen("libmpfr", throw_error = false) !== nothing
+        main = StaticCompilerOverrides.make_main(() -> (length(mpfr_version())))
+        exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)))
+        @test parse(Int, readchomp(`$exe`)) == length(mpfr_version())
+    else
+        @info "Skipping the test of another library: libmpfr is not found"
     end
 end

@@ -1,5 +1,15 @@
-# The tables of the properties of characters (src/unicode.jl) agree with utf8proc for every code point
+# Case, categories and widths of characters; the tables that are used (src/unicode.jl) are also compared with utf8proc's for every character (below).
 
+@testset "Characters and strings" begin
+    check_cases([
+    "lowercase/uppercase"   => () -> (println(lowercase("HeLLo ÀÉÎ"), uppercase("HeLLo àéî"), uppercasefirst("élan")); 1),
+    "isletter etc"          => () -> (cs = ('a', 'Z', '5', ' ', 'é', '∑', '\n'); println(count(isletter, cs), count(isuppercase, cs), count(islowercase, cs), count(isdigit, cs), count(isspace, cs)); 1),
+    "textwidth"             => () -> (println(textwidth("abc"), textwidth("日本"), textwidth('é')); 1),
+    "unicode"               => () -> (println("héllo ∑ 日本"); println('λ'); 1),
+    ])
+end
+
+# the tables of the properties of characters (src/unicode.jl) agree with utf8proc for every code point
 @testset "Unicode tables" begin
     U = StaticCompilerOverrides
     function mismatches()

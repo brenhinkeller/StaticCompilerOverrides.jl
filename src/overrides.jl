@@ -80,8 +80,7 @@ end
 
 # StaticCompiler's entry points, with our method table as the default, and the runtime of this
 # package installed in the code that they generate (`llvm_postprocess`)
-for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_typed,
-          :static_code_native, :static_llvm_module)
+for f in (:compile_executable, :compile_shlib, :static_code_typed, :static_llvm_module)
     @eval begin
         function $f(args...; method_table = method_table, params = nothing, strict::Bool = true, allow = (), gc = default_gc(), target = default_target(),
                     libraries::Symbol = :system,
@@ -124,6 +123,45 @@ for f in (:compile_executable, :compile_shlib, :static_code_llvm, :static_code_t
         in the collector.
         """ $f
     end
+end
+
+"""
+    static_code_llvm(f, types; io = stdout, kwargs...)
+
+Write the LLVM IR of the compiled `f(types...)`, as it is when the program is made (with the runtime of this package, and the objects that it refers to in it), to `io`.
+The options are those of [`static_llvm_module`](@ref).
+"""
+function static_code_llvm(f, types; io::IO = stdout, kwargs...)
+    tt = Base.to_tuple_type(types)
+    StaticCompiler.GPUCompiler.JuliaContext() do ctx
+        mod = static_llvm_module(f, tt; kwargs...)
+        try
+            print(io, string(mod))
+        finally
+            LLVM.dispose(mod)
+        end
+    end
+    return nothing
+end
+
+"""
+    static_code_native(f, types; io = stdout, kwargs...)
+
+Write the assembly of the compiled `f(types...)` to `io`. The options are those of [`static_llvm_module`](@ref).
+"""
+function static_code_native(f, types; io::IO = stdout, target = default_target(), method_table = method_table, params = nothing, kwargs...)
+    tt = Base.to_tuple_type(types)
+    StaticCompiler.GPUCompiler.JuliaContext() do ctx
+        mod = static_llvm_module(f, tt; target, method_table, params, kwargs...)
+        try
+            job, _ = StaticCompiler.static_job(f, tt; target, method_table, params = params === nothing ? OverridesParams() : params)
+            asm, _ = StaticCompiler.GPUCompiler.emit_asm(job, mod, LLVM.CodeGenFileType.Assembly)
+            print(io, asm isa AbstractString ? asm : String(asm))
+        finally
+            LLVM.dispose(mod)
+        end
+    end
+    return nothing
 end
 
 ## Entry points that take the arguments of the command line

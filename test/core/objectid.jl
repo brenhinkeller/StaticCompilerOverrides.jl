@@ -42,9 +42,7 @@ const OID_PTS = Dict(OidPt(1, 2.0) => 1, OidPt(3, 4.0) => 2)
         "bits Dict in binary" => () -> (get(OID_PTS, OidPt(3, 4.0), 0) + 10 * get(OID_PTS, OidPt(9, 9.0), 0)),
         "objectid"         => () -> (objectid(OidNamed("a", 1)) == objectid(OidNamed(mk("a")[1:1], 1))),
     ]
-    @testset "$name" for (name, f) in cases
-        @test static_status(f)[1] == :ok
-    end
+    check_cases(cases)
     # an `objectid` of a type that is not known when compiling is reported
     @test static_status(() -> Int(objectid(Base.inferencebarrier(OidNamed("a", 1))) % 2))[1] == :compile_error
 end

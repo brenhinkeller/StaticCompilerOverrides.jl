@@ -44,9 +44,7 @@ StaticCompilerOverrides.add_show_candidates!(ShowPt, Tuple{Int,Float64})
         "sprint show"      => () -> length(sprint(show, [1.5])),
         "string"           => () -> length(string([1, 2], (3, 4))),
     ]
-    @testset "$name" for (name, f) in cases
-        @test static_status(f)[1] == :ok
-    end
+    check_cases(cases)
 
     # the keys of a dictionary that are Strings are compared by their text (`===` of two Strings is `jl_egal__unboxed`),
     # also when they are not the same object

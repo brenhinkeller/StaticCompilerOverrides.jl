@@ -87,6 +87,82 @@ function static_status(f; kwargs...)
     return :ok, ""
 end
 
+# A `main` that runs each of `fs` in turn, writing a line with the number of the case (to the standard output, and to the standard error) before it, and the result after
+function make_batch_main(fs)
+    name = Symbol(:static_batch_, wrapper_counter[] += 1)
+    body = Expr[]
+    for (i, f) in enumerate(fs)
+        push!(body, :(printf(c"@@case %ld@@\n", $i)), :(printf($STDERR, c"@@case %ld@@\n", $i)), :(printf(c"%ld\n", $as_int($f()))))
+    end
+    Core.eval(Wrappers, :(function $name(argc::Int, argv::Ptr{Ptr{UInt8}})
+        $(body...)
+        return 0
+    end))
+    return Base.invokelatest(getproperty, Wrappers, name)
+end
+
+# what each of `fs` writes in this process, in the same form as the batch program writes it (see `make_batch_main`): the text of the standard output and of the standard error for each
+function expected_batch(fs)
+    out_path, out_io = mktemp()
+    err_path, err_io = mktemp()
+    try
+        redirect_stdout(out_io) do
+            redirect_stderr(err_io) do
+                for (i, f) in enumerate(fs)
+                    print(stdout, "@@case ", i, "@@\n"); print(stderr, "@@case ", i, "@@\n")
+                    r = f()
+                    print(stdout, as_int(r), "\n")
+                    flush(stdout); flush(stderr)
+                    Libc.flush_cstdio() # what was written with the streams of libc
+                end
+            end
+        end
+    finally
+        close(out_io); close(err_io)
+    end
+    return split_batch(read(out_path, String), length(fs)), split_batch(read(err_path, String), length(fs))
+end
+
+# the text of each case in the output of a batch program
+function split_batch(text::AbstractString, n::Int)
+    parts = fill("", n)
+    marks = collect(eachmatch(r"@@case (\d+)@@\n", text))
+    for (k, m) in enumerate(marks)
+        i = parse(Int, m.captures[1])
+        stop = k < length(marks) ? marks[k+1].offset - 1 : lastindex(text)
+        1 <= i <= n && (parts[i] = text[m.offset+ncodeunits(m.match):stop])
+    end
+    return parts
+end
+
+"""
+    static_status_batch(fs; kwargs...) -> Vector{Tuple{Symbol,String}}
+
+`static_status` of each of the zero-argument functions `fs`, for cases that don't depend on one another (their results and what they write are compared with Julia's, as for `static_status`).
+They are compiled as **one** program that runs them in turn, which takes much less time than a program for each; and if that is not `:ok` for all (it does not compile, or crashes, or
+the output of some is not what Julia writes) those that are not are compiled on their own, so that each has the status that it would have.
+"""
+function static_status_batch(fs::AbstractVector; kwargs...)
+    n = length(fs)
+    n <= 1 && return Tuple{Symbol,String}[static_status(f; kwargs...) for f in fs]
+    ok = Tuple{Symbol,String}[]
+    mismatched = Int[]
+    try
+        main = make_batch_main(fs)
+        exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)); kwargs...)
+        err_path = tempname()
+        out = read(pipeline(`$exe`; stderr = err_path), String)
+        err = read(err_path, String)
+        expected_out, expected_err = expected_batch(fs)
+        got_out, got_err = split_batch(out, n), split_batch(err, n)
+        mismatched = [i for i in 1:n if got_out[i] != expected_out[i] || got_err[i] != expected_err[i]]
+    catch e
+        @debug "a batch of cases was not run as one program; they are compiled one by one" exception = (e, catch_backtrace())
+        mismatched = collect(1:n) # (it does not compile, or crashes: which of them is found by compiling each)
+    end
+    return Tuple{Symbol,String}[i in mismatched ? static_status(fs[i]; kwargs...) : (:ok, "") for i in 1:n]
+end
+
 """
     @static_test f()
 
@@ -158,7 +234,8 @@ function allocation_sites(f, types; kwargs...)
     LLVM = StaticCompiler.LLVM
     Base.invokelatest() do
         StaticCompiler.GPUCompiler.JuliaContext() do ctx
-            mod = static_llvm_module(f, Base.to_tuple_type(types); strict = false, kwargs...)
+            # (before the runtime is linked in: the allocation functions are inlined there, when the collector is used, and then they are not calls any more)
+            mod = static_llvm_module(f, Base.to_tuple_type(types); strict = false, llvm_postprocess = mod -> nothing, kwargs...)
             try
                 n = 0
                 for fn in LLVM.functions(mod), bb in LLVM.blocks(fn), inst in LLVM.instructions(bb)

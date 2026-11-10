@@ -34,8 +34,5 @@ const ARRAY_CASES = [ar_int, ar_float64, ar_float32, ar_string, ar_bool, ar_char
                      ar_4d, ar_bitmatrix, ar_wrappers, ar_linalg, ar_repr, ar_nested, ar_zeros, ar_zero_dim, ar_struct_elements, ar_sizes]
 
 @testset "show of arrays of more than one dimension" begin
-    @testset "$(nameof(f))" for f in ARRAY_CASES
-        status, detail = static_status(f)
-        @test (status, first(replace(string(detail), '\n' => ' '), 300)) == (:ok, "")
-    end
+    check_cases(ARRAY_CASES)
 end

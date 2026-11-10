@@ -76,10 +76,7 @@ const SYMBOL_CASES = [
 ]
 
 @testset "Symbols and types as keys" begin
-    @testset "$(nameof(f))" for f in SYMBOL_CASES
-        status, detail = static_status(f)
-        @test (status, first(replace(string(detail), '\n' => ' '), 300)) == (:ok, "")
-    end
+    check_cases(SYMBOL_CASES)
 end
 
 # `getfield` of a field named by a symbol that is not known when compiling needs the types of the fields when the program runs (not supported yet)

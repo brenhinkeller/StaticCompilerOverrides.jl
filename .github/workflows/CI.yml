@@ -69,8 +69,8 @@ jobs:
         with:
           files: lcov.info
   packages:
-    # what compiles from other packages (Distributions.jl, NaNStatistics.jl, StatsBase.jl), as programs that give what Julia gives: a survey kept as tests
-    # (`test/packages`), which takes a few minutes, so it is a job of its own, on one platform of each kind
+    # what compiles from the standard libraries and from other packages (Dates, SparseArrays, LinearAlgebra, Distributions.jl, StatsBase.jl, MPI.jl, ...), as programs that give what
+    # Julia gives: a survey kept as tests (`test/packages`, the group `Packages`), which takes a few minutes, so it is a job of its own, on one platform of each kind
     name: Packages - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -85,14 +85,10 @@ jobs:
         with:
           version: 'pre'
       - uses: julia-actions/cache@v1
-      - name: Install the package and the packages that it compiles
-        shell: julia --project=test/packages {0}
-        run: |
-          using Pkg
-          Pkg.develop(PackageSpec(path = "."))
-          Pkg.instantiate()
-      - name: Compile and compare
-        run: julia --project=test/packages test/packages/runtests.jl
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        env:
+          GROUP: Packages
   docs:
     name: Documentation
     runs-on: ubuntu-latest

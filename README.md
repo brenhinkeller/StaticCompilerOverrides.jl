@@ -102,7 +102,7 @@ What compiles to a standalone binary (the arguments of the command line included
 * **Dynamic dispatch**: calls on `Any` and abstract types are closed over a list of registered types, so they compile (and are exact for abstract types with few concrete subtypes).
 * **Libraries**: BLAS and LAPACK (through libblastrampoline), `BigInt`, `BigFloat`, `Regex`, SuiteSparse (sparse `\`, `lu`, `cholesky`, `qr`), **MPI** (MPI.jl programs run under `mpiexec`), any JLL or library of your own through `ccall`, with `libraries = :system` or `:bundle`; and `finalizer(f, x)` frees what they allocate.
 * **Standard libraries**: `Dates` (parsing and formatting with `dateformat"..."`, arithmetic, `now()`), `SparseArrays` (construction, indexing, products, factorizations), the file system (`stat`, `mkdir`, `rm`, `readdir`, `cp`, `mv`, temporary files), `Base64`, `CRC32c`, `Statistics`, `LinearAlgebra`, `Random`, `Printf`.
-* **Packages**: code from other packages compiles like Base's; Distributions.jl, StatsBase.jl and NaNStatistics.jl are a survey kept as tests (`test/packages`).
+* **Packages**: code from other packages compiles like Base's; the standard libraries (Dates, SparseArrays, LinearAlgebra, Printf, ...) and Distributions.jl, StatsBase.jl, NaNStatistics.jl and MPI.jl are a survey kept as tests (`test/packages`).
 
 `test/corpus.jl` and `test/` are the up-to-date list of what is checked.
 
@@ -130,6 +130,13 @@ The main limits, which the manual has in full:
 * **Runtime differences**: at most 256 nested `try` blocks, no stack overflow check (infinite recursion crashes), and uncaught exceptions exit with a short message and no backtrace.
 
 See [Known limitations](https://brenhinkeller.github.io/StaticCompilerOverrides.jl/dev/#Known-limitations) in the manual for the complete list and the reasons.
+
+### Running the tests
+
+`] test` runs all of them: the tests of the compiler, the runtime and the language (`test/core`), and those of the standard libraries and the packages that programs use (`test/packages`).
+Most of them compile a program and compare what it prints with what Julia prints for the same code. Set `GROUP=Core` or `GROUP=Packages` to run one of the two, `PACKAGES=Dates,MPI`
+to run some of the files of `Packages` (the MPI tests need an MPI library, which MPI.jl installs), and `TEST_TIMING=1` to print the time that each file took. `STATIC_COMPILER_OVERRIDES_GC=3`
+runs the programs with the collector in stress mode.
 
 [docs-dev-img]: https://img.shields.io/badge/docs-dev-blue.svg
 [docs-dev-url]: https://brenhinkeller.github.io/StaticCompilerOverrides.jl/dev/

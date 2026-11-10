@@ -84,7 +84,7 @@ const STATSBASE_BROKEN = ("summarystats",)
   "maxad"             => () -> r6(maxad(data(), reverse(data()))),
   "psnr"              => () -> r6(psnr(data(), reverse(data()), 10.0)),
   "weights ops"       => () -> (w1 = Weights(weights50()); r6(sum(w1) + length(w1))),
-  "eweights"          => () -> r6(sum(eweights(10, 0.3))),
+  "eweights"          => () -> r6(sum(with_logger(() -> eweights(10, 0.3), NullLogger()))), # (a warning that the default will change: with `--depwarn=yes` Julia writes it, a program does not)
   "uweights"          => () -> r6(sum(uweights(10))),
   "fweights"          => () -> sum(fweights([1, 2, 3])),
   "midpoints"         => () -> r6(sum(StatsBase.midpoints(0:5:30))),

@@ -53,10 +53,7 @@ const TUPLE_CASES = [tu_for_print, tu_for_lengths, tu_for_const, tu_index_runtim
                      di_merge, di_setindex_mixed, di_from_pairs_const, di_vector_of_tuples, di_generator, di_zip, di_pairs_namedtuple]
 
 @testset "Tuples of different types, and Dicts of different value types" begin
-    @testset "$(nameof(f))" for f in TUPLE_CASES
-        status, detail = static_status(f)
-        @test (status, first(replace(string(detail), '\n' => ' '), 300)) == (:ok, "")
-    end
+    check_cases(TUPLE_CASES)
 end
 
 # what inference finds for them is what Julia finds (the type of the elements is not lost)

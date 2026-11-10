@@ -59,18 +59,10 @@ const PLAIN_CASES = [pl_matrix_int, pl_matrix_float, pl_matrix_compact_floats, p
                      pl_ctx_displaysize]
 
 @testset "text/plain and the properties of a context" begin
-    @testset "$(nameof(f))" for f in PLAIN_CASES
-        status, detail = static_status(f)
-        @test (status, first(replace(string(detail), '\n' => ' '), 300)) == (:ok, "")
-    end
+    check_cases(PLAIN_CASES)
 end
 
 # `display(x)` of Julia writes to the terminal that Julia was started with, which a test can't capture: the output of the program is compared with the `text/plain` text instead
-function compiled_stdout(f)
-    main = StaticCompilerOverrides.make_main(f)
-    exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)))
-    return read(`$exe`, String)
-end
 pl_display_values() = (display([1 2; 3 4]); display([1, 2, 3]); display(3); display("a"); display(1.5); display(:s); display(nothing); display(Dict(:a => 1)); display(1:3); 0)
 pl_display_floats() = (display([1.5 2.0; 3.0 0.1+0.2]); display(Any[1, "a", 2.5]); display(reshape(1:8, 2, 2, 2)); 0)
 @testset "display" begin

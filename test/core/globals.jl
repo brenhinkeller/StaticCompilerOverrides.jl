@@ -44,11 +44,7 @@ gl_ref_untyped() = (gl_ref[] += 1; gl_ref[])
 gl_vec_untyped() = (push!(gl_untyped_vec, 9); sum(gl_untyped_vec))
 
 @testset "Global variables that are not const" begin
-    @testset "$(nameof(f))" for f in (gl_read, gl_write, gl_typed_read, gl_typed_write, gl_bump3, gl_loop, gl_strings, gl_retype, gl_vec_push, gl_vec_new,
-                                      gl_dict_add, gl_point_update, gl_many_allocations, gl_two_functions, gl_float_update, gl_declared)
-        status, detail = static_status(f)
-        @test (status, first(replace(string(detail), '\n' => ' '), 300)) == (:ok, "")
-    end
+    check_cases([gl_read, gl_write, gl_typed_read, gl_typed_write, gl_bump3, gl_loop, gl_strings, gl_retype, gl_vec_push, gl_vec_new, gl_dict_add, gl_point_update, gl_many_allocations, gl_two_functions, gl_float_update, gl_declared])
 
     # a global of a type that is not known (`Any`) that holds a value that is not of the registered types can't be used: and the message says why
     @testset "untyped globals of other types" begin

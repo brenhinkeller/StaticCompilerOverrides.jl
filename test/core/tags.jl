@@ -146,9 +146,7 @@ end
         "Dict, Set"      => () -> (d = Dict{Tuple{String,Int},Int}(); d[(mk("a"), 1)] = 5; d[(mk("b"), 2)] = 6;
                                    get(d, (mk("a"), 1), 0) + 10 * get(d, (mk("b"), 2), 0) + 100 * get(d, (mk("a"), 2), 0) + 1000 * ((mk("a"), 1) in Set([(mk("a"), 1)]))),
     ]
-    @testset "$name" for (name, f) in cases
-        @test static_status(f)[1] == :ok
-    end
+    check_cases(cases)
 
     @testset "plan" begin
         # (the number is the 8 bytes before the layout)

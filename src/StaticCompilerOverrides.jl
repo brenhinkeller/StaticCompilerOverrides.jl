@@ -41,7 +41,7 @@ export compile_executable, compile_shlib, static_code_llvm, static_code_typed, s
        static_llvm_module, @device_override
 export UnsupportedCodeError, InferenceError, add_show_candidates!, add_dispatch_candidates!
 export StaticIO, StaticFile, STDIN, STDOUT, STDERR
-export static_result, static_status, undefined_symbols, allocation_sites, @static_test
+export static_result, static_status, static_status_batch, undefined_symbols, allocation_sites, @static_test
 export gc_live_bytes, gc_collections, gc_heap_bytes
 
 end # module StaticCompilerOverrides
