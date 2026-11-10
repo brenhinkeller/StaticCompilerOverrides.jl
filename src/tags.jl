@@ -8,7 +8,7 @@
 #
 # So the objects that the program makes need the tag, which is written by whoever makes the object. For
 # most that is the code that Julia generated (`julia.gc_alloc_bytes`, and the runtime functions of
-# `runtime.jl`), but the allocations that GPUCompiler lowers (`julia.gc_alloc_obj`, which most objects of
+# `runtime/shims.jl`), but the allocations that GPUCompiler lowers (`julia.gc_alloc_obj`, which most objects of
 # user types are) lose the type, since only the size is needed for allocating. A pass before that lowering
 # writes the tag.
 
@@ -57,8 +57,7 @@ function tag_allocations!(mod::LLVM.Module)
             if known && Runtime.object_type(addr) === DataType &&
                Runtime.type_pointerfree(unsafe_pointer_to_objref(Ptr{Cvoid}(addr)))
                 ftype = LLVM.FunctionType(LLVM.value_type(call), [LLVM.Int64Type()])
-                atomic = get(LLVM.functions(mod), "gpu_gc_pool_alloc_atomic", nothing)
-                atomic === nothing && (atomic = LLVM.Function(mod, "gpu_gc_pool_alloc_atomic", ftype))
+                atomic = Runtime.declare!(mod, "gpu_gc_pool_alloc_atomic", ftype)
                 LLVM.position!(builder, LLVM.before(call))
                 obj = LLVM.call!(builder, ftype, atomic, [LLVM.operands(call)[2]])
                 LLVM.replace_uses!(call, obj)
@@ -79,16 +78,6 @@ function tag_allocations!(mod::LLVM.Module)
     end
     return changed
 end
-
-# GPUCompiler lowers the intrinsics of Julia (allocation, ...) in `buildIntrinsicLoweringPipeline`, which
-# is after the optimization of Julia (so only for the allocations that remain, not for those that are
-# removed or put on the stack). The pass that tags is to be added before it. The passes of a pipeline are
-# found by name, and have to be registered with the `PassBuilder` that runs it, which is made in
-# `optimize!`: so for the jobs of ours (the code with the method table of this package: StaticCompiler also
-# compiles code that doesn't have the runtime of this package), that is a copy of `optimize!` of
-# GPUCompiler (see `optim.jl` there), that also registers ours.
-#
-# These are methods of functions of GPUCompiler, for the jobs of StaticCompiler: they are only used for our code.
 
 # (the passes and pass builders of LLVM.jl have been renamed: `PassBuilder` is `NewPMPassBuilder`, ...)
 const PassBuilder = isdefined(LLVM, :NewPMPassBuilder) ? LLVM.NewPMPassBuilder : LLVM.PassBuilder
@@ -144,47 +133,3 @@ function placeholder_type_constants!(mod::LLVM.Module)
 end
 
 const TypeConstantsPass = ModulePass("StaticTypeConstants", placeholder_type_constants!)
-
-is_ours(job) = GPUCompiler.method_table(job) === method_table
-
-@static if isdefined(GPUCompiler, :buildIntrinsicLoweringPipeline) && isdefined(GPUCompiler, :optimize!)
-    function GPUCompiler.buildIntrinsicLoweringPipeline(mpm, job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}, opt_level)
-        is_ours(job) && LLVM.add!(mpm, "StaticTagAllocations")
-        return invoke(GPUCompiler.buildIntrinsicLoweringPipeline, Tuple{Any, GPUCompiler.CompilerJob, Any}, mpm, job, opt_level)
-    end
-
-    function GPUCompiler.optimize!(job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}, mod::LLVM.Module,
-                                   relocs::GPUCompiler.Relocations; opt_level = 2)
-        is_ours(job) || return invoke(GPUCompiler.optimize!, Tuple{GPUCompiler.CompilerJob, LLVM.Module, GPUCompiler.Relocations},
-                                      job, mod, relocs; opt_level)
-        GPUCompiler.with_llvm_machine(job.config.target) do tm
-            tti = GPUCompiler.llvm_targetinfo(job.config.target)
-            @dispose pb = PassBuilder() begin
-                tti === nothing || LLVM.target_transform_info!(pb, tti)
-
-                # as in GPUCompiler
-                LLVM.register!(pb, GPUCompiler.GPULowerCPUFeaturesPass(job))
-                LLVM.register!(pb, GPUCompiler.GPULowerPTLSPass(job))
-                LLVM.register!(pb, GPUCompiler.GPULowerGCFramePass(job, relocs))
-                LLVM.register!(pb, GPUCompiler.GPULinkRuntimePass(job, relocs))
-                LLVM.register!(pb, GPUCompiler.GPULinkLibrariesPass(job))
-                LLVM.register!(pb, GPUCompiler.GPUFinishRuntimeIntrinsicsPass(job))
-                LLVM.register!(pb, GPUCompiler.AddKernelStatePass(job))
-                LLVM.register!(pb, GPUCompiler.LowerKernelStatePass(job))
-                LLVM.register!(pb, GPUCompiler.CleanupKernelStatePass(job))
-                # and ours
-                LLVM.register!(pb, TagAllocationsPass)
-                LLVM.register!(pb, TypeConstantsPass)
-
-                LLVM.add!(pb, ModulePassManager()) do mpm
-                    LLVM.add!(mpm, "StaticTypeConstants") # (before anything is optimized)
-                    GPUCompiler.buildNewPMPipeline!(mpm, job, opt_level)
-                end
-                LLVM.run!(pb, mod, tm)
-            end
-            GPUCompiler.optimize_module!(job, mod)
-            LLVM.run!(LLVM.DeadArgumentEliminationPass(), mod, tm)
-        end
-        return
-    end
-end

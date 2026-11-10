@@ -9,7 +9,7 @@ const COV_DICTF = Dict{String,Function}("a" => cov_adder(1), "b" => cos)
 @testset "Closures and functions that are not known" begin
     mutable struct Holder; f::Function; end
     make_adder(k) = x -> x + k
-    make_counter() = (n = opaque(0); () -> (n += 1))
+    make_counter() = (n = opaque(0); () -> (n += 1)) # (the start is `opaque`: with the constant 0 the compiler runs the counter)
     apply_all(fs, x) = map(f -> f(x), fs)
     kw(x; k = 2) = x * k
     any_function = any_value

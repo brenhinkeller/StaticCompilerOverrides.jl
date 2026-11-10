@@ -1,4 +1,4 @@
-# MPI.jl in a compiled program. MPI is a library that the program calls (see `libraries.jl`: MPI.jl opens `libmpi` with `RTLD_GLOBAL` when it is loaded, and
+# MPI.jl in a compiled program. MPI is a library that the program calls (see `runtime/libraries.jl`: MPI.jl opens `libmpi` with `RTLD_GLOBAL` when it is loaded, and
 # calls its functions by name; the program opens it, from the path that it has when compiling, when it first calls one), and what is different is what MPI.jl does when
 # it starts up and ends:
 #

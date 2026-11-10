@@ -103,7 +103,6 @@ function explain_inference!(path::Vector{String}, notes::Vector{String}, f, tt::
             argtypes = [type_of_argument(ci, a) for a in st.args[2:end]]
             line = string(callee_name(ci, st.args[1]), "(", join(("::" * string(T) for T in argtypes), ", "), ")")
             callee = st.args[1]
-            callee_type = callee isa Core.SSAValue || callee isa Core.Argument ? type_of_argument(ci, callee) : nothing
             callee_builtin = callee_name(ci, callee) == "throw"
             callee_builtin && continue # (a `throw` is the end of a path that throws: the call before it is what is looked for)
             push!(path, line)

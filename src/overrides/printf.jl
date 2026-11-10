@@ -12,8 +12,6 @@
 
 using Printf: Printf
 
-@static if isdefined(Printf, :computelen) && isdefined(Printf, :plength) && isdefined(Printf, :fmt)
-
 const DYNAMIC_FORMAT_ERROR = "format specifiers that take the width or precision from an argument (`*`) are not supported in compiled code"
 
 # Write the literal text of `f` before its `i`th specifier (or after the last one), as Printf does:
@@ -59,5 +57,3 @@ end
 
 @device_override Printf.computelen(substringranges, formats, args) =
     Base.checked_add(sum(length, substringranges), plength_specs(formats, args))
-
-end

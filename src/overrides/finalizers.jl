@@ -1,10 +1,10 @@
 # `finalizer(f, x)` with a Julia function `f` (what the wrappers of C libraries have to free what the library allocated: PCRE, SuiteSparse, MPI, ...).
 #
-# The collector (`heap.jl`) is compiled apart and can't call code of the program, so a finalizer is run by the program: the call `finalizer(f, x)` is a *site*,
+# The collector (`runtime/heap.jl`) is compiled apart and can't call code of the program, so a finalizer is run by the program: the call `finalizer(f, x)` is a *site*,
 # of the types of `f` and `x` (each pair of types has a number, and a list of the objects that have a finalizer there, which keeps the function and, as a number, the
 # address of the object: so it does not keep the object). The heap is told the object and the number of the site. When a collection finds the object unreachable the
 # heap keeps it, and queues it, and after the collection hands it, with the number, to `static_run_finalizer(site, object)`: a function that is written when
-# linking (`link_finalizers!` in `runtime.jl`), a `switch` on the number that calls `run_finalizer` of the site, which finds the function in the list, takes the
+# linking (`link_finalizers!` in `runtime/heap_link.jl`), a `switch` on the number that calls `run_finalizer` of the site, which finds the function in the list, takes the
 # entry out of it, and calls it with the object. Then nothing refers to the object, and a later collection frees it.
 #
 # How `link_finalizers!` finds the function of a site: `run_finalizer` has a call of `static_finalizer_marker(number)` in it (written in the code that is generated

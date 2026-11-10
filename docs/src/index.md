@@ -366,7 +366,7 @@ exe = compile_executable(main, (Vector{String},), "build", "program")           
 exe = compile_executable(main, (Vector{String},), "build", "program"; gc = false)   # without it
 ```
 
-The collector and the allocator it works with (`src/heap.jl`) are written in Julia, and compiled with StaticCompiler into every
+The collector and the allocator it works with (`src/runtime/heap.jl`) are written in Julia, and compiled with StaticCompiler into every
 program that allocates. How it works:
 
 * **Conservative and non-moving.** It doesn't need to know the types of what is in memory. Every word of the stack (and the
@@ -464,7 +464,7 @@ Every object that a compiled program allocates has a type tag in its header, as 
 the built-in types and the address of the type object otherwise. `isa` with a concrete type, the type of a caught
 exception, and `show` of an `Any` element read this tag. The objects that the code refers to as constants
 (strings, tuples, types, ...) are copied into the binary with their tags, and so are the type objects that
-the tags and `isa` with abstract types read (names, parameters). Details are in `src/tags.jl` and `src/runtime.jl`.
+the tags and `isa` with abstract types read (names, parameters). Details are in `src/tags.jl` and `src/runtime/embedder.jl`.
 
 `x isa Number` for an `x` that is only known when the program runs is `ijl_subtype(typeof(x), Number)` in libjulia, whose
 subtyping algorithm is not in the binary. The types that it is asked about are constants of the code, and the types

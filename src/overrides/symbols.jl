@@ -4,7 +4,7 @@
 # Julia keeps all symbols in a table (in libjulia), so that there is one object for each name and `===` of symbols is a comparison of
 # addresses. A program has no such table. The symbols that it has when it is compiled are copied into it, as any constant, so here:
 #
-# * the symbols that are in the binary are found in a list of them that is made when linking (`define_symbol_table!` in `runtime.jl`),
+# * the symbols that are in the binary are found in a list of them that is made when linking (`define_symbol_table!` in `runtime/constants.jl`),
 #   sorted by name, which is searched first (a symbol that is in the binary is that object, so that `Symbol("abc") === :abc`);
 # * a name that is not there is made into a symbol that is kept in a binary tree (as the table of Julia is, by the `left` and `right` of
 #   the node, which the embedded symbols have as well), by its hash and then its name. Symbols are never freed (they are not made by the

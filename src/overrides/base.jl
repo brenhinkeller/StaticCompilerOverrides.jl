@@ -129,15 +129,11 @@ end
 # Cancellation (Julia 1.14). Whether an operation has been cancelled is looked up from the scope of
 # the current task, which compiled programs don't have: there is never a cancellation token. (This
 # is checked by operations that may block or allocate, so without it much of Base needs the scheduler.)
-@static if isdefined(Base, :default_cancel_token)
-    @device_override Base.default_cancel_token() = nothing
-end
+@device_override Base.default_cancel_token() = nothing
 
 # The slow path of a cancellation point (`@cancel_check`), which is only reached when it reports a pending
 # yield or cancellation. Without a source it can only be a request to let another task run: there are none.
-@static if isdefined(Base, :handle_cancellation!)
-    @device_override Base.handle_cancellation!(::Nothing, ::UInt8) = nothing
-end
+@device_override Base.handle_cancellation!(::Nothing, ::UInt8) = nothing
 
 # Letting another task run: there is no other task
 @device_override Base.yield() = nothing
@@ -145,23 +141,21 @@ end
 # `string(chars, strings, symbols...)` (`_string`) loops over its arguments twice, the first time to
 # add up their lengths and the second to copy them, again with arguments of different types: so
 # recurse over them, as in `print_to_string`
-@static if isdefined(Base, :_string_n) && isdefined(Base, :__unsafe_string!)
-    @device_override function Base._string(a::Union{Char, String, SubString{String}, Symbol}...)
-        out = Base._string_n(string_size(a...))
-        string_fill!(out, 1, a...)
-        return out
-    end
+@device_override function Base._string(a::Union{Char, String, SubString{String}, Symbol}...)
+    out = Base._string_n(string_size(a...))
+    string_fill!(out, 1, a...)
+    return out
+end
 
-    string_size() = 0
-    string_size(v::Char, rest...) = ncodeunits(v) + string_size(rest...)
-    string_size(v::Union{String, SubString{String}}, rest...) = sizeof(v) + string_size(rest...)
-    string_size(v::Symbol, rest...) = symbol_length(v) + string_size(rest...)
+string_size() = 0
+string_size(v::Char, rest...) = ncodeunits(v) + string_size(rest...)
+string_size(v::Union{String, SubString{String}}, rest...) = sizeof(v) + string_size(rest...)
+string_size(v::Symbol, rest...) = symbol_length(v) + string_size(rest...)
 
-    string_fill!(out, offs) = nothing
-    function string_fill!(out, offs, v, rest...)
-        offs += Base.__unsafe_string!(out, v, offs)
-        return string_fill!(out, offs, rest...)
-    end
+string_fill!(out, offs) = nothing
+function string_fill!(out, offs, v, rest...)
+    offs += Base.__unsafe_string!(out, v, offs)
+    return string_fill!(out, offs, rest...)
 end
 
 # `Symbol`s whose value is not known when compiling (the name of a function in a message, taken from a field). Base asks libjulia for the
@@ -206,9 +200,7 @@ const CLOCK_MONOTONIC = Sys.isapple() ? Int32(6) : Int32(1)
 # Deprecation warnings (`Base.depwarn`, which packages call from the methods that are deprecated) look at the options of the
 # Julia that runs (`JLOptions()`, `--depwarn`), which a program does not have; and are not shown by default: nothing is done
 @device_override Base.depwarn(msg, funcsym; force::Bool = false) = nothing
-@static if isdefined(Base, :depwarn_if_not_pure)
-    @device_override Base.depwarn_if_not_pure(args...) = nothing # (the deprecated properties of types, `Type.name`, which `@deprecate` reads)
-end
+@device_override Base.depwarn_if_not_pure(args...) = nothing # (the deprecated properties of types, `Type.name`, which `@deprecate` reads)
 
 # The time of day: `jl_gettimeofday` is a function of libjulia; `gettimeofday` is that of the C library (so `Dates.now()` and `today()` work: the zone is
 # that of the machine that runs the program, from `localtime_r`)
@@ -229,12 +221,12 @@ end
 end
 @device_override Base.atexit(f::Function) = static_atexit(typeof(f))
 
-# the path of a `LazyLibrary`, as the compiler has it (see `host_dlpath` in `libraries.jl`)
+# the path of a `LazyLibrary`, as the compiler has it (see `host_dlpath` in `runtime/libraries.jl`)
 @device_override Runtime.Libdl.dlpath(lib::Runtime.Libdl.LazyLibrary) = Runtime.host_dlpath(lib)
 
 # `OncePerProcess` (what a library has to set itself up the first time that it is used: SuiteSparse, ...): Base's takes a lock and tells the system of packages that the value
 # is made (`jl_set_precompile_field_replace`, `__precompile__`), neither of which there is in a program that is compiled, which has one task. The embedded
-# object starts as one that has not run (see `field_cut` in `runtime.jl`).
+# object starts as one that has not run (see `field_cut` in `runtime/objects.jl`).
 @device_override @inline function (once::Base.OncePerProcess{T,F})() where {T,F}
     if (@atomic once.state) != 0x01
         once.value = once.initializer()

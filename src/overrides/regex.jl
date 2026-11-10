@@ -1,10 +1,10 @@
-# Regex: PCRE2 (a library that the program calls, see `libraries.jl`) matches, and the pieces of Base that are for threads are one thing here.
+# Regex: PCRE2 (a library that the program calls, see `runtime/libraries.jl`) matches, and the pieces of Base that are for threads are one thing here.
 #
 # * The context of a match (and the stack of the JIT) is one for the program, made when it is first needed: Base keeps one for each thread, in a
 #   global that is a `Vector`, with a lock for the one that adds to it (`get_local_match_context`).
 # * A `Regex` is compiled when it is first used (its `regex` field is null until then): the lock that Base takes for that is not needed.
 #   (A `Regex` that was compiled in the process that compiles the program has the address of the code of PCRE in it, which is not an address in
-#   the program: it is not copied, see `field_cut` in `runtime.jl`.)
+#   the program: it is not copied, see `field_cut` in `runtime/objects.jl`.)
 
 const MATCH_CONTEXT = Ref{Ptr{Cvoid}}(C_NULL)
 

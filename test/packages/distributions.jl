@@ -55,6 +55,9 @@ using Distributions
         check_cases([
   "MvNormal logpdf"   => () -> (d = MvNormal([0.0, 1.0], [2.0 0.3; 0.3 1.0]); r6(logpdf(d, [0.5, 0.5]))),
   "MvNormal mean"     => () -> (d = MvNormal([0.0, 1.0], [2.0 0.3; 0.3 1.0]); r6(sum(mean(d)) + sum(cov(d)))),
+  # OPEN: this one is refused when the code of Distributions is not inlined and folded by the compiler, as under `--code-coverage` (the CI job of the packages does not use it): it needs
+  # `getfield` with a name that is only known when the program runs, of fields of different types, and `hash` of a `Union` or `UnionAll` (see `src/runtime/types.jl`, `define_field_index!`,
+  # and `src/objectid.jl`)
   "MvNormal diag"     => () -> (d = MvNormal([0.0, 1.0], [2.0, 1.0]); r6(pdf(d, [0.5, 0.5]))),
   "MvNormal rand"     => () -> (rng = Random.Xoshiro(1); d = MvNormal([0.0, 1.0], [2.0 0.3; 0.3 1.0]); r6(sum(rand(rng, d)))),
   "Dirichlet"         => () -> (d = Dirichlet([1.0, 2.0, 3.0]); r6(pdf(d, [0.2, 0.3, 0.5]) + sum(mean(d)))),

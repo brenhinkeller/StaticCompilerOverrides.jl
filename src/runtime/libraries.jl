@@ -164,7 +164,7 @@ function resolve_library_lookups!(mod::LLVM.Module; libraries::Symbol = :system)
         handle = open_library(lib)
         (handle !== nothing && Libdl.dlsym_e(handle, name) != C_NULL) || continue
         if any(p -> startswith(base, p), LIBM_PREFIXES)
-            fn = haskey(fns, name) ? fns[name] : LLVM.Function(mod, name, LLVM.FunctionType(LLVM.VoidType()))
+            fn = declare!(mod, name, LLVM.FunctionType(LLVM.VoidType()))
             LLVM.replace_uses!(call, fn)
         else
             lib_index = register_library!(plan, lib, handle, libraries)

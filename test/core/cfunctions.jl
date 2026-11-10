@@ -1,4 +1,4 @@
-# `@cfunction`: C functions that call functions of the program (src/cfunctions.jl, src/cfunctions_link.jl), called by `qsort` and `bsearch` of the C library, and from Julia. The cases are
+# `@cfunction`: C functions that call functions of the program (src/cfunctions.jl, src/runtime/cfunctions_link.jl), called by `qsort` and `bsearch` of the C library, and from Julia. The cases are
 # compiled one by one: each program has its own targets.
 
 cov_cmp_ints(a::Ptr{Cint}, b::Ptr{Cint})::Cint = (x = unsafe_load(a); y = unsafe_load(b); x < y ? Cint(-1) : x > y ? Cint(1) : Cint(0))

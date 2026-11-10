@@ -9,33 +9,40 @@ using LLVM: LLVM
 @reexport using StaticCompiler: StaticTarget
 @reexport using StaticTools
 
+# The compiler: our method table and entry points, the type tags and the pipeline of LLVM passes
 include("overrides.jl") # Our method table, `@device_override`, and the entry points that use it
+include("tags.jl")      # The type tags of objects
+include("pipeline.jl")  # The LLVM pipeline of our compilations: vectorizers, tags
 
-include("tags.jl")     # The type tags of objects
-include("base.jl")     # Base methods that can be written to compile statically
-include("io.jl")       # Standard input and output
-include("context.jl")  # IOContext: streams with properties known when compiling
-include("show.jl")     # show of types and containers
-include("objectid.jl") # objectid, so that a struct can be the key of a Dict
-include("symbols.jl")  # Symbols that are made when the program runs
-include("iddict.jl")   # IdDict, and with it deepcopy
-include("dict.jl")     # Dicts made of pairs of different types
-include("deepcopy.jl") # deepcopy of any struct
-include("bignum.jl")   # BigInt and BigFloat
-include("regex.jl")    # Regex
-include("dispatch.jl") # dynamic dispatch on abstract types, by union splitting
-include("closures.jl") # calls of functions that are not known: closures in collections, in boxes
-include("cfunctions.jl") # @cfunction: C functions that call functions of the program
-include("diagnostics.jl") # Why an entry point does not infer to a concrete type
-include("gc.jl")       # The garbage collector, from the program
-include("finalizers.jl") # finalizer(f, x) of a Julia function
-include("printf.jl")   # Printf, for formats without `*`
-include("unicode.jl")  # Properties of characters, without utf8proc
-include("files.jl")     # Files
-include("filesystem.jl") # The file system, the environment, the process
-include("random.jl")   # Random number generation without tasks
-include("logging.jl")  # @warn, @info and @error, to the standard error
-include("testing.jl")  # Differential testing: compiled executable vs. ordinary Julia
+# The overrides of Base that make what it does compile, by what they are for
+include("overrides/base.jl")       # Base methods that can be written to compile statically
+include("overrides/io.jl")         # Standard input and output
+include("overrides/context.jl")    # IOContext: streams with properties known when compiling
+include("overrides/show.jl")       # show of types and containers
+include("overrides/printf.jl")     # Printf, for formats without `*`
+include("overrides/unicode.jl")    # Properties of characters, without utf8proc
+include("overrides/symbols.jl")    # Symbols that are made when the program runs
+include("overrides/objectid.jl")   # objectid, so that a struct can be the key of a Dict
+include("overrides/iddict.jl")     # IdDict, and with it deepcopy
+include("overrides/dict.jl")       # Dicts made of pairs of different types
+include("overrides/deepcopy.jl")   # deepcopy of any struct
+include("overrides/bignum.jl")     # BigInt and BigFloat
+include("overrides/regex.jl")      # Regex
+include("overrides/files.jl")      # Files
+include("overrides/filesystem.jl") # The file system, the environment, the process
+include("overrides/random.jl")     # Random number generation without tasks
+include("overrides/logging.jl")    # @warn, @info and @error, to the standard error
+include("overrides/gc.jl")         # The garbage collector, from the program
+include("overrides/finalizers.jl") # finalizer(f, x) of a Julia function
+
+# Inference: what the compiler does with calls that are not resolved by Julia
+include("inference/dispatch.jl")    # dynamic dispatch on abstract types, by union splitting
+include("inference/closures.jl")    # calls of functions that are not known: closures in collections, in boxes
+include("inference/cfunctions.jl")  # @cfunction: C functions that call functions of the program
+include("inference/diagnostics.jl") # Why an entry point does not infer to a concrete type
+
+# Testing programs: differential testing against Julia, and what the code of a program needs
+include("testing.jl")    # Differential testing: compiled executable vs. ordinary Julia
 
 export compile_executable, compile_shlib, static_code_llvm, static_code_typed, static_code_native,
        static_llvm_module, @device_override

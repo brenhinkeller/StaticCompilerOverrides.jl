@@ -11,7 +11,7 @@
 # own error helpers (which throw) are used. The functions below are StaticCompiler's entry points,
 # defaulting to this table. Pass `method_table = StaticCompiler.method_table` for the old behavior.
 
-include("runtime.jl") # The runtime functions that compiled code needs: allocation, exceptions, ...
+include("runtime/runtime.jl") # The runtime functions that compiled code needs: allocation, exceptions, ...
 using .Runtime: link_runtime!, UnsupportedCodeError
 
 # The parameters of the compilations of this package. GPUCompiler's functions that we specialize (`inference_params`,
@@ -64,7 +64,7 @@ function default_gc()
     return Sys.isapple() || Sys.islinux()
 end
 
-# The math library: on Linux its functions (`erfc`, which Julia code calls by name, see `libraries.jl`) are in `libm`, which is
+# The math library: on Linux its functions (`erfc`, which Julia code calls by name, see `runtime/libraries.jl`) are in `libm`, which is
 # not linked by default, as it is on macOS (where it is part of libSystem)
 default_cflags() = Sys.islinux() ? `-lm -ldl` : ``
 

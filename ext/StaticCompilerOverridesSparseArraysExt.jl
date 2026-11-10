@@ -30,22 +30,16 @@ function static_common(::Type{Int64})
     return common
 end
 
-@device_override function CHOLMOD.getcommon(::Type{Int32})
-    LibSuiteSparse.init_suitesparse()
-    common = COMMON32[]
-    if common === nothing
-        common = static_common(Int32)
-        COMMON32[] = common
-    end
-    return common::Common
-end
+common_cache(::Type{Int32}) = COMMON32
+common_cache(::Type{Int64}) = COMMON64
 
-@device_override function CHOLMOD.getcommon(::Type{Int64})
+@device_override function CHOLMOD.getcommon(::Type{T}) where {T<:Union{Int32,Int64}}
     LibSuiteSparse.init_suitesparse()
-    common = COMMON64[]
+    cache = common_cache(T)
+    common = cache[]
     if common === nothing
-        common = static_common(Int64)
-        COMMON64[] = common
+        common = static_common(T)
+        cache[] = common
     end
     return common::Common
 end

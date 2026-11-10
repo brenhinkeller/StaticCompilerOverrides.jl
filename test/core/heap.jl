@@ -1,4 +1,4 @@
-# The heap that allocation comes from, and the garbage collector (src/heap.jl): the allocators themselves, on the host, what they do to programs, and what the runtime does with
+# The heap that allocation comes from, and the garbage collector (src/runtime/heap.jl): the allocators themselves, on the host, what they do to programs, and what the runtime does with
 # the memory of a program (the header of its objects, sizes that are refused, the limit of the stack).
 
 const Heap = StaticCompilerOverrides.Runtime.Heap

@@ -65,46 +65,8 @@ CC.findsup(@nospecialize(sig::Type), table::OverridesTableView) = CC.findsup(sig
 GPUCompiler.method_table_view(job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}) =
     OverridesTableView(@invoke GPUCompiler.method_table_view(job::GPUCompiler.CompilerJob))
 
-# GPUCompiler runs the loop and SLP vectorizers only for the jobs that say they can (`can_vectorize`, false by default: it is true for its native and GPU
-# targets, and not for StaticCompiler's). Without them a loop with `@simd` is not vectorized, nor its reduction reordered, so the result of `sum`, `dot` and
-# the like is that of a plain loop: different in the last digits from what Julia gives (which uses the vectorizer) and less accurate. Our jobs
-# (the type of the parameters is ours) run them, as Julia does.
-GPUCompiler.can_vectorize(::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}) = true
-
-# The passes of the vectorizers of GPUCompiler (`buildVectorPipeline`) without the SLP vectorizer: that of the LLVM of Julia 1.14 crashes the process (a null
-# pointer in `BoUpSLP::getTreeCost`) on some of the code that is compiled, which showed with `--check-bounds=yes` (what CI uses) and the code of `show` for arrays. The loop
-# vectorizer is what makes the reductions of `@simd` loops those of Julia (the SLP vectorizer makes none of them), and is kept. (Only if the functions of GPUCompiler that this
-# is made of are there: else the pipeline is GPUCompiler's own.)
-@static if all(name -> isdefined(GPUCompiler, name), (:buildVectorPipeline, :simplifycfg_pass, :instcombine_pass, :AggressiveSimplifyCFGOptions))
-    function GPUCompiler.buildVectorPipeline(fpm, job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}, opt_level)
-        LLVM.add!(fpm, LLVM.LoopPassManager()) do lpm
-            LLVM.add!(lpm, LLVM.LoopRotatePass())
-            LLVM.add!(lpm, LLVM.LoopDeletionPass())
-        end
-        LLVM.add!(fpm, LLVM.LoopDistributePass())
-        LLVM.add!(fpm, LLVM.InjectTLIMappings())
-        LLVM.add!(fpm, LLVM.LoopVectorizePass())
-        LLVM.add!(fpm, LLVM.LoopLoadEliminationPass())
-        LLVM.add!(fpm, GPUCompiler.simplifycfg_pass(job, GPUCompiler.AggressiveSimplifyCFGOptions))
-        LLVM.add!(fpm, LLVM.LoopPassManager(; use_memory_ssa = true)) do lpm
-            LLVM.add!(lpm, LLVM.LICMPass())
-        end
-        LLVM.add!(fpm, LLVM.EarlyCSEPass())
-        LLVM.add!(fpm, LLVM.CorrelatedValuePropagationPass())
-        LLVM.add!(fpm, GPUCompiler.instcombine_pass(job))
-        LLVM.add!(fpm, LLVM.VectorCombinePass())
-        LLVM.add!(fpm, LLVM.LoopUnrollPass(; opt_level))
-        LLVM.add!(fpm, LLVM.SROAPass(; preserve_cfg = true))
-        LLVM.add!(fpm, LLVM.InstSimplifyPass())
-    end
-end
-
-# (the interpreter has the view in a cache, `CachedMethodTable`, when the compiler has one)
-const OverridesInterpreter = @static if isdefined(CC, :CachedMethodTable)
-    GPUCompiler.GPUInterpreter{<:Union{OverridesTableView, CC.CachedMethodTable{<:OverridesTableView}}}
-else
-    GPUCompiler.GPUInterpreter{<:OverridesTableView}
-end
+# (the interpreter has the view in a cache, `CachedMethodTable`)
+const OverridesInterpreter = GPUCompiler.GPUInterpreter{<:Union{OverridesTableView, CC.CachedMethodTable{<:OverridesTableView}}}
 
 ## the types that are registered: those of `show` (`add_show_candidates!`), which are the types that a value of `Any` is expected to have
 

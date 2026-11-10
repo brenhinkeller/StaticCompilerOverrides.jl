@@ -179,7 +179,7 @@ end
 
 # `T == S` of types is a call of libjulia (`jl_types_equal`). Two types are equal if each is a subtype of the other: for concrete types,
 # which there is one object of each, that is `===`, and that is all that has to be looked at when both are concrete. (Types that are not,
-# a `Union` or an abstract type with parameters, are compared by `<:`: the table of `<:` in `runtime.jl`.)
+# a `Union` or an abstract type with parameters, are compared by `<:`: the table of `<:` in `runtime/types.jl`.)
 @device_override function Base.:(==)(a::Type, b::Type)
     a === b && return true
     (a isa DataType && b isa DataType && isconcretetype(a) && isconcretetype(b)) && return false
@@ -188,4 +188,8 @@ end
 
 # `hash` of a type is made from `jl_type_hash`, which for a `DataType` is its `hash` field, as `objectid` is (above). The other types (a
 # `Union`, a `UnionAll`) have it computed from what they are made of, which is libjulia's, and so is as it was.
+#
+# OPEN: a program that hashes one of those is refused when compiling (`jl_type_hash` is a call that needs libjulia). It is reached only when the code that hashes is not folded
+# by the compiler: Distributions' `MvNormal` with a diagonal covariance does it under `--code-coverage` (which stops Julia from inlining and constant-folding the code of
+# packages), and not otherwise; see `test/packages/distributions.jl`. Computing the hash of a `Union` or a `UnionAll` here (from the hashes of its parts, as libjulia does) would end it.
 @device_override Base._jl_type_hash(T::Type) = T isa DataType ? UInt(getfield(T, :hash) % UInt32) : ccall(:jl_type_hash, UInt, (Any,), T)

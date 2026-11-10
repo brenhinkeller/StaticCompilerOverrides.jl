@@ -2,7 +2,7 @@
 # frees what is not used any more.
 #
 # This is written in Julia, over raw pointers, and compiled with StaticCompiler like any other code (once for the
-# session, and the code is cached: see `link_heap!` in `runtime.jl`). It must not allocate, throw or dispatch
+# session, and the code is cached: see `link_heap!` in `heap_link.jl`). It must not allocate, throw or dispatch
 # dynamically: that is what the pipeline itself checks. Its state is in a global of its own (an LLVM global, and not a
 # Julia object, which would be an address in this process: it has to be in the module as it is).
 #

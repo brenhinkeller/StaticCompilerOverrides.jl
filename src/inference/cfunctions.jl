@@ -1,7 +1,7 @@
 # `@cfunction`: a pointer to a function of the program that C can call (a comparison function for `qsort`, the callback of a library).
 #
 # What Julia makes of it is a wrapper that asks the runtime for the compiled method (`jl_get_abi_converter`), which a program does not have, and until it is there calls the
-# function by dispatch (see cfunctions_link.jl, where it is made to call the method). The method is not part of the program if nothing calls it: so the code is compiled
+# function by dispatch (see runtime/cfunctions_link.jl, where it is made to call the method). The method is not part of the program if nothing calls it: so the code is compiled
 # again with a function for each `@cfunction` that calls it, `cfunction_target_ID(arguments...)`, and that is called from the entry point where it can't be reached.
 # Inference says what the `@cfunction`s of the program are (the function, the types of the arguments and of the result), as for the functions of closures.jl.
 

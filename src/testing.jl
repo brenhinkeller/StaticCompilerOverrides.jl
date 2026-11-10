@@ -13,15 +13,18 @@ as_int(x::Float32) = Int(reinterpret(UInt32, x))
 module Wrappers using StaticTools end # holds the generated, uniquely named `main` functions
 const wrapper_counter = Ref(0)
 
-# a named `main(argc, argv)` that prints `as_int(f())`; compiled entry points need real names
-function make_main(f)
-    name = Symbol(:static_main_, wrapper_counter[] += 1)
+# A `main(argc, argv)` that runs the statements `body`, with a name that is `prefix` and a number (compiled entry points need real names, that are not those of other programs)
+function define_main(prefix::Symbol, body::Vector)
+    name = Symbol(prefix, wrapper_counter[] += 1)
     Core.eval(Wrappers, :(function $name(argc::Int, argv::Ptr{Ptr{UInt8}})
-        printf(c"%ld\n", $as_int($f()))
+        $(body...)
         return 0
     end))
     return Base.invokelatest(getproperty, Wrappers, name)
 end
+
+# a `main(argc, argv)` that prints `as_int(f())`
+make_main(f) = define_main(:static_main_, Any[:(printf(c"%ld\n", $as_int($f())))])
 
 """
     static_result(f; kwargs...) -> Int
@@ -89,16 +92,11 @@ end
 
 # A `main` that runs each of `fs` in turn, writing a line with the number of the case (to the standard output, and to the standard error) before it, and the result after
 function make_batch_main(fs)
-    name = Symbol(:static_batch_, wrapper_counter[] += 1)
-    body = Expr[]
+    body = Any[]
     for (i, f) in enumerate(fs)
         push!(body, :(printf(c"@@case %ld@@\n", $i)), :(printf($STDERR, c"@@case %ld@@\n", $i)), :(printf(c"%ld\n", $as_int($f()))))
     end
-    Core.eval(Wrappers, :(function $name(argc::Int, argv::Ptr{Ptr{UInt8}})
-        $(body...)
-        return 0
-    end))
-    return Base.invokelatest(getproperty, Wrappers, name)
+    return define_main(:static_batch_, body)
 end
 
 # what each of `fs` writes in this process, in the same form as the batch program writes it (see `make_batch_main`): the text of the standard output and of the standard error for each
@@ -175,11 +173,9 @@ macro static_test(ex)
     end
 end
 
-const LIBC_SYMBOLS = Set(["malloc", "calloc", "free", "puts", "exit", "printf", "memcpy", "memmove",
-                          "memset", "memcmp", "strlen", "fwrite", "fputs", "abort", "sigsetjmp", "siglongjmp",
-                          "getentropy", "fopen", "fclose", "fread", "fputc", "fgetc", "ungetc", "fseek", "ftell",
-                          "fflush", "fprintf", "usleep", "getc", "putc", "__stdoutp", "__stderrp", "__stdinp", "stdout",
-                          "stderr", "stdin"])
+# The symbols that a program may leave to the C library: the functions that `ccall` by name resolves to it (`Runtime.LIBC_FUNCTIONS`), and the ones that the runtime and the files call
+const LIBC_SYMBOLS = union(Runtime.LIBC_FUNCTIONS, ["printf", "fprintf", "sigsetjmp", "siglongjmp", "fopen", "fclose", "fgetc", "ungetc", "fseek", "ftell", "getc", "putc",
+                                                    "__stdoutp", "__stderrp", "__stdinp", "stdout", "stderr", "stdin"])
 
 """
     undefined_symbols(f, types; allow = LIBC_SYMBOLS) -> Vector{String}

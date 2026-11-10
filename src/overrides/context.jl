@@ -113,10 +113,6 @@ Base.IOContext(io::ShowStream, ::ShowStream) = io
 @device_override Base.IOContext(io::IOBuffer, context::ShowStream) = IOContext(BufIO(io), context)
 
 typeinfo_io(io::ShowStream, ::Type{T}) where {T} = with_property(io, Val(:typeinfo), Val(T))
-# the stream for the elements of `v`, which is what `show_vector` and the others of Base make with `IOContext`
-@generated function elements_io(io, ::V) where {V}
-    return :(typeinfo_io(io, $(eltype(V))))
-end
 
 ## `sprint(f, args...)` (and `repr(x)`, which is `sprint(show, x)`) writes to a `BufIO` instead of an `IOBuffer`, with the context that the keyword `context`
 ## gives it: the properties of another stream (they are copied), or a `Pair` or a tuple of them

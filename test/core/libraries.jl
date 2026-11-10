@@ -130,7 +130,7 @@ using Libdl
     end
 end
 
-# Functions that are called by the name of a library (src/libraries.jl): libm's, and the ones of a library that is loaded when the program runs, from the path that it had when compiling
+# Functions that are called by the name of a library (src/runtime/libraries.jl): libm's, and the ones of a library that is loaded when the program runs, from the path that it had when compiling
 const TEST_MPFR = Libdl.LazyLibrary("libmpfr")
 mpfr_version() = unsafe_string(ccall((:mpfr_get_version, TEST_MPFR), Cstring, ()))
 const TEST_LIBM = Libdl.LazyLibrary(Base.libm_name)

@@ -251,7 +251,7 @@ end
 
 ## `memrchr` is not in the C library of macOS (Julia's own is in libjulia)
 
-@device_override function Base.memrchr(a::Base.DenseUInt8, b::UInt8, i::Int)
+function memrchr_loop(a, b, i::Int)
     fst = firstindex(a)
     j = i
     while j >= fst
@@ -260,15 +260,8 @@ end
     end
     return nothing
 end
-@device_override function Base.memrchr(a::Base.DenseInt8, b::Int8, i::Int)
-    fst = firstindex(a)
-    j = i
-    while j >= fst
-        @inbounds a[j] == b && return j
-        j -= 1
-    end
-    return nothing
-end
+@device_override Base.memrchr(a::Base.DenseUInt8, b::UInt8, i::Int) = memrchr_loop(a, b, i)
+@device_override Base.memrchr(a::Base.DenseInt8, b::Int8, i::Int) = memrchr_loop(a, b, i)
 
 ## `Threads.@threads`: the program has one thread, so the loop runs on it, in order (a loop that has no race gives what it gives with more)
 

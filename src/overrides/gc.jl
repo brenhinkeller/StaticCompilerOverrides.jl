@@ -1,6 +1,6 @@
 # The garbage collector, from the program: `GC.gc()` and `GC.enable`, and what the heap can tell about itself.
 #
-# The heap (`heap.jl`) is reached through `static_alloc(size, kind)`, which is what allocates; a negative size is a
+# The heap (`runtime/heap.jl`) is reached through `static_alloc(size, kind)`, which is what allocates; a negative size is a
 # command (see `Heap.command`). These are the calls of a program that is compiled; none of them can be called in Julia.
 
 heap_command(command::Int) = UInt(@symbolcall static_alloc(command::Int, 0::Int)::Ptr{UInt8})
