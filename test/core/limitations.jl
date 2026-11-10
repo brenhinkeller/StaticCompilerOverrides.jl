@@ -50,7 +50,6 @@ end
 @testset "Compiled, and failing when run" begin
     cases = [
         "Markdown"                    => () -> length(string(Markdown.parse(opaque("# a")))),
-        "Mmap"                        => () -> (p = tempname(); write(p, "abc"); a = Mmap.mmap(p); Int(a[1])),
     ]
     for (name, f) in cases
         @testset "$name" begin

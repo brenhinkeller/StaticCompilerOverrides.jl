@@ -627,6 +627,7 @@ const LIBC_FUNCTIONS = Set([
     "usleep", "nanosleep", "atexit", "clock_gettime", "time", "getentropy", "gettimeofday", "localtime_r", "gmtime_r",
     "stat", "lstat", "stat\$INODE64", "lstat\$INODE64", "access", "mkdir", "rmdir", "unlink", "rename", "opendir", "readdir", "closedir", "getcwd", "chdir", "realpath",
     "mkstemp", "mkdtemp", "fdopen", "getpid", "setenv", "unsetenv", "strerror", "close", "__error", "__errno_location",
+    "open", "lseek", "ftruncate", "mmap", "munmap", "getpagesize", "msync",
     # libm
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "asinh", "acosh",
     "atanh", "exp", "exp2", "expm1", "log", "log2", "log10", "log1p", "pow", "sqrt", "cbrt", "hypot",

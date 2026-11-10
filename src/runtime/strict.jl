@@ -38,6 +38,31 @@ function define_aborting!(mod::LLVM.Module, fn::LLVM.Function, msg::AbstractStri
     return
 end
 
+# Calls of runtime functions that have nothing to do in a program, and are dropped (instead of refusing the code that has them):
+# * the construction of an `Expr` whose result is not used (`Expr(:meta, :noinline)` is written as a statement in some packages, as a hint that Julia reads from the code, and is not removed
+#   when it is compiled);
+# * the warning about a deprecated binding (`Base.@deprecate_binding`), which like `Base.depwarn` (see `src/overrides/base.jl`) is not shown by a program.
+const DROPPED_WHEN_UNUSED = ("jl_f__expr", "ijl_f__expr")
+const DROPPED_ALWAYS = ("jl_binding_depwarn", "ijl_binding_depwarn")
+
+function drop_ignorable_calls!(mod::LLVM.Module)
+    fns = LLVM.functions(mod)
+    dead = LLVM.Instruction[]
+    for (names, only_unused) in ((DROPPED_WHEN_UNUSED, true), (DROPPED_ALWAYS, false)), name in names
+        haskey(fns, name) || continue
+        for use in LLVM.uses(fns[name])
+            call = LLVM.user(use)
+            call isa LLVM.CallInst || continue
+            only_unused && !isempty(collect(LLVM.uses(call))) && continue
+            push!(dead, call)
+        end
+    end
+    for call in dead
+        LLVM.erase!(call)
+    end
+    return !isempty(dead)
+end
+
 # the Julia function that an instruction belongs to, as a readable name
 function function_of(inst::LLVM.Instruction)
     name = LLVM.name(LLVM.parent(LLVM.parent(inst)))

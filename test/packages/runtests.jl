@@ -7,8 +7,8 @@
 @isdefined(check_cases) || include(joinpath(@__DIR__, "..", "helpers.jl"))
 include_timed("common.jl")
 
-const STDLIBS = ["linearalgebra", "sparsearrays", "statistics", "dates", "printf", "logging", "encoding", "sha", "uuids", "sockets"]
-const PACKAGES_TESTED = ["distributions", "nanstatistics", "statsbase", "mpi"]
+const STDLIBS = ["linearalgebra", "sparsearrays", "statistics", "dates", "printf", "logging", "encoding", "sha", "uuids", "sockets", "mmap"]
+const PACKAGES_TESTED = ["distributions", "nanstatistics", "statsbase", "datastructures", "mpi"]
 const ALL = [STDLIBS; PACKAGES_TESTED]
 selected = get(ENV, "PACKAGES", "")
 selected = isempty(selected) ? ALL : [lowercase(strip(s)) for s in split(selected, ',')]

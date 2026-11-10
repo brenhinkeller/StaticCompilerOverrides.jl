@@ -64,6 +64,7 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     link_cfunctions!(mod) && run!(GlobalDCEPass(), mod)
     blas = resolve_blas_lookups!(mod) # (before what they are given is embedded)
     library_plan = resolve_library_lookups!(mod; libraries)
+    drop_ignorable_calls!(mod)
     define_field_index!(mod)
     define_subtype_builtins!(mod)
     null_methoderror_arguments!(mod)

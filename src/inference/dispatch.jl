@@ -303,3 +303,33 @@ function CC.optimize(interp::OverridesInterpreter, opt::CC.OptimizationState, ca
     end
     return @invoke CC.optimize(interp::CC.AbstractInterpreter, opt::CC.OptimizationState, caller::CC.InferenceResult)
 end
+
+## Fields of `Union{T,Nothing}`
+#
+# `node.next.value` where `node.next::Union{Node,Nothing}`: Julia splits the calls on the union when it inlines them, but the code that it inlines keeps using the value of the union, so it reads
+# `getfield(x, :value)` of `x::Union{Node,Nothing}`, which is compiled as a call of the runtime (`jl_f_getfield`: it looks at the type of `x` and then at its fields). The part of the union that is
+# not `Nothing` is the only one that has the field, so the value is asserted to be that type first: if it is `nothing` the program stops, as it does in Julia (with a `FieldError`).
+const FIELD_BUILTINS = (Core.getfield, Core.setfield!)
+
+function CC.finishopt!(interp::OverridesInterpreter, opt::CC.OptimizationState, ir::CC.IRCode)
+    ir = assert_field_receivers!(ir)
+    return @invoke CC.finishopt!(interp::CC.AbstractInterpreter, opt::CC.OptimizationState, ir::CC.IRCode)
+end
+
+function assert_field_receivers!(ir::CC.IRCode)
+    changed = false
+    for pc in 1:length(ir.stmts)
+        st = ir.stmts[pc][:stmt]
+        st isa Expr && st.head === :call && length(st.args) >= 3 || continue
+        CC.singleton_type(CC.argextype(st.args[1], ir)) in FIELD_BUILTINS || continue
+        receiver = CC.widenconst(CC.argextype(st.args[2], ir))
+        receiver isa Union || continue
+        parts = filter(T -> !(T === Nothing || T === Missing), Base.uniontypes(receiver))
+        length(parts) == 1 && isconcretetype(only(parts)) && length(Base.uniontypes(receiver)) > 1 || continue
+        T = only(parts)
+        checked = CC.insert_node!(ir, pc, CC.NewInstruction(Expr(:call, Core.typeassert, st.args[2], T), T), false)
+        st.args[2] = checked
+        changed = true
+    end
+    return changed ? CC.compact!(ir) : ir
+end

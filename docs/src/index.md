@@ -718,6 +718,10 @@ Compiled and compared with Julia in the survey (the results rounded to 6 digits,
   `zscore` and `ZScoreTransform`, `sample` and `wsample` (with and without replacement, weighted) with a generator that is given, ... The one that doesn't: `summarystats` (it splats a
   `Vector` of a length that is not known into a constructor, `SummaryStats(m, sd, qs..., n)`).
 
+* **DataStructures.jl**: 47 of 47 cases of the survey: `Stack`, `Queue`, `Deque`, `CircularBuffer`, `CircularDeque`, `MutableLinkedList`, `list`; `BinaryHeap` (min, max, custom order, mutable), `PriorityQueue`;
+  `DefaultDict`, `counter`, `OrderedDict`, `OrderedSet`, `RobinDict`, `SwissDict`, `MultiDict`, `SparseIntSet`; `SortedDict`, `SortedSet`, `SortedMultiDict` (with semitokens and ranges); `IntDisjointSet`,
+  `DisjointSet`, `FenwickTree`; and the balanced trees `AVLTree`, `RBTree` and `SplayTree`, whose nodes keep `Union{Node,Nothing}` fields. The methods that DataStructures has deprecated still work (the warning is not in the program).
+
 * **[Thermochron.jl](https://github.com/brenhinkeller/Thermochron.jl)** (forward models; 19 cases in the survey): helium diffusion (`SphericalHe`, `PlanarHe`, `ZirconHe`, `ApatiteHe` with RDAAM and ZRDAAM
   annealing, `SphericalAr`), fission track ages (`ZirconFT`, `ApatiteFT` with the Ketcham and Yamada/Guenthner models), vitrinite reflectance with a `NielsenBasinRo` that is a constant, and
   `model!` over a `Vector` of one concrete type of chronometer (`Vector{ApatiteHe{...}}`), with the chronometers built when compiling or by the program. Not yet: `model!` over a vector
@@ -762,10 +766,10 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 
 **Standard libraries** (a survey of them is kept in `test/packages`, and what does not work, and what happens then, in `test/core/limitations.jl`)
 
-* Work: Base64 (of a string or bytes), CRC32c, SHA, UUIDs (`uuid4()` too), `Random.RandomDevice`, Statistics, Random, Printf, Logging (`NullLogger`), Dates, SparseArrays (with the factorizations), most of LinearAlgebra (`exp`, `sqrt`, `log` and powers of a matrix, `eigen`, `svd`, `qr`,
+* Work: Base64 (of a string or bytes), CRC32c, SHA, UUIDs (`uuid4()` too), `Random.RandomDevice`, Mmap (`Mmap.mmap(path, Vector{T}, dims, offset)`: the memory is not unmapped before the program ends), Statistics, Random, Printf, Logging (`NullLogger`), Dates, SparseArrays (with the factorizations), most of LinearAlgebra (`exp`, `sqrt`, `log` and powers of a matrix, `eigen`, `svd`, `qr`,
   `cholesky`, `lu`, `schur`, `ordschur`, `hessenberg`, `inv`, `det`, `\`, `opnorm`, ...), Sockets' address types, and the file system (see [The file system](@ref)).
 * Do not: `Unicode.normalize`, `graphemes` and `isequal_normalized` (the tables are in libjulia's copy of utf8proc, which is not a library of its own); `readdlm` / `writedlm`; `@time` and `@allocated` (use `@elapsed`);
-  `TOML.parse` (the parser keeps a `Module`); `Markdown` and `Mmap` compile, and stop when they are run; `Test` (`@test` and `@testset`); `with_logger` with a logger other than `NullLogger`; starting other programs;
+  `TOML.parse` (the parser keeps a `Module`); `Markdown` compiles, and stops when it is run (its parser needs Julia's own); `Mmap` of an open stream, and anonymous ones (only the files that are named by their path are mapped); `Test` (`@test` and `@testset`); `with_logger` with a logger other than `NullLogger`; starting other programs;
   `Base64` of anything but a string or bytes; `atexit` (the function would not be run, so the program stops when it is registered, except for SuiteSparse's own).
 
 **Threads, tasks and `eval`**

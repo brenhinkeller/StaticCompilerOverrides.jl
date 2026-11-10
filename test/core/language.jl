@@ -40,3 +40,28 @@ deprecated_new(n) = n + 100
     # (the warning of a deprecated method, and the options of the Julia that runs, are not in the program)
     @test static_result(() -> deprecated_old(Base.inferencebarrier(1))) == 101
 end
+
+# Fields of values that may be `nothing`: `node.next.value` where `next::Union{Node,Nothing}`, read and written (an error where it is `nothing`, which stops the program as it does Julia)
+mutable struct LNode; v::Int; next::Union{LNode,Nothing}; end
+@noinline make_lnode(a) = LNode(a, LNode(2, LNode(3, nothing)))
+@noinline lnode_get(n::LNode) = n.next.next.v
+@noinline lnode_set!(n::LNode) = (n.next.v = 50; n.next.next.v += 1; n.v + n.next.v + n.next.next.v)
+@noinline lnode_nothing(n::LNode) = n.next.next.next.v
+@testset "Fields of a `Union{Node,Nothing}`" begin
+    check_cases([
+        "read through the union"  => () -> lnode_get(make_lnode(opaque(1))),
+        "write through the union" => () -> lnode_set!(make_lnode(opaque(1))),
+        "a loop over a list"      => () -> (n = make_lnode(opaque(1)); s = 0; c = n; while c !== nothing; s += c.v; c = c.next; end; s),
+    ])
+    @test static_status(() -> lnode_nothing(make_lnode(opaque(1))))[1] == :runtime_error # (a field of `nothing`: it is an error, in Julia and here)
+end
+
+# A deprecated binding, and an `Expr` that is built and not used (`Expr(:meta, :noinline)` as a statement), are not in the program
+const NEW_BINDING = 41
+Base.@deprecate_binding OLD_BINDING NEW_BINDING
+@noinline unused_expr(x) = (Expr(:meta, :noinline); x + 1)
+@testset "What is dropped from a program" begin
+    check_cases(["an Expr that is not used" => () -> unused_expr(opaque(1))])
+    # (Julia warns, once, when the binding is used: the program does not)
+    @test static_result(() -> OLD_BINDING + opaque(1)) == 42
+end

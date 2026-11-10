@@ -197,6 +197,14 @@ const CLOCK_MONOTONIC = Sys.isapple() ? Int32(6) : Int32(1)
 # there is nothing to do.
 @device_override Base._assert_tostring(msg::String) = msg
 
+# A field of `x::Union{Node,Nothing}` (`node.next.value`, `node.next.value = 1`) is an error where `x` is `nothing`. `setproperty!` has one method for all types, which finds the type of the field
+# with `fieldtype(typeof(x), f)`: that is dynamic for a union, and so is `getfield(x, f)`, which Julia compiles as a call of the runtime. With a method for `Nothing` (and `Missing`)
+# the call is split by the type, and each part has a type that is known: the error where it is `nothing`, the field where it is a `Node`.
+for T in (Nothing, Missing)
+    @eval @device_override Base.getproperty(x::$T, f::Symbol) = throw(Base.FieldError($T, f))
+    @eval @device_override Base.setproperty!(x::$T, f::Symbol, v) = throw(Base.FieldError($T, f))
+end
+
 # Deprecation warnings (`Base.depwarn`, which packages call from the methods that are deprecated) look at the options of the
 # Julia that runs (`JLOptions()`, `--depwarn`), which a program does not have; and are not shown by default: nothing is done
 @device_override Base.depwarn(msg, funcsym; force::Bool = false) = nothing
