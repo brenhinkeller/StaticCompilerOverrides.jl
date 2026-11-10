@@ -36,9 +36,6 @@ const REFUSAL = r"Julia runtime|by their address|does not infer to a concrete ty
         "starting another program"    => () -> (run(`true`); 0),
         "TOML.parse"                  => () -> length(TOML.parse(opaque("a = 1"))),
         "a function that atexit calls, with state" => () -> (x = opaque(1); atexit(() -> println(x)); 0),
-        # the entropy of the system, read with libuv
-        "RandomDevice"                => () -> rand(Random.RandomDevice(), UInt8) * 0 + 1,
-        "uuid4 without a generator"   => () -> Int(uuid_version(uuid4())),
     ]
     for (name, f) in cases
         @testset "$name" begin

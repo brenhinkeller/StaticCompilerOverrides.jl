@@ -38,6 +38,21 @@ end
     return x
 end
 
+# `Random.RandomDevice` (and with it `uuid4()`) reads the entropy of the system with `Libc.getrandom!`, which is libuv's `uv_random`. `getentropy` gives at most 256 bytes at a call.
+@device_override function Libc.getrandom!(A::Union{Array,Base.RefValue})
+    p = Ptr{UInt8}(pointer_from_objref(A))
+    A isa Array && (p = Ptr{UInt8}(pointer(A)))
+    n = sizeof(A)
+    GC.@preserve A while n > 0
+        m = min(n, 256)
+        ok = @symbolcall getentropy(p::Ptr{UInt8}, UInt(m)::UInt)::Int32
+        ok == 0 || error("could not get entropy from the system")
+        p += m
+        n -= m
+    end
+    return A
+end
+
 # `seed!(seed)` also records the seed in `task_local_storage()` (an `IdDict` on the current
 # task), for `@testset` to restore. There are no tasks, so record it in a global.
 const STATIC_TLS_SEED = Random.Xoshiro(0, 0, 0, 0, 0)

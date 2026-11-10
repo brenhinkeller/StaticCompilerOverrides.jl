@@ -762,10 +762,10 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 
 **Standard libraries** (a survey of them is kept in `test/packages`, and what does not work, and what happens then, in `test/core/limitations.jl`)
 
-* Work: Base64 (of a string or bytes), CRC32c, SHA, UUIDs, Statistics, Random, Printf, Logging (`NullLogger`), Dates, SparseArrays (with the factorizations), most of LinearAlgebra (`exp`, `sqrt`, `log` and powers of a matrix, `eigen`, `svd`, `qr`,
+* Work: Base64 (of a string or bytes), CRC32c, SHA, UUIDs (`uuid4()` too), `Random.RandomDevice`, Statistics, Random, Printf, Logging (`NullLogger`), Dates, SparseArrays (with the factorizations), most of LinearAlgebra (`exp`, `sqrt`, `log` and powers of a matrix, `eigen`, `svd`, `qr`,
   `cholesky`, `lu`, `schur`, `ordschur`, `hessenberg`, `inv`, `det`, `\`, `opnorm`, ...), Sockets' address types, and the file system (see [The file system](@ref)).
 * Do not: `Unicode.normalize`, `graphemes` and `isequal_normalized` (the tables are in libjulia's copy of utf8proc, which is not a library of its own); `readdlm` / `writedlm`; `@time` and `@allocated` (use `@elapsed`);
-  `TOML.parse` (the parser keeps a `Module`); `Random.RandomDevice` (it reads the entropy of the system with libuv), so `uuid4()` needs a generator (`uuid4(rng)`); `Markdown` and `Mmap` compile, and stop when they are run; `Test` (`@test` and `@testset`); `with_logger` with a logger other than `NullLogger`; starting other programs;
+  `TOML.parse` (the parser keeps a `Module`); `Markdown` and `Mmap` compile, and stop when they are run; `Test` (`@test` and `@testset`); `with_logger` with a logger other than `NullLogger`; starting other programs;
   `Base64` of anything but a string or bytes; `atexit` (the function would not be run, so the program stops when it is registered, except for SuiteSparse's own).
 
 **Threads, tasks and `eval`**
@@ -810,8 +810,8 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 * **Files** are libc streams: `eachline` of a file closes it only when the loop reaches the end (not on `break`), `seek` and
   `skip` don't report errors, `open` takes only a C `fopen` mode, and the keyword arguments of `readline` and `eachline` (`keep = true`)
   are not supported. The file system (`isfile`, `mkdir`, `readdir`, ...) and sockets are not available.
-* **`rand` without a seed** gets its state from the operating system (`getentropy`); if that fails, from fixed words, so then it is
-  always the same stream.
+* **`rand` without a seed** gets its state from the operating system (`getentropy`); if that fails the first `rand()` throws, rather than
+  giving the same stream each time. `RandomDevice` and `uuid4()` read `getentropy` at each call.
 * The output is **unbuffered beyond libc's**: `print` and `println` write through `FILE*`, which libc flushes when the program exits
   (not if it crashes).
 
