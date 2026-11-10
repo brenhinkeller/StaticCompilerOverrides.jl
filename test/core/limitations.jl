@@ -3,6 +3,10 @@
 # part of the language or of the library that it belongs to, and change the manual (the section "Known limitations"); if something that was refused now compiles and does not work, that is
 # worse than the refusal.
 
+# a tuple that has a `Union` as an element, and that is not removed by inlining (here it is returned by a function that is not inlined): it is made with the types that its values have when the
+# program runs, which an executable can't make. (When the function is inlined the tuple is not made: see `inline_tupleret_bonus` in `src/inference/dispatch.jl`.)
+@noinline union_tuple(n::Int) = (n > 0 ? [1.0] : [1.0im], n)
+
 @noinline recurse_forever(n::Int) = n == 0 ? 0 : 1 + recurse_forever(n - 1)
 @noinline function nested_try(n::Int, v::Vector{Int}) # (the recursion is not a loop that the compiler can make: a value is kept after each call)
     n == 0 && return 0
@@ -25,6 +29,8 @@ const REFUSAL = r"Julia runtime|by their address|does not infer to a concrete ty
         "Threads.@spawn and fetch"    => () -> fetch(Threads.@spawn 1 + 1),
         "a Channel"                   => () -> (c = Channel{Int}(2); put!(c, 1); take!(c)),
         "a Task that is scheduled"    => () -> (t = Task(() -> 1); schedule(t); wait(t); 1),
+        # a tuple that has an element of a `Union` of types, and is made when the program runs
+        "a tuple with a Union element, not inlined" => () -> (p = union_tuple(opaque(1)); p[2] * 10 + length(p[1])),
         # code that is made when the program runs
         "eval"                        => () -> Core.eval(Main, :(1 + 1)),
         # functions of the libraries that Julia has (utf8proc) and does not have as libraries of their own
@@ -46,7 +52,9 @@ const REFUSAL = r"Julia runtime|by their address|does not infer to a concrete ty
     end
 end
 
-# these compile, and stop when they are run (the exit status says so; and the manual lists them as not supported)
+# these compile, and stop when they are run (the exit status says so; and the manual lists them as not supported). `Markdown.parse` is a parser that is a list of functions, for blocks and for
+# text in a line, and the parser of the Julia language for the code and the `$` that it finds: the list of functions is not found by the registry of closures (the functions of the standard
+# libraries are not collected), and Julia's parser is in libjulia.
 @testset "Compiled, and failing when run" begin
     cases = [
         "Markdown"                    => () -> length(string(Markdown.parse(opaque("# a")))),

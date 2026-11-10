@@ -96,17 +96,20 @@ compile_executable(main, (Vector{String},), "build", "crc")
 
 What compiles to a standalone binary (the arguments of the command line included), and is checked against Julia in the tests:
 
-* **The language and Base**: allocating code (`Vector`, `Dict` including mixed key and value types, `Set`, `String`, `Symbol` including `Symbol(string)` made at run time, closures, structs, tuples),
-  `try`/`catch`/`finally`, non-`const` global variables, `deepcopy`, `IdDict`, `rand`, files and the standard input, and logging (`@warn` and friends).
+* **The language and Base**: allocating code (`Vector`, `Dict` including mixed key and value types, `Set`, `String`, `Symbol` including `Symbol(string)` made at run time, structs, tuples, fields of a `Union{Node,Nothing}`),
+  closures (also stored in collections and called through them), `@cfunction` callbacks (`qsort`, `bsearch`, ...), `try`/`catch`/`finally`, non-`const` global variables, `deepcopy`, `IdDict`, `rand` and `RandomDevice`,
+  files and the standard input, and logging (`@warn` and friends).
 * **Printing**: `print`, `println`, `show`, `display` and `text/plain` of numbers, strings, symbols, containers, structs, tuples and matrices, with `IOContext` properties known when compiling; `printf` and `@printf(STDOUT, ...)`.
+* **Filesystem**: `stat`, `mkdir`, `rm`, `readdir`, `cp`, `mv`, and temporary files.
 * **Dynamic dispatch**: calls on `Any` and abstract types are closed over a list of registered types, so they compile (and are exact for abstract types with few concrete subtypes).
 * **Libraries**: BLAS and LAPACK (through libblastrampoline), `BigInt`, `BigFloat`, `Regex`, SuiteSparse (sparse `\`, `lu`, `cholesky`, `qr`), **MPI** (MPI.jl programs run under `mpiexec`), any JLL or library of your own through `ccall`, with `libraries = :system` or `:bundle`; and `finalizer(f, x)` frees what they allocate.
-* **Standard libraries**: `Dates` (parsing and formatting with `dateformat"..."`, arithmetic, `now()`), `SparseArrays` (construction, indexing, products, factorizations), the file system (`stat`, `mkdir`, `rm`, `readdir`, `cp`, `mv`, temporary files), `Base64`, `CRC32c`, `Statistics`, `LinearAlgebra`, `Random`, `Printf`.
-* **Packages**: code from other packages compiles like Base's; the standard libraries (Dates, SparseArrays, LinearAlgebra, Printf, ...) and Distributions.jl, StatsBase.jl, NaNStatistics.jl and MPI.jl are a survey kept as tests (`test/packages`).
+* **Standard libraries**: `Base64`, `CRC32c`, `LinearAlgebra` (including `schur`, `sqrt` and `log` of matrices), `Mmap` (of files by their path), `Printf`, `Random`, `SHA`, `Statistics`, `UUIDs` (including `uuid4()`), the address types of `Sockets`, and most of `Dates` and `SparseArrays`.
+* **Packages**: code from other packages compiles like Base's. The standard libraries and these packages are a survey kept as tests (`test/packages`), with the cases that don't work listed in the manual:
+  DataStructures.jl, Distributions.jl, Graphs.jl, NaNStatistics.jl, OrderedCollections.jl, Parsers.jl, StatsBase.jl, StaticArrays.jl and MPI.jl.
 
-`test/corpus.jl` and `test/` are the up-to-date list of what is checked.
+`test/` is the up-to-date list of what is checked, and `test/core/limitations.jl` of what is refused, and what happens then.
 
-Code that can't work in a standalone binary is rejected when compiling, with an explanation (`strict = false` to compile it anyway).
+Code that we know can't work in a standalone binary is rejected when compiling, with an explanation (one can set `strict = false` to compile it anyway, though this is not recommended).
 
 ### How it works
 
@@ -115,21 +118,31 @@ Code that can't work in a standalone binary is rejected when compiling, with an 
   `Ref`s, types, symbols, non-`const` globals) are copied into the binary, with their type information, so no libjulia is needed.
 * **A garbage collector** (conservative, non-moving, mark and sweep, written in Julia and compiled into the program) frees memory as Julia does, and runs the C finalizers of
   libraries (GMP's). `gc = false` leaves it out. See the [manual](docs/src/index.md) for how it works and what it can't see.
-* **Inference is helped**: calls on abstract values are made over registered types, and keyword and context arguments propagate as constants so that code like `IOContext(io, :compact => true)` compiles.
 * **A loader for libraries** looks functions up the first time that they are called (`dlopen`, `dlsym`), after the libraries that they need, and can find them in a `lib` folder next to the program.
+* **Inference is helped along in some cases**: calls on abstract values are made over registered types, calls of functions that are not known (a closure taken out of a collection) over the closures that the program has, `@cfunction`
+  callbacks are given a target that is compiled, tuples that have a `Union` as an element are favored for inlining, and keyword and context arguments propagate as constants so that code like `IOContext(io, :compact => true)` compiles.
 * **Checks for silent wrong results**: what would differ from Julia is refused when compiling (for instance constant tables hashed by address), and numbers are never mistaken for addresses.
 
 ### Limitations
 
 The main limits, which the manual has in full:
 
-* **Dynamic behavior**: a value of an unregistered type aborts the program when it reaches a dispatch over registered types (compiling says what it did this way, with `JULIA_DEBUG=StaticCompilerOverrides`; `add_dispatch_candidates!` adds types). Not supported: types that are only known when the program runs and can't be listed, `eval`, tasks, `Channel`s and threads.
+* **Dynamic behavior**: a value of an unregistered type aborts the program when it reaches a dispatch over registered types (compiling says what it did this way, with `JULIA_DEBUG=StaticCompilerOverrides`; `add_dispatch_candidates!` adds types). Not supported: types that are only known when the program runs and can't be listed, `eval`, tasks, `Channel`s and threads, and a tuple that has a `Union` as an element and is not removed by inlining (one that a function that is not inlined returns, or that is stored in a collection).
+* **Libraries of Julia that are not libraries of their own**: `Markdown` (its parser needs Julia's), `TOML.parse`, `Unicode.normalize` and `graphemes` (utf8proc), `@time` and `Test`.
 * **Libraries**: by default a program needs its libraries at the paths that they had when compiling (`libraries = :bundle` copies them next to the program; BLAS is not bundled yet). `atexit` functions are not run, and a reduction in MPI with an operator of your own (a C callback into Julia) is not supported.
-* **Platforms**: macOS and Linux for the collector; the machine that compiles is the one that is targeted (no cross-compiling, no Windows). Linux is only tested on CI, and the libraries there are the least tested.
+* **Platforms**: macOS and Linux for the collector; the machine that compiles is the one that is targeted (no cross-compiling, no Windows). Linux is tested in CI (x86 and aarch64), and the libraries there are the least tested.
 * **Memory**: the collector is conservative and the heap is not thread-safe (a library called from several threads needs a lock; on a stack that is not its thread's it frees nothing).
 * **Runtime differences**: at most 256 nested `try` blocks, no stack overflow check (infinite recursion crashes), and uncaught exceptions exit with a short message and no backtrace.
 
 See [Known limitations](https://brenhinkeller.github.io/StaticCompilerOverrides.jl/dev/#Known-limitations) in the manual for the complete list and the reasons.
+
+### Source layout
+
+* `src/overrides/`: the overlay methods of Base and of the standard libraries, by topic (`show.jl`, `files.jl`, `random.jl`, `bignum.jl`, ...); `src/overrides.jl` is the method table and the entry points (`compile_executable` and the rest).
+* `src/inference/`: what the compiler does with calls that Julia does not resolve: dynamic dispatch (`dispatch.jl`), closures (`closures.jl`), `@cfunction` (`cfunctions.jl`) and the errors that say why a program does not infer (`diagnostics.jl`).
+* `src/runtime/`: the runtime that is linked into a program: the allocator and collector (`heap.jl`, `heap_link.jl`), the objects that are copied into the binary (`objects.jl`, `embedder.jl`, `constants.jl`), types at run time (`types.jl`), what is refused (`strict.jl`), and BLAS and the loader of libraries.
+* `src/pipeline.jl` and `src/tags.jl`: the LLVM passes; `src/testing.jl`: `static_status` and the other functions that compare a compiled program with Julia.
+* `ext/`: the overlays that need another package or standard library (LinearAlgebra, SparseArrays, Dates, Base64, Mmap, MPI).
 
 ### Running the tests
 

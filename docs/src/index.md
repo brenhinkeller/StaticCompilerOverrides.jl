@@ -599,7 +599,7 @@ The functions of the math library (`libm`, `libopenlibm`) are linked by name ins
 
 Limits: a `Ptr` field of a constant of the program
 (an address of this process) is null there, with a warning (a `Regex` is compiled when the program first uses it, so those are fine); `setprecision(f, BigFloat, n)`
-(a scoped value) does not work yet. **Linux is untested for the libraries** (the program finds its own folder with `dladdr`, and `/proc/self/exe`).
+(a scoped value) does not work yet. **Linux is only tested on CI for the libraries** (the program finds its own folder with `dladdr`, and `/proc/self/exe`).
 
 ## Dates and SparseArrays
 
@@ -731,6 +731,10 @@ Compiled and compared with Julia in the survey (the results rounded to 6 digits,
   `floyd_warshall`, `a_star`, connected and strongly connected components, `topological_sort`, `kruskal_mst` and `prim_mst`, `maximal_cliques`, `greedy_color`, `label_propagation`, `pagerank`, `betweenness_centrality`,
   `closeness_centrality`, `eigenvector_centrality`, and the adjacency and Laplacian matrices.
 
+* **Parsers.jl** (version 3): 40 of 40 cases of the survey: `parse` and `tryparse` of integers of every width (with `base` and `groupmark`), `Float16`, `Float32` and `Float64` (with `decimal`, hexadecimal floats, `Inf` and `NaN`),
+  `Bool` (with other spellings), `Date`, `DateTime` and `Time` (with a format), `UUID`, `BigInt` and `BigFloat`, from strings and from spans of bytes; and `parsenext` and the kernels (`parseint`,
+  `parsefloat`) that a reader of files is made of, in a loop over the fields of a line. The results of the floats are the same to the last bit as Julia's.
+
 * **[Thermochron.jl](https://github.com/brenhinkeller/Thermochron.jl)** (forward models; 19 cases in the survey): helium diffusion (`SphericalHe`, `PlanarHe`, `ZirconHe`, `ApatiteHe` with RDAAM and ZRDAAM
   annealing, `SphericalAr`), fission track ages (`ZirconFT`, `ApatiteFT` with the Ketcham and Yamada/Guenthner models), vitrinite reflectance with a `NielsenBasinRo` that is a constant, and
   `model!` over a `Vector` of one concrete type of chronometer (`Vector{ApatiteHe{...}}`), with the chronometers built when compiling or by the program. Not yet: `model!` over a vector
@@ -752,7 +756,7 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 **Platforms**
 
 * **macOS and Linux** only for the collector (`gc = true`); elsewhere it is off by default, and `gc = true` is an error. **Linux is
-  not tested yet** (only macOS on ARM): the collector depends on the layout of the stack and `setjmp` of the C library, and BLAS on `dlopen`.
+  tested on CI** (x86 and aarch64), not by hand: the collector depends on the layout of the stack and `setjmp` of the C library, and BLAS on `dlopen`.
 * **The host is the target.** The heap and the runtime are made for the machine that compiles, so cross-compiling (a `target` that is
   not the host) is not supported.
 * BLAS and LAPACK need LBT and the libraries that back it **at the same paths when the program is run** (see
@@ -802,6 +806,11 @@ What does not work yet, or works differently from Julia, gathered in one place. 
   are registered, nor `===` of types and unions, and `show` of one is limited to the registered types (see [`show` of containers, types and structs](@ref)).
 * `titlecase` of a string (it needs the grapheme breaks of utf8proc),
   the `MersenneTwister` generator, and `Random.seed!(seed)` of the default generator need things of libjulia that are not there.
+
+* **Tuples that have a `Union` as an element** (`Tuple{Union{Vector{Float64},Vector{ComplexF64}},Int}`: what a function returns when the type of one of two values depends on the data) are made by Julia
+  with the types that the values have when the program runs, which an executable can't make. They are fine when the function that makes them is inlined (the tuple is not made), which the
+  compiler favors for them. A tuple that is returned by a function that is not inlined, or that is stored in an array or a `Dict`, is rejected when compiling; `enumerate` and `zip` of a
+  `Union` of tuples of different types compile, and stop when they are run.
 
 **What a binary starts with**
 
