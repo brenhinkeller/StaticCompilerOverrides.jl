@@ -179,6 +179,7 @@ function embed_new_global!(e::ObjectEmbedder, addr::UInt)
     LLVM.linkage!(g, LLVM.API.LLVMLinkOnceODRLinkage)
     LLVM.visibility!(g, LLVM.API.LLVMHiddenVisibility)
     LLVM.alignment!(g, EMBED_ALIGN)
+    root_free(T) && (LLVM.metadata(g)["static.pointerfree"] = LLVM.MDNode(LLVM.Metadata[])) # (the collector doesn't look at it: see `define_gc_roots!`)
     e.globals[addr] = g
     try
         LLVM.initializer!(g, LLVM.ConstantStruct(LLVM.Constant[i64(0), tag_piece(e, tag & ~UInt(15)), values(g)...]; packed=true))

@@ -480,39 +480,86 @@ grows with the square of their number (about 125 kB for a thousand types), and i
 ## Binary size
 
 A program has the code it uses, and the Julia objects that it refers to, copied into the binary (strings, constant
-arrays and `Dict`s, and the type objects that the type tags and `isa` read). Measured on macOS (arm64, Julia 1.14.0-alpha2) from the
-`__text` and data sections of the executables (the file sizes are in 16 kB pages):
+arrays and `Dict`s, and the type objects that the type tags and `isa` read). What is not used is not there. Measured on macOS (arm64,
+Julia 1.14.0-alpha2): the bytes of the sections of the executable that are in the file (code, constants and data; `size -m`), and the file, which is made of pages of 16 kB
+and has the table of the symbols of the entry point. The last two columns are with `small = true` (see below):
 
-| program                                  | code (`__text`) | data    |
-|:-----------------------------------------|----------------:|--------:|
-| `0`                                      |    56 B         |   5 B   |
-| `println("hello")`                       |   120 B         |  62 B   |
-| `println(42)`                            |   1.4 kB        |  9.7 kB |
-| `println([1, 2, 3])`                     |   2.3 kB        | 10.2 kB |
-| `println(Dict(1 => 2))`                  |   3.8 kB        | 11.0 kB |
-| `Dict` with struct keys, lookup          |   4.3 kB        |  6.6 kB |
-| `x isa Number` on boxed values           |   0.8 kB        |  2.7 kB |
-| `println(Any[1, "a", 2.5])`              |  36 kB          | 41.5 kB |
-| `repr([1.5, 2.5])`                       |  14 kB          | 22.4 kB |
+| program                                            | sections | file    | sections, `small` | file, `small` |
+|:---------------------------------------------------|---------:|--------:|------------------:|--------------:|
+| `main(argc, argv)`: `println("hello")`             |   2.1 kB |  51 kB  |    2.1 kB         |  34 kB        |
+| `main(argc, argv)`: `println(fib(30))`             |   8.9 kB |  54 kB  |    8.9 kB         |  34 kB        |
+| `main(args)`: `println("hello")`                   |  28 kB   |  73 kB  |   13 kB           |  34 kB        |
+| `main(args)`: `println(length(args) + 42)`         |  32 kB   |  75 kB  |   17 kB           |  35 kB        |
+| a `Dict` of strings, a lookup                      |  38 kB   |  77 kB  |   38 kB           |  52 kB        |
+| `parse(Int, ...)` in a `try`, the message printed  |  73 kB   | 115 kB  |   60 kB           |  69 kB        |
+| `sqrt` and `println` of a `Float64`                |  76 kB   | 111 kB  |   61 kB           |  84 kB        |
+| `sort(rand(100))`                                  |  77 kB   | 131 kB  |   77 kB           | 101 kB        |
+| a sieve of Eratosthenes (the README example)       | 122 kB   | 152 kB  |  110 kB           | 135 kB        |
+| a `Dict` of tuples, a matrix product, `display`    | 196 kB   | 244 kB  |  196 kB           | 217 kB        |
+
+What a program has, and when:
+
+* **The collector** (20 kB of code and 8 kB of data) is there if the program allocates anywhere that it can go on from. A program that allocates only where it is about to stop (the message
+  and the exception of an error that nothing catches, or that a `try` only runs the `finally` of) never frees anything, and has the allocator that doesn't collect: that is what `main(argc, argv)` with `println` is. A
+  `main(args)` makes the vector of the arguments, which is an allocation that goes on. `gc = false` leaves the collector out of any program.
+* **The support for finalizers** (5 kB) is there if the program registers a finalizer (`BigInt`, the wrappers of libraries, `finalizer(f, x)`).
+* **The tables of the characters** are one for each question that is asked: `isspace` of a character that is not ASCII is a table of a few bytes; `show` of a string (the printable characters) 12 kB; `isletter`
+  and the like 33 kB.
+* **The collector looks at** only the objects that can refer to objects of the heap: not strings, symbols, arrays of numbers, or types.
+
+**`small = true`** (for `compile_executable`; `compile_shlib` takes the flags only) makes a smaller file where that makes no difference to what the program does:
+
+* The program has **no collector if it allocates a finite amount of memory in all**: nothing that it allocates is in a loop, or in a function that is called from a loop or that calls itself (or that something refers to without
+  calling it: a callback of a library). The memory that it has is then what it allocates, and not what it would allocate for as long as it runs. A `try` that catches, and goes on, counts if it is not in a loop either. A `sort`, a `Dict` that grows,
+  or a `split` have loops that allocate, and keep the collector; so does anything that allocates in a loop, or in a function that is called from one.
+  (The arguments of the command line are made by a loop, which is as long as they are: that is not counted.) The analysis is of the code, and not of the sizes: a program that allocates a gigabyte once has no collector, and
+  the gigabyte.
+* The linker leaves out the **names of the functions** of the program, but its entry point (on macOS, `-x`: 5 to 25 kB; on Linux `-s`, not tried yet), and, on macOS, the segment for the **constants and the table of the addresses
+  of functions** that is made read-only when the program starts (`-no_data_const`: a page of 16 kB, of which a small program uses a few hundred bytes; it is also a protection that the program then does not have).
+  Passing your own `cflags` replaces these.
 
 What is in the data of a program that prints a number is mostly two things: about 4.5 kB of objects, the type of `Int64`
 that the error for a conversion that fails (an `InexactError`) holds, with the name of it; and 5 kB that is zero at the start (the stack of
 the exception handlers and the task that the runtime stands in for, which are not in the file). A program without any code that can throw
-(`println("hello")`) has neither. The objects that are types are copied for what a program does with them: telling the type of an
+(`main(argc, argv)` with `println("hello")`) has neither. The objects that are types are copied for what a program does with them: telling the type of an
 object from another (the tag), its name (`nameof`) and its parameters. Not for what a type refers to: its supertypes, the wrapper
 and the names of the fields. A program does not have these (a call that would need them is dynamic anyway), and with them
 the objects of a small program were more than twice as many. Showing a string needs a table of the characters that can be printed,
-which is about 6 kB (and not that of the categories of all characters, which is 21 kB).
+which is about 12 kB (and not that of the categories of all characters, which is 33 kB).
 `%f` of a `Float64` in `@printf` needs the tables of Ryu for the fixed format, which are 190 kB: `%g`, `%e` and `show` have much smaller ones.
 What the program does not use is not there: the plans for `===` of the types, which are about 14% of the objects of a
 program that compares objects, are made only if the code calls `jl_egal__unboxed`; and the table of the types of the small
 tags is made only if the code indexes it with something that is not a constant (`isa` on a boxed value does), and
 otherwise each of the types that the code names is the one object. The `isa` table (`ijl_subtype`) is as large as the
 number of types asked about times the number of types in the binary that are subtypes of them.
-The collector itself is about 12 kB of code and 6 to 10 kB of data in a program that allocates (so the sizes above, which are of programs
-without it, are that much smaller than a default build; `gc = false` leaves it out).
 `println(Any[...])` is larger because it has the code to show each of the types in `show_candidates`: add only the types
 that you need with [`add_show_candidates!`](@ref) (the defaults can't be removed yet).
+
+## Compared with C and C++
+
+The same programs in C and C++ (Apple clang 14, `-O2`) and in Julia compiled by this package (macOS, Apple M1 Max; the time of the best of 3 runs, in seconds; the answers are the same). The Julia of the loops has `@inbounds` as the C has no checks, and the
+data are laid out as in C.
+
+| program                          | C       | C++     | here    | here, `small` (file) |
+|:---------------------------------|--------:|--------:|--------:|---------------------:|
+| recursive `fib(38)`              | 0.12    |         | 0.15    | 34 kB (C: 33 kB)     |
+| sieve of Eratosthenes (50M)      | 0.10    |         | 0.11    | 34 kB                |
+| matrix product (500, loops)      | 0.022   |         | 0.022   | 34 kB                |
+| Mandelbrot (1500)                | 0.25    |         | 0.26    | 34 kB                |
+| n-body (5M steps, array of structs) | 0.28 |         | 0.25    | 69 kB                |
+| Collatz (3M)                     | 0.43    |         | 0.43    | 69 kB                |
+| `sin`, `exp`, `log`, `atan`, `sqrt` (20M) | 0.25 |      | 0.39    | 102 kB               |
+| binary trees (allocation, depth 18) | 1.7  |         | 1.2     | 85 kB                |
+| string building and parsing (2M) | 0.13    | 0.067   | 0.10    | 102 kB               |
+| sort of 3M integers              | 0.27 (`qsort`) | 0.18 (`std::sort`) | 0.023 | 102 kB |
+| hash table of 2M keys            |         | 0.45    | 0.14    | 85 kB                |
+
+(The file sizes of the first four are for programs with `main(argc, argv)` and `atol` as in C; the others have `main(args)` and `parse`.)
+
+For arithmetic that is made of loops the programs are about as fast as C. What is faster than C or C++ is the library (`sort!` of integers is a counting sort for a small range, and `Dict` is a flat table where `unordered_map` has a node for each key; the allocator
+and collector of the binary tree program). The things that are slower: recursion (`fib`; plain Julia is the same: it is LLVM's code for it), and the functions of the math library (Julia's own `sin`, `log`, ... are 1.3 to 2 times slower than those of the C library on this machine).
+A program that allocates and keeps memory in lists and hash tables has more of it than C does (the hash table program is 135 MB where C++'s is 75 MB). The files are as small as C's for a program that does not allocate (`small = true`, a raw `main(argc, argv)`), and
+tens of kilobytes more when it prints, parses, or allocates in loops (see [Binary size](@ref)).
 
 ## Method tables
 

@@ -65,8 +65,16 @@ function default_gc()
 end
 
 # The math library: on Linux its functions (`erfc`, which Julia code calls by name, see `runtime/libraries.jl`) are in `libm`, which is
-# not linked by default, as it is on macOS (where it is part of libSystem)
-default_cflags() = Sys.islinux() ? `-lm -ldl` : ``
+# not linked by default, as it is on macOS (where it is part of libSystem).
+#
+# With `small = true`, what the file has that the program does not need is left out. On macOS, the names of the functions that are not exported (all of those of the program, but its entry
+# point; `-x`): a program does not look at them, and they are 5 to 25 kB; and the segment of the constants and the table of the addresses of functions, which is made read-only when the program
+# starts (`-no_data_const`): it is a page of 16 kB, and a program of a few kilobytes has a few hundred bytes in it. On Linux, the symbols (`-s`: not tried yet).
+function default_cflags(small::Bool = false)
+    Sys.islinux() && return small ? `-lm -ldl -Wl,-s` : `-lm -ldl`
+    Sys.isapple() && small && return `-Wl,-x -Wl,-no_data_const`
+    return ``
+end
 
 # The target: the host, as StaticCompiler's own default, but, on macOS, with a version in the triple. StaticCompiler's triple for it
 # has none (`aarch64-apple-darwin`), so the object files have no "platform load command", which says what system they are for, and the
@@ -83,8 +91,8 @@ end
 for f in (:compile_executable, :compile_shlib, :static_code_typed, :static_llvm_module)
     @eval begin
         function $f(args...; method_table = method_table, params = nothing, strict::Bool = true, allow = (), gc = default_gc(), target = default_target(),
-                    libraries::Symbol = :system,
-                    llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc, libraries)), kwargs...)
+                    libraries::Symbol = :system, small::Bool = false,
+                    llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc, libraries, bounded = small && $(f in (:compile_executable, :static_llvm_module)))), kwargs...)
             libraries in (:system, :bundle) || throw(ArgumentError("`libraries` is `:system` or `:bundle`, not `$(repr(libraries))`"))
             register_custom_deepcopy!() # (this can change the parameters: they have the version of the lists of types)
             explicit_params = params
@@ -94,7 +102,7 @@ for f in (:compile_executable, :compile_shlib, :static_code_typed, :static_llvm_
                     :(length(args) >= 2 && args[1] isa Function && args[2] isa Tuple && check_entry(args[1], args[2]; method_table, params = job_params, target)) : :nothing)
                 entry_args = rooted_arguments(args)
                 Base.invokelatest(StaticCompiler.$f, entry_args...; method_table, params = job_params, target, llvm_postprocess,
-                                  $(f in (:compile_executable, :compile_shlib) ? :(merge((; cflags = default_cflags()), NamedTuple(kwargs))...) : :(kwargs...)))
+                                  $(f in (:compile_executable, :compile_shlib) ? :(merge((; cflags = default_cflags(small)), NamedTuple(kwargs))...) : :(kwargs...)))
             end
             $(f in (:compile_executable, :compile_shlib) ? :(libraries === :bundle && result isa AbstractString && Runtime.bundle_libraries(result)) : :nothing)
             return result
@@ -121,6 +129,11 @@ for f in (:compile_executable, :compile_shlib, :static_code_typed, :static_llvm_
         used any more is freed (see the section on memory in the manual). `gc = false` never frees it. A number
         (`gc = 100`) also collects every that many allocations and overwrites what it frees, which is for finding bugs
         in the collector.
+
+        `small = true` makes a smaller file, where that can be done without a difference in what the program does: the linker leaves out what the program does not look at (the names of its functions, a
+        segment of constants on macOS), and the program has no collector if it allocates a finite amount of memory in all (nothing that is allocated is in a loop, or in a function that
+        is called from one or that calls itself, or that a library calls): see [Binary size](@ref). Without it, a program has no collector if it allocates only to stop with an error. (Not for a library, `compile_shlib`, which can be
+        called any number of times.)
         """ $f
     end
 end
@@ -166,8 +179,8 @@ end
 
 ## Entry points that take the arguments of the command line
 
-"The arguments of the command line, without the name of the program, as in `Base.ARGS`."
-function command_line_arguments(argc::Int, argv::Ptr{Ptr{UInt8}})
+"The arguments of the command line, without the name of the program, as in `Base.ARGS`. (Not inlined: the allocations in its loop are as many as the arguments, which `allocation_is_finite` has to know.)"
+@noinline function command_line_arguments(argc::Int, argv::Ptr{Ptr{UInt8}})
     args = Vector{String}(undef, max(argc - 1, 0))
     for i in 2:argc
         args[i-1] = unsafe_string(unsafe_load(argv, i))

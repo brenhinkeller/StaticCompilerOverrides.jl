@@ -34,7 +34,7 @@ function main(args::Vector{String})
     return 0
 end
 
-exe = compile_executable(main, (Vector{String},), "build", "primes")   # about 175 kB, no libjulia
+compile_executable(main, (Vector{String},), "build", "primes"; small=true)   # about 132 kB, no libjulia
 ```
 
 ```
@@ -42,6 +42,9 @@ $ ./build/primes 30
 The 10 primes up to 30: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
 Their mean is 12.9
 ```
+
+`compile_executable(...; small = true)` makes the file smaller where that makes no difference to what the program does: no garbage collector in a program that allocates a finite amount of memory in all
+(nothing that it allocates is in a loop), and no names of functions or segment of constants in the file. A small program is then a few tens of kilobytes (see [Binary size](docs/src/index.md)).
 
 ### More advanced examples
 

@@ -63,3 +63,12 @@ simd_sin_sum(n) = (s = 0.0f0; (@simd for i in 1:n; s += sin(Float32(i)); end); s
         "bit operations"               => () -> (println(count_ones(opaque(255)), leading_zeros(opaque(1)), trailing_zeros(opaque(8)), bitreverse(UInt8(opaque(1))), bswap(UInt32(opaque(1))), ~opaque(0)); 0),
     ])
 end
+
+# `fma` (and what asks for it: `log`, `^`, `muladd`) is made with the instruction of the processor, as Julia does: it is not made by software, which is several times slower
+fma_of(x::Float64, y::Float64, z::Float64) = fma(x, y, z)
+@testset "fma is an instruction" begin
+    llvm = sprint(io -> static_code_llvm(fma_of, Tuple{Float64,Float64,Float64}; io, llvm_postprocess = m -> nothing))
+    @test occursin("llvm.fma", llvm)
+    @test !occursin("fma_emulated", llvm)
+    @test static_status(() -> fma(opaque(2.0), 3.0, 1.0) + log(opaque(2.0)))[1] == :ok
+end

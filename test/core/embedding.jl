@@ -5,7 +5,7 @@
 # them, and for a pointer into a string, that word is the string's length: which looks like a valid
 # tag for some lengths. Check that, for every length, the right object is found.
 
-@testset "Embedding constants: interior pointers" begin
+@testset "Interior pointers" begin
     SC = StaticCompilerOverrides.StaticCompiler
     Runtime = StaticCompilerOverrides.Runtime
 
@@ -75,7 +75,7 @@ end
 
 # Constants are shared by all the functions of a library: they are compiled separately (and then
 # linked), and a mutable object that they all refer to has to remain one object
-@testset "Embedding constants: shared state across functions" begin
+@testset "Shared state across functions" begin
     @eval const SHARED_COUNTER = Ref(0)
     @eval shared_inc() = (SHARED_COUNTER[] += 1; Int(SHARED_COUNTER[]))
     @eval shared_get() = Int(SHARED_COUNTER[])
@@ -95,7 +95,7 @@ end
 
 # The type objects that a program has are there to be told apart (the tag of an object, the type of an `isa`), and to be named: the
 # supertypes, the wrappers and the names of the fields of them are not copied, which is most of the objects of a small program
-@testset "Embedding constants: the types are not copied with their supertypes" begin
+@testset "Types are not copied with their supertypes" begin
     Runtime = StaticCompilerOverrides.Runtime
     embedded = Any[]
     main = StaticCompilerOverrides.make_main(() -> (println(42); 1))
@@ -128,7 +128,7 @@ struct ManyFields
 end
 const MANY = ManyFields((([i] for i in 1:40)..., "many")...)
 many_sum(m::ManyFields) = m.a1[1] + m.b8[1] + m.c3[1] + m.d8[1] + m.e1[1] + m.e8[1] + ncodeunits(m.name)
-@testset "Embedding constants: structs of many fields" begin
+@testset "Structs of many fields" begin
     @test sizeof(MANY) > 256
     @static_test many_sum(MANY)
 end
@@ -136,7 +136,7 @@ end
 # Constants that are vectors of unions of types without references (a byte for the type of each element), and one that was shifted, so that its reference is an element number
 const UNION_VEC = Union{Int,Nothing}[1, nothing, 2, 3]
 const UNION_VEC_SHIFTED = (v = Union{Int8,Float32,Nothing}[Int8(1), 2.5f0, nothing, Int8(4)]; popfirst!(v); v)
-@testset "Embedding constants: vectors of unions" begin
+@testset "Vectors of unions" begin
     check_cases([
         "const Vector{Union{Int,Nothing}}" => () -> sum(x -> x === nothing ? 0 : x, UNION_VEC),
         "const Union vector, shifted"      => () -> (s = 0.0; for x in UNION_VEC_SHIFTED; s += x === nothing ? 100 : Float64(x); end; s),
@@ -146,7 +146,7 @@ end
 # A number in the code can be the address of an object of the process that compiles (found on aarch64 Linux, where Julia has memory at low addresses:
 # the constant `115938146` was inside a symbol, and the program printed the address of a copy of it instead). A number is only an address if it is used as one.
 const NUMBER_STRING = "a string that is long enough to hold an address"
-@testset "Embedding constants: numbers that are data are not addresses" begin
+@testset "Numbers that are data are not addresses" begin
     SC = StaticCompilerOverrides.StaticCompiler
     Runtime = StaticCompilerOverrides.Runtime
     i64() = LLVM.Int64Type() # (types are made in the context that is active)

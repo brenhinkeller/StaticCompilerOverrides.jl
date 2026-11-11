@@ -622,7 +622,7 @@ const RUNTIME_SHIM_FUNCTIONS = (
 const LIBC_FUNCTIONS = Set([
     "strlen", "strnlen", "memcpy", "memmove", "memset", "memcmp", "memchr", "strcmp", "strncmp",
     "strchr", "strrchr", "strstr", "malloc", "calloc", "realloc", "free", "abort", "exit", "getenv",
-    "atoi", "strtol", "strtoul", "strtoll", "strtoull", "strtod", "strtof", "qsort", "bsearch",
+    "atoi", "atol", "atoll", "atof", "strtol", "strtoul", "strtoll", "strtoull", "strtod", "strtof", "qsort", "bsearch",
     "write", "read", "puts", "putchar", "getchar", "fflush", "fputc", "fputs", "fwrite", "fread",
     "usleep", "nanosleep", "atexit", "clock_gettime", "time", "getentropy", "gettimeofday", "localtime_r", "gmtime_r",
     "stat", "lstat", "stat\$INODE64", "lstat\$INODE64", "access", "mkdir", "rmdir", "unlink", "rename", "opendir", "readdir", "closedir", "getcwd", "chdir", "realpath",

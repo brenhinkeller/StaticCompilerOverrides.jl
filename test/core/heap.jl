@@ -249,7 +249,7 @@ end
 
 # ---- the allocation of programs: the runtime's allocation functions, the header of the objects, and what is refused
 
-@testset "Allocation by the runtime: collections, dictionaries and strings, with the size taken from the arguments" begin
+@testset "Allocation by the runtime" begin
     # (the sizes depend on the arguments of the program, so that they are not known when compiling)
     @eval alloc_vector(argc::Int, argv::Ptr{Ptr{UInt8}}) = (printf(c"%d\n", sum(collect(1:argc+3))); 0)
     @eval alloc_push(argc::Int, argv::Ptr{Ptr{UInt8}}) = (v = Int[]; for i in 1:20; push!(v, i); end; printf(c"%d\n", sum(v)); 0)
@@ -265,7 +265,7 @@ end
 # If it didn't, that would overwrite the metadata of the allocator, which makes the program fail now
 # and then (depending on the layout of memory), so run a program that allocates, with the checks
 # of the allocator of the system on (macOS, glibc)
-@testset "Heap integrity: the header of an object does not overwrite the allocator's" begin
+@testset "Heap integrity" begin
     @eval function heap_work()
         total = 0
         for i in 1:300
@@ -324,4 +324,68 @@ rlimit_stack() = Int(StaticCompilerOverrides.Runtime.Heap.rlimit_stack_size())
     @test 1 << 16 <= rlimit_stack() <= 1 << 40
     # (compiling it says nothing: an address that is made by adding to that of the state of the heap was reported as a pointer to a Julia object, in the log)
     @test_logs (@test static_status(rlimit_stack)[1] == :ok)
+end
+
+# A program has the collector only if it needs it. One that allocates only where it is about to stop (the message and the exception of an error, which nothing catches) never frees anything,
+# and has the allocator that does not collect. A `try` that does not go on (what `finally` is) does not catch, and one that does is a program that goes on. With `small = true` a program
+# also has none if everything that it allocates is allocated a finite number of times (nothing in a loop, in a function that calls itself, or in a function that is called from one).
+function has_collector(f, types = ENTRY_TYPES; small = false)
+    StaticCompilerOverrides.StaticCompiler.GPUCompiler.JuliaContext() do ctx
+        mod = Base.invokelatest(static_llvm_module, f, types; small)
+        try
+            any(fn -> startswith(LLVM.name(fn), "julia_collect") && !LLVM.isdeclaration(fn), LLVM.functions(mod))
+        finally
+            LLVM.dispose(mod)
+        end
+    end
+end
+# (what `compile_executable(f, (Vector{String},))` compiles: the entry point that makes the vector of the arguments)
+has_collector_args(f; small = false) = has_collector(StaticCompilerOverrides.entry_point(f, "entry"); small)
+raw_nothing(argc::Int, argv::Ptr{Ptr{UInt8}}) = (println("hello"); 0)
+raw_error_only(argc::Int, argv::Ptr{Ptr{UInt8}}) = (argc > 100 && throw(ArgumentError("too many")); println(argc); 0)
+raw_print_int(argc::Int, argv::Ptr{Ptr{UInt8}}) = (println(argc + 41); 0) # (`print` has a `try` that goes on to throw what it caught)
+raw_allocates(argc::Int, argv::Ptr{Ptr{UInt8}}) = (n = argc; s = 0; while n < 30_000; v = zeros(Int, 100 + n % 7); n += length(v) % 3 + 1; s += length(v); end; println(s); 0)
+raw_catches(argc::Int, argv::Ptr{Ptr{UInt8}}) = (s = 0; for i in 1:argc * 2000; try; i % 2 == 0 && error("e$i"); s += 1; catch; s += 2; end; end; println(s); 0)
+raw_finalizer(argc::Int, argv::Ptr{Ptr{UInt8}}) = (x = Ref(argc); finalizer(r -> nothing, x); println(x[]); 0)
+raw_once(argc::Int, argv::Ptr{Ptr{UInt8}}) = (v = collect(1:argc + 5); w = sort(v); println(sum(w), " ", length(string(w))); 0) # (allocates, once)
+raw_catch_once(argc::Int, argv::Ptr{Ptr{UInt8}}) = (r = try; parse(Int, argc > 5 ? "x" : "7"); catch; -1; end; println(r, " ", string(r)); 0) # (a catch that goes on, once)
+rec_allocates(n::Int) = n == 0 ? Int[] : (v = push!(rec_allocates(n - 1), n); v)
+raw_recursion(argc::Int, argv::Ptr{Ptr{UInt8}}) = (println(length(rec_allocates(argc + 100))); 0)
+even_allocates(n::Int) = n == 0 ? [0] : push!(odd_allocates(n - 1), n)
+odd_allocates(n::Int) = n == 0 ? [1] : push!(even_allocates(n - 1), n)
+raw_mutual_recursion(argc::Int, argv::Ptr{Ptr{UInt8}}) = (println(length(even_allocates(argc + 100))); 0)
+loop_helper(n::Int) = length(collect(1:n))
+raw_loop_calls_function(argc::Int, argv::Ptr{Ptr{UInt8}}) = (s = 0; for i in 1:argc * 1000; s += loop_helper(10 + i % 3); end; println(s); 0)
+args_nothing(args::Vector{String}) = println("hello")
+args_sum(args::Vector{String}) = (println(sum(length, args)); 0)
+args_loop(args::Vector{String}) = (s = 0; for i in 1:1000 + length(args); s += length(zeros(Int, 10 + i % 5)); end; println(s); 0)
+@testset "The collector is in the programs that need it" begin
+    @test !has_collector(raw_nothing)
+    @test !has_collector(raw_error_only)
+    @test !has_collector(raw_print_int)
+    @test has_collector(raw_allocates)
+    @test has_collector(raw_catches)
+    @test has_collector(raw_finalizer)
+    @test has_collector(raw_once) # (without `small`, a program that allocates has one)
+    @test has_collector_args(args_nothing)
+    @testset "small = true: no collector where what is allocated is a finite amount" begin
+        @test !has_collector(raw_nothing; small = true)
+        @test !has_collector(raw_once; small = true)
+        @test !has_collector(raw_catch_once; small = true)
+        @test !has_collector_args(args_nothing; small = true)
+        @test !has_collector_args(args_sum; small = true)
+        # (these allocate again and again: in a loop, in a function that is called in one, in a function that calls itself)
+        @test has_collector(raw_allocates; small = true)
+        @test has_collector(raw_catches; small = true)
+        @test has_collector(raw_finalizer; small = true)
+        @test has_collector(raw_recursion; small = true)
+        @test has_collector(raw_mutual_recursion; small = true)
+        @test has_collector(raw_loop_calls_function; small = true)
+        @test has_collector_args(args_loop; small = true)
+    end
+    # (and they do what they do)
+    cases = [raw_nothing, raw_error_only, raw_print_int, raw_allocates, raw_catches, raw_once, raw_catch_once, raw_recursion, raw_mutual_recursion, raw_loop_calls_function]
+    for small in (false, true)
+        check_cases(["$(nameof(f)), small = $small" => (() -> f(opaque(1), Ptr{Ptr{UInt8}}(C_NULL))) for f in cases]; small)
+    end
 end

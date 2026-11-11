@@ -60,7 +60,7 @@ include("libraries.jl")   # the functions of libraries that are called by their 
 include("cfunctions_link.jl") # the wrappers of `@cfunction`, that call the functions of the program
 
 # Define the runtime functions that `mod` calls but does not define.
-function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux(), libraries::Symbol = :system)
+function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux(), libraries::Symbol = :system, bounded::Bool = false)
     link_cfunctions!(mod) && run!(GlobalDCEPass(), mod)
     blas = resolve_blas_lookups!(mod) # (before what they are given is embedded)
     library_plan = resolve_library_lookups!(mod; libraries)
@@ -76,6 +76,7 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     queries = subtype_queries(mod)
     embed_constants!(e)
     queries === nothing ? define_subtype_table!(e) : define_subtype!(e, queries)
+    finalizers = uses_finalizers(mod) # (before they are linked: see `link_finalizers!`)
     link_finalizers!(mod)
     resolve_lazy_lookups!(mod)
     define_aborting_functions!(mod)
@@ -98,7 +99,11 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     end
     linked |= link_blas!(mod, blas)
     linked |= link_libraries!(mod, library_plan; libraries)
-    linked |= link_heap!(mod; gc) # (the shim, and the code, call `static_alloc`)
+    if gc === true && !finalizers && haskey(LLVM.functions(mod), "static_alloc")
+        run!(GlobalDCEPass(), mod) # (what the program does not use does not count)
+        allocation_is_finite(mod; bounded) && (gc = false)
+    end
+    linked |= link_heap!(mod; gc, finalizers) # (the shim, and the code, call `static_alloc`)
     haskey(LLVM.functions(mod), "gpu_gc_pool_alloc") && inline_allocation!(mod, gc)
     linked && run!(GlobalDCEPass(), mod)
     return mod

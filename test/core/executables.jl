@@ -56,3 +56,21 @@ end
         @test occursin("LC_BUILD_VERSION", read(`otool -l $(joinpath(dir, name * ".o"))`, String))
     end
 end
+
+# `small = true`: the file is smaller (on macOS the names of the functions and a segment of constants are left out; no collector in a program that allocates a finite amount), and the
+# program does what it does
+args_hello(args::Vector{String}) = (println("hello ", length(args)); 0)
+@testset "small = true makes a smaller file" begin
+    sizes = Int[]
+    for small in (false, true)
+        dir = mktempdir()
+        exe = compile_executable(args_hello, (Vector{String},), dir, "args_hello"; small)
+        @test readchomp(`$exe a b`) == "hello 2"
+        push!(sizes, filesize(exe))
+    end
+    @test sizes[2] < sizes[1]
+    # (a library can be called any number of times, so the collector stays: only the flags of the linker)
+    dir = mktempdir()
+    lib = compile_shlib(args_hello, (Vector{String},), dir, "args_hello_lib"; small = true)
+    @test isfile(lib)
+end

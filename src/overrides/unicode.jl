@@ -66,6 +66,8 @@ const ISLOWER = BoolRunTable(cp -> !iszero(@ccall utf8proc_islower(cp::UInt32)::
 const ISUPPER = BoolRunTable(cp -> !iszero(@ccall utf8proc_isupper(cp::UInt32)::Cint))
 # (`isprint` is a test of the category, which is a table that is five times as large: this is what showing a string needs)
 const ISPRINT = BoolRunTable(cp -> Base.Unicode.UTF8PROC_CATEGORY_LU <= Base.Unicode.category_code(cp) <= Base.Unicode.UTF8PROC_CATEGORY_ZS)
+# (`isspace` is a test of the category too, of three categories, and it is asked of every `parse` of a number and every `strip`: a table of its own is a few bytes)
+const ISSPACE = BoolRunTable(cp -> isvalid(Char, cp) && Base.isspace(Char(cp)))
 # the case mappings, as how far the code point is moved: runs are long (`'a':'z'` all move by 32)
 const TOLOWER = RunTable(cp -> Int32(@ccall(utf8proc_tolower(cp::UInt32)::UInt32)) - Int32(cp), Int32)
 const TOUPPER = RunTable(cp -> Int32(@ccall(utf8proc_toupper(cp::UInt32)::UInt32)) - Int32(cp), Int32)
@@ -96,6 +98,9 @@ end
 
 @device_override Base.Unicode.islowercase(c::Char) = Base.ismalformed(c) ? false : lookup(ISLOWER, UInt32(c))
 @device_override Base.Unicode.isuppercase(c::Char) = Base.ismalformed(c) ? false : lookup(ISUPPER, UInt32(c))
+# (the comparisons of a `Char` are those of its bytes, as in Base: a character that is not valid can be between `'\t'` and `'\r'`, and is a space then)
+@device_override Base.Unicode.isspace(c::Char) =
+    c == ' ' || '\t' <= c <= '\r' || c == '\u85' || '\ua0' <= c && !Base.ismalformed(c) && lookup(ISSPACE, UInt32(c))
 @device_override Base.Unicode.isprint(c::Char) = Base.ismalformed(c) ? false : lookup(ISPRINT, UInt32(c))
 
 # The two letters of the category of a character (`Lu`, `Nd`, ...), which `show(io, MIME"text/plain"(), c)` of a `Char` writes (`display('a')`), are asked of utf8proc by

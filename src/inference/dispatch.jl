@@ -341,3 +341,21 @@ end
 # a function that returns such a tuple for a bonus on the size that is allowed (`inline_tupleret_bonus`, 400 in Julia). The bonus here is 10 times that, which is more than enough for `eigs` of Graphs.jl.
 
 CC.OptimizationParams(interp::OverridesInterpreter) = CC.OptimizationParams(interp.opt_params; inline_tupleret_bonus = 4_000)
+
+## `fma`
+#
+# `Core.Intrinsics.have_fma(T)` (which `fma`, `muladd`'s `Float64` method, `log`, `^`, `two_mul`, ... ask) is answered when the code is made, from the features that the function that it is in has, and the
+# functions of a program do not have them (the target machine does, but not the attribute of the function): the answer is then no, and `fma` is made by software, in many times the time that it takes. The program is made for
+# the machine that makes it, and that is the machine that Julia asked: it is that answer that is used.
+function CC.abstract_call_known(interp::OverridesInterpreter, f::Core.IntrinsicFunction, arginfo::CC.ArgInfo, si::CC.StmtInfo,
+                                vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int = CC.get_max_methods(interp, f, sv))
+    if f === Core.Intrinsics.have_fma && length(arginfo.argtypes) == 2
+        t = arginfo.argtypes[2]
+        T = t isa Core.Const ? t.val : (t isa DataType && t <: Type && t.parameters[1] isa DataType ? t.parameters[1] : nothing)
+        if T isa DataType && T in (Float16, Float32, Float64)
+            return CC.Future(CC.CallMeta(Core.Const(Core.Intrinsics.have_fma(T)), Union{}, CC.EFFECTS_TOTAL, CC.NoCallInfo()))
+        end
+    end
+    return @invoke CC.abstract_call_known(interp::CC.AbstractInterpreter, f::Any, arginfo::CC.ArgInfo, si::CC.StmtInfo,
+                                          vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int)
+end

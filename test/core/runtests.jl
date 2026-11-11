@@ -27,9 +27,11 @@ end
 end
 
 # dynamic dispatch, closures and C callbacks
-@testset verbose=true "Dispatch" include_timed("dispatch.jl")
-@testset verbose=true "Closures" include_timed("closures.jl")
-@testset verbose=true "CFunction" include_timed("cfunctions.jl")
+@testset verbose=true "Inference" begin
+    @testset verbose=true "Dispatch" include_timed("dispatch.jl")
+    include_timed("closures.jl")
+    include_timed("cfunctions.jl")
+end
 
 # the language and Base: values, numbers, strings, collections, symbols, globals
 @testset verbose=true "Language" include_timed("language.jl")

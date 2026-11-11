@@ -22,6 +22,8 @@ end
     "lowercase/uppercase"   => () -> (println(lowercase("HeLLo ÀÉÎ"), uppercase("HeLLo àéî"), uppercasefirst("élan")); 1),
     "isletter etc"          => () -> (cs = ('a', 'Z', '5', ' ', 'é', '∑', '\n'); println(count(isletter, cs), count(isuppercase, cs), count(islowercase, cs), count(isdigit, cs), count(isspace, cs)); 1),
     "textwidth"             => () -> (println(textwidth("abc"), textwidth("日本"), textwidth('é')); 1),
+    "isspace of characters that are not ASCII" => () -> (cs = ('\u00a0', '\u2003', '\u3000', 'é', ' ', '\u2028', 'a', '\u0085', '\u200b'); println(count(isspace, cs), " ", [isspace(Char(opaque(UInt32(c)))) for c in cs]); 0),
+    "strip and parse of spaces that are not ASCII" => () -> (t = strip(opaque("\u00a0 \u2003 42\u3000 ")); parse(Int, t) + length(t) * 100 + parse(Int, opaque(" 7\u00a0"))),
     "unicode" => @opaque(() -> (println("héllo ∑ 日本"); println('λ'); 1)),
     ])
 end
@@ -37,6 +39,7 @@ end
             bad += U.lookup(U.ISLOWER, cp) != !iszero(@ccall utf8proc_islower(cp::UInt32)::Cint)
             bad += U.lookup(U.ISUPPER, cp) != !iszero(@ccall utf8proc_isupper(cp::UInt32)::Cint)
             bad += U.lookup(U.ISPRINT, cp) != Base.Unicode.isprint(Char(cp))
+            bad += (isvalid(Char, cp) && U.lookup(U.ISSPACE, cp)) != (isvalid(Char, cp) && Base.isspace(Char(cp)))
             bad += UInt32(Int32(cp) + U.lookup(U.TOLOWER, cp)) != @ccall(utf8proc_tolower(cp::UInt32)::UInt32)
             bad += UInt32(Int32(cp) + U.lookup(U.TOUPPER, cp)) != @ccall(utf8proc_toupper(cp::UInt32)::UInt32)
             bad += UInt32(Int32(cp) + U.lookup(U.TOTITLE, cp)) != @ccall(utf8proc_totitle(cp::UInt32)::UInt32)
@@ -52,6 +55,7 @@ end
             c = reinterpret(Char, rand(rng, UInt32))
             ours = !Base.ismalformed(c) && U.lookup(U.ISPRINT, UInt32(c))
             bad += ours != Base.Unicode.isprint(c)
+            bad += (c == ' ' || '\t' <= c <= '\r' || c == '\u85' || '\ua0' <= c && !Base.ismalformed(c) && U.lookup(U.ISSPACE, UInt32(c))) != isspace(c)
         end
         @test bad == 0
     end
