@@ -331,7 +331,7 @@ end
 # also has none if everything that it allocates is allocated a finite number of times (nothing in a loop, in a function that calls itself, or in a function that is called from one).
 function has_collector(f, types = ENTRY_TYPES; small = false)
     StaticCompilerOverrides.StaticCompiler.GPUCompiler.JuliaContext() do ctx
-        mod = Base.invokelatest(static_llvm_module, f, types; small)
+        mod = Base.invokelatest(static_llvm_module, f, types; small, gc = true) # (`true`, not the default: with `STATIC_COMPILER_OVERRIDES_GC=3` the collector is run in stress mode, and is always there)
         try
             any(fn -> startswith(LLVM.name(fn), "julia_collect") && !LLVM.isdeclaration(fn), LLVM.functions(mod))
         finally
