@@ -12,7 +12,7 @@ blas_work() = (a = [sin(i + 2j) for i in 1:30, j in 1:30]; b = [cos(i - j) for i
     # a program that does not use BLAS does not load it
     @testset "not loaded when not used" begin
         exe_dir = mktempdir()
-        main = StaticCompilerOverrides.make_main(() -> 1 + 1)
+        main = StaticRuntime.make_main(() -> 1 + 1)
         exe = compile_executable(main, (Int, Ptr{Ptr{UInt8}}), exe_dir, string(nameof(main)))
         @test !occursin("blastrampoline", String(read(exe)))
     end

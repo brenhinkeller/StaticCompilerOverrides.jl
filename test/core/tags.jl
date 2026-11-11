@@ -86,7 +86,7 @@ tag_all() = (c = 0; for i in 1:length(TAG_VALUES); c = 11 * c + tag_code(TAG_VAL
 end
 
 @testset "Lowering of switches on type tags" begin
-    Runtime = StaticCompilerOverrides.Runtime
+    Runtime = StaticRuntime.Runtime
     # a switch on `tag & -16`, with cases that share a destination, phis in the merge block and in the destination
     # of a case, and no cases
     ir = """
@@ -131,7 +131,7 @@ end
 # `===` of objects that are not the same one (for the keys of a `Dict`, for instance): `jl_egal__unboxed` of the runtime
 # compares them by the plan that `egal_plan` makes for their type, which is in front of the layout of the type in the binary
 @testset "egal" begin
-    Runtime = StaticCompilerOverrides.Runtime
+    Runtime = StaticRuntime.Runtime
     # (equal, but not the same objects: the strings are made when the program runs, and the values are boxed)
     mk(s) = s * string(1)
     box(x) = Any[x][1]
@@ -168,8 +168,8 @@ end
 # What is in the binary depends on what the program uses (see "Binary size" in the manual): the plans for `===` of the types
 # only if something compares objects, and the table of the types of the small tags only if an index into it is not known
 @testset "Only what is used is in the binary" begin
-    ir(f) = (main = StaticCompilerOverrides.make_main(f);
-             GPUCompiler = StaticCompilerOverrides.StaticCompiler.GPUCompiler;
+    ir(f) = (main = StaticRuntime.make_main(f);
+             GPUCompiler = StaticRuntime.StaticCompiler.GPUCompiler;
              GPUCompiler.JuliaContext() do ctx
                  mod = Base.invokelatest(static_llvm_module, main, Tuple{Int,Ptr{Ptr{UInt8}}})
                  text = string(mod)

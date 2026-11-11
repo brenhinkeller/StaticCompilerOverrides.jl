@@ -6,7 +6,7 @@ mutable struct MutS; x::Int; end
 const GLOBAL_REF = Ref(0)
 const MIXED = Any[1, "str", 2.5, :sym, nothing, 'c', true, UInt8(7), (1, 2), [1, 2, 3]] # of different types
 struct Pt; x::Int; y::Float64; end
-StaticCompilerOverrides.add_show_candidates!(Pt, Tuple{Int,Float64})
+StaticRuntime.add_show_candidates!(Pt, Tuple{Int,Float64})
 struct Other; s::String; end
 classify(x) = x isa Int ? 1 : x isa String ? 10 : x isa Float64 ? 100 : x isa Symbol ? 1000 : x isa Nothing ? 10_000 :
               x isa Char ? 100_000 : x isa Bool ? 1_000_000 : x isa UInt8 ? 10_000_000 : x isa Tuple ? 100_000_000 : 1_000_000_000

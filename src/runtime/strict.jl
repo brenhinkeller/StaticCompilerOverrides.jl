@@ -132,7 +132,7 @@ function Base.showerror(io::IO, e::UnsupportedCodeError)
     if any(((_, inst),) -> occursin(r"%(stdout|stderr|stdin)\b", inst), e.pointers) ||
        any(((name, callers),) -> any(c -> c in ("print", "println", "format"), callers) && name == "ijl_apply_generic", e.dynamic)
         print(io, "\n\nHint: `stdout`, `stderr` and `stdin` of Base are globals of the abstract type `IO`, so what is done with them cannot be resolved when compiling. ",
-              "Use `print`, `println` and `show` without an `IO` (which write to the standard output), or `STDOUT`, `STDERR` and `STDIN` of StaticCompilerOverrides, as in `println(STDERR, \"message\")`. ",
+              "Use `print`, `println` and `show` without an `IO` (which write to the standard output), or `STDOUT`, `STDERR` and `STDIN` of StaticRuntime, as in `println(STDERR, \"message\")`. ",
               "For `@printf`, which uses `stdout` if it has no `io`: `@printf(STDOUT, \"...\", x)`, or `printf(c\"...\", x)` of StaticTools.")
     end
     if !isempty(e.globals) && !isempty(e.dynamic)

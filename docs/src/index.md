@@ -1,8 +1,8 @@
 ```@meta
-CurrentModule = StaticCompilerOverrides
+CurrentModule = StaticRuntime
 ```
 
-# StaticCompilerOverrides
+# StaticRuntime
 
 Glue between [StaticCompiler.jl](https://github.com/tshort/StaticCompiler.jl) and
 [StaticTools.jl](https://github.com/brenhinkeller/StaticTools.jl), to let as much ordinary Julia
@@ -10,7 +10,7 @@ code as possible compile to a standalone executable or shared library that does 
 `libjulia`.
 
 ```julia
-using StaticCompilerOverrides   # also loads (and re-exports) StaticCompiler and StaticTools
+using StaticRuntime   # also loads (and re-exports) StaticCompiler and StaticTools
 
 function main(argc::Int, argv::Ptr{Ptr{UInt8}})
     v = collect(1:argc+3)       # an ordinary Vector
@@ -242,7 +242,7 @@ Often, the code involved is only reached on a path that fails, for instance to b
 of an error. `strict = false` compiles such code anyway, defining those runtime functions to print
 a message and abort if they are ever called (and the addresses will crash the program if used).
 `allow = ("function_name", ...)` accepts specific runtime functions, and keeps the check for the rest.
-Run with `JULIA_DEBUG=StaticCompilerOverrides` to see which are defined this way.
+Run with `JULIA_DEBUG=StaticRuntime` to see which are defined this way.
 
 ## Dynamic dispatch on abstract types and on `Any`
 
@@ -273,7 +273,7 @@ Which types the union has depends on the type of the argument:
 * **An abstract type that has up to 16 concrete subtypes, which can all be listed**: the union is of all of them, defined when
   compiling, and that is all of the types that an object of the program can have. Nothing is left to chance: an object of a type
   that was not there is a `MethodError`, as in Julia. A package that defines more subtypes of `Shape` adds them to the union, and
-  their methods to the code. (`StaticCompilerOverrides.DISPATCH_LIMIT[]` is the limit of 16.)
+  their methods to the code. (`StaticRuntime.DISPATCH_LIMIT[]` is the limit of 16.)
 * **`Any`, and abstract types that can't be listed** (`Number`, `AbstractString`, `AbstractArray`, or one that has a parametric
   subtype whose instances are not known): the union is of the types that are *registered*, that are subtypes of it. These are
   the numbers, `String`, `Char`, `Symbol`, `Nothing` and `Missing`, the same types that `show` of a value of `Any` uses (so
@@ -286,7 +286,7 @@ Which types the union has depends on the type of the argument:
   A value of a type that is not registered **aborts the program when it reaches such a call**, with a message that says which
   call (`MethodError: no method matches the types of the arguments of a call of `f``), because it is not known when compiling
   which types the values of an `Any` can have. So compiling says, once for what it did this way, what was resolved over the
-  registered types, in a debug message (set `JULIA_DEBUG=StaticCompilerOverrides` to see it). Calls on values whose types are all registered
+  registered types, in a debug message (set `JULIA_DEBUG=StaticRuntime` to see it). Calls on values whose types are all registered
   are as fast as any other call: it is a few comparisons of the type tag. A binary that does not have such a call is not
   bigger for the list.
 
@@ -295,7 +295,7 @@ Which types the union has depends on the type of the argument:
 
 It applies to a call that is a dispatch on the types of its arguments (more than one method fits, or the one that does doesn't fit
 all that the arguments can be). A call of one method that fits all of them is not changed. A call with several arguments of
-these types has a case for each combination, up to 64 of them (`StaticCompilerOverrides.SPLIT_LIMIT[]`): `x + y` of two values of
+these types has a case for each combination, up to 64 of them (`StaticRuntime.SPLIT_LIMIT[]`): `x + y` of two values of
 `Any` is split, and `sort` of a `Vector{Any}` too.
 
 Still dynamic, and rejected when compiling:
@@ -438,7 +438,7 @@ of building strings in loops.
 The collector is tested on the host against an oracle (random graphs of objects, of which what is reached is known), and by
 compiling programs with it. `gc = N` (a number) is a mode for finding mistakes: the collector also runs every `N` allocations,
 and what it frees is overwritten, so that a use of memory that was freed is seen at once. All of the tests can be run so with
-the environment variable `STATIC_COMPILER_OVERRIDES_GC` (`false`, `true`, or a number), which sets the default of `gc`.
+the environment variable `STATIC_RUNTIME_GC` (`false`, `true`, or a number), which sets the default of `gc`.
 
 ## Exceptions
 
@@ -570,7 +570,7 @@ exit, which made sense when compiled code could not throw, but means that those 
 caught.
 
 A compilation uses exactly one overlay table, with Base itself as the fallback, so this package has
-a table of its own, [`StaticCompilerOverrides.method_table`](@ref), which does not contain those
+a table of its own, [`StaticRuntime.method_table`](@ref), which does not contain those
 overrides: errors throw, just as in Julia, and `try`/`catch` can catch them. Use the functions of
 this package (`compile_executable`, `compile_shlib`, `static_code_llvm`, ...), which are
 StaticCompiler's with this table as the default, and `@device_override` to add to it. These
@@ -587,7 +587,7 @@ element types that BLAS and LAPACK have. `LinearAlgebra` does these by calls of 
 (`BLAS.lbt_forward`). A program does the same: **it uses the libraries that were in use when it was compiled.**
 
 ```julia
-using StaticCompilerOverrides, LinearAlgebra
+using StaticRuntime, LinearAlgebra
 using AppleAccelerate; AppleAccelerate.load_accelerate()    # (or `using MKL`: any library that LBT forwards to)
 compile_executable(main, (Int, Ptr{Ptr{UInt8}}), "build")   # the program calls Accelerate
 ```
@@ -670,7 +670,7 @@ Also: `sleep` (as `nanosleep`), `splice!`, and `string(a, b, ...)` / interpolati
 Programs that use [MPI.jl](https://github.com/JuliaParallel/MPI.jl) compile, and run on several processes with `mpiexec`:
 
 ```julia
-using MPI, StaticCompilerOverrides
+using MPI, StaticRuntime
 
 function main(args::Vector{String})
     MPI.Init()
@@ -887,7 +887,7 @@ What does not work yet, or works differently from Julia, gathered in one place. 
 ## Testing that something compiles
 
 ```julia
-julia> using StaticCompilerOverrides
+julia> using StaticRuntime
 
 julia> @static_test sum(rand(10)) < 10     # compile, run, and compare with Julia
 Test Passed
@@ -906,5 +906,5 @@ needs besides libc.
 ```
 
 ```@autodocs
-Modules = [StaticCompilerOverrides, StaticCompilerOverrides.Runtime]
+Modules = [StaticRuntime, StaticRuntime.Runtime]
 ```

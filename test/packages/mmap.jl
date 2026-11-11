@@ -1,5 +1,5 @@
 # Mmap: files that are mapped to memory by their path, as arrays of bytes, numbers and matrices, from an offset, and new files that are made as long as the array needs.
-# (From an open stream, and anonymous mappings, are not supported: see `ext/StaticCompilerOverridesMmapExt.jl`.)
+# (From an open stream, and anonymous mappings, are not supported: see `ext/StaticRuntimeMmapExt.jl`.)
 
 @testset "Mmap" begin
     check_cases([

@@ -1,7 +1,7 @@
 # Helpers that the tests share: a program is compiled to an executable, and has to give what Julia gives for the same code.
 
 using Test, Random, Printf, Libdl
-using StaticCompilerOverrides
+using StaticRuntime
 
 # `include` of a file of the tests that is timed (`TEST_TIMING=1` prints the times at the end of `runtests.jl`)
 const FILE_TIMES = Pair{String,Float64}[]
@@ -20,7 +20,7 @@ const ENTRY_TYPES = (Int, Ptr{Ptr{UInt8}})
 Compile the zero-argument `f` as the program that prints its result (see `make_main`), and return the path of the executable.
 """
 function compile_main(f; kwargs...)
-    main = StaticCompilerOverrides.make_main(f)
+    main = StaticRuntime.make_main(f)
     return Base.invokelatest(compile_executable, main, ENTRY_TYPES, mktempdir(), string(nameof(main)); kwargs...)
 end
 
@@ -98,9 +98,9 @@ r6(x) = round(Int, 1e6 * x)
 # The number of instructions in the program of the zero-argument `f` (without the runtime, which is added when the program is made): a program that only prints a constant has a few,
 # because the compiler has run `f`.
 function program_size(f)
-    main = StaticCompilerOverrides.make_main(f)
+    main = StaticRuntime.make_main(f)
     return Base.invokelatest() do
-        StaticCompilerOverrides.StaticCompiler.GPUCompiler.JuliaContext() do ctx
+        StaticRuntime.StaticCompiler.GPUCompiler.JuliaContext() do ctx
             mod = Base.invokelatest(static_llvm_module, main, ENTRY_TYPES; strict = false, llvm_postprocess = m -> nothing)
             try
                 fns = [fn for fn in LLVM.functions(mod) if !LLVM.isdeclaration(fn) && !startswith(LLVM.name(fn), "j_")]
@@ -131,7 +131,7 @@ function check_cases(cases; broken = (), folded_ok = (), batch::Bool = true, chu
     todo = [i for i in eachindex(named) if !isbroken[i]]
     for group in Iterators.partition(todo, batch ? chunk : 1)
         fs = Function[named[i][2] for i in group]
-        statuses[group] = StaticCompilerOverrides.static_status_batch(fs; kwargs...)
+        statuses[group] = StaticRuntime.static_status_batch(fs; kwargs...)
     end
     for (i, (name, f)) in enumerate(named)
         @testset "$name" begin

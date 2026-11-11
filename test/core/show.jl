@@ -3,10 +3,10 @@
 
 struct ShowPt; x::Int; y::Float64; end
 struct ShowBox{T}; v::T; end
-StaticCompilerOverrides.add_show_candidates!(ShowPt, Tuple{Int,Float64})
+StaticRuntime.add_show_candidates!(ShowPt, Tuple{Int,Float64})
 
 @testset "show of containers" begin
-    S = StaticCompilerOverrides
+    S = StaticRuntime
     # (the output is compared with that of Julia by `static_status`)
     cases = [
         "Vector{Int}"      => () -> (println([1, 2, 3]); 1),

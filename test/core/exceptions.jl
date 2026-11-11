@@ -38,7 +38,7 @@ end
 assert_message(n::Int) = (@assert n > 0 "n = $n is not positive"; n + 1)
 @testset "@assert with a message" begin
     @test static_result(() -> assert_message(opaque(3))) == 4
-    main = StaticCompilerOverrides.make_main(() -> (try; assert_message(opaque(-5)); catch e; e isa AssertionError ? length(e.msg) : -1; end))
+    main = StaticRuntime.make_main(() -> (try; assert_message(opaque(-5)); catch e; e isa AssertionError ? length(e.msg) : -1; end))
     exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)))
     @test parse(Int, readchomp(`$exe`)) == length("n = -5 is not positive")
 end

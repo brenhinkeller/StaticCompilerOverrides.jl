@@ -1,9 +1,9 @@
 # What a compiled program needs to know about Dates when it is loaded: the tokens of a format (`DatePart{'y'}`, `Delim`, ...) are of types that differ by
 # a letter, which inference merges into `DatePart` when it takes one out of the tuple of a `DateFormat` (as the message of an error in parsing a date does),
 # so a call on one is made over these.
-module StaticCompilerOverridesDatesExt
+module StaticRuntimeDatesExt
 
-using StaticCompilerOverrides: add_family_candidates!
+using StaticRuntime: add_family_candidates!
 using Dates: Dates
 
 function __init__()

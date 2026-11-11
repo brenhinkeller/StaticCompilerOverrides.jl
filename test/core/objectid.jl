@@ -17,7 +17,7 @@ const OID_DICT = Dict(OidNamed("a", 1) => 10, OidNamed("b", 2) => 20, OidNamed("
 const OID_PTS = Dict(OidPt(1, 2.0) => 1, OidPt(3, 4.0) => 2)
 
 @testset "Objectid" begin
-    S = StaticCompilerOverrides
+    S = StaticRuntime
     # the same number as Julia: for the sizes of values that are hashed in different ways (1, 2, 4, 8 and more bytes, of
     # which more than one block of the hash), padding, Unions, references, nested structs, and strings
     values = Any[1, UInt8(3), Int16(-4), Int32(7), 2.5, Float32(1.5), true, 'c', (1, 2), (1, "a"), (1, 2.0, 3),

@@ -59,7 +59,7 @@ end
 # what inference finds for them is what Julia finds (the type of the elements is not lost)
 @testset "Types of tuple elements" begin
     t_iter(i::Int) = iterate(TU_HET, i)
-    ours = last(first(StaticCompilerOverrides.static_code_typed(t_iter, (Int,))))
+    ours = last(first(StaticRuntime.static_code_typed(t_iter, (Int,))))
     @test ours == only(Base.return_types(t_iter, (Int,)))
     @test ours != Any
 end

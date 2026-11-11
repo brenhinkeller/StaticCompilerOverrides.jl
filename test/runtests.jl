@@ -7,11 +7,11 @@ using Test, Random, Printf, LinearAlgebra, Libdl, Dates, SparseArrays, Base64, C
 using SHA, UUIDs, Sockets, Unicode, TOML, Markdown, Mmap
 using LLVM
 using LLVM: @dispose
-if Base.find_package("StaticCompilerOverrides") === nothing
-    include(joinpath(@__DIR__, "..", "src", "StaticCompilerOverrides.jl"))
-    using .StaticCompilerOverrides
+if Base.find_package("StaticRuntime") === nothing
+    include(joinpath(@__DIR__, "..", "src", "StaticRuntime.jl"))
+    using .StaticRuntime
 else
-    using StaticCompilerOverrides
+    using StaticRuntime
 end
 
 const GROUP = get(ENV, "GROUP", "All")

@@ -89,7 +89,7 @@ end
 @testset "Plain symbol names" begin
     names = ["a", "abc", "a1", "a!", "_x", "A", "x_y", "1a", "a b", "a+b", "+", "==", "", "α", "a.b", "!a", "end", "a'"]
     for name in names
-        @test StaticCompilerOverrides.Runtime.plain_symbol_name(codeunits(name)) == StaticCompilerOverrides.symbol_is_plain(Symbol(name))
+        @test StaticRuntime.Runtime.plain_symbol_name(codeunits(name)) == StaticRuntime.symbol_is_plain(Symbol(name))
     end
 end
 

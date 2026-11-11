@@ -1,16 +1,16 @@
-using StaticCompilerOverrides
+using StaticRuntime
 using Documenter
 
-DocMeta.setdocmeta!(StaticCompilerOverrides, :DocTestSetup, :(using StaticCompilerOverrides); recursive=true)
+DocMeta.setdocmeta!(StaticRuntime, :DocTestSetup, :(using StaticRuntime); recursive=true)
 
 makedocs(;
-    modules=[StaticCompilerOverrides, StaticCompilerOverrides.Runtime],
+    modules=[StaticRuntime, StaticRuntime.Runtime],
     authors="C. Brenhin Keller",
-    repo="https://github.com/brenhinkeller/StaticCompilerOverrides.jl/blob/{commit}{path}#{line}",
-    sitename="StaticCompilerOverrides.jl",
+    repo="https://github.com/brenhinkeller/StaticRuntime.jl/blob/{commit}{path}#{line}",
+    sitename="StaticRuntime.jl",
     format=Documenter.HTML(;
         prettyurls=get(ENV, "CI", "false") == "true",
-        canonical="https://brenhinkeller.github.io/StaticCompilerOverrides.jl",
+        canonical="https://brenhinkeller.github.io/StaticRuntime.jl",
         assets=String[],
     ),
     pages=[
@@ -19,6 +19,6 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/brenhinkeller/StaticCompilerOverrides.jl",
+    repo="github.com/brenhinkeller/StaticRuntime.jl",
     devbranch="main",
 )

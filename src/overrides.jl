@@ -34,7 +34,7 @@ OverridesParams() = OverridesParams(hash(FUNCTION_CANDIDATES, hash(CANDIDATES_VE
 
 Base.Experimental.@MethodTable(method_table)
 @doc """
-    StaticCompilerOverrides.method_table
+    StaticRuntime.method_table
 
 The overlay method table of this package, which `@device_override` adds methods to, and which the functions
 that compile (`compile_executable` and the others) use by default.
@@ -44,7 +44,7 @@ that compile (`compile_executable` and the others) use by default.
     @device_override old_bad_method(args...) = new_good_method(args...)
 
 Override a method that can't be compiled statically (`old_bad_method`) with one that can, in the
-method table of StaticCompilerOverrides, which is the one used by the functions of this package
+method table of StaticRuntime, which is the one used by the functions of this package
 (`compile_executable`, ...). Unlike `StaticCompiler.@device_override`, this does not affect
 compilation with StaticCompiler's own functions.
 """
@@ -53,10 +53,10 @@ macro device_override(ex)
 end
 
 # the collector is on, where it can be (it needs to know where the stack of the program starts); the environment variable
-# `STATIC_COMPILER_OVERRIDES_GC` (`false`, `true`, or a number of allocations: see `gc`) is for running all the tests (or any
+# `STATIC_RUNTIME_GC` (`false`, `true`, or a number of allocations: see `gc`) is for running all the tests (or any
 # program that is compiled) with another, for finding bugs in the collector
 function default_gc()
-    setting = get(ENV, "STATIC_COMPILER_OVERRIDES_GC", "")
+    setting = get(ENV, "STATIC_RUNTIME_GC", "")
     if !isempty(setting)
         n = tryparse(Int, setting)
         return n === nothing ? parse(Bool, setting) : n
@@ -108,9 +108,9 @@ for f in (:compile_executable, :compile_shlib, :static_code_typed, :static_llvm_
             return result
         end
         @doc """
-            $($f)(args...; method_table = StaticCompilerOverrides.method_table, strict = true, allow = (), kwargs...)
+            $($f)(args...; method_table = StaticRuntime.method_table, strict = true, allow = (), kwargs...)
 
-        `StaticCompiler.$($f)`, using the method table of StaticCompilerOverrides by default, and with its
+        `StaticCompiler.$($f)`, using the method table of StaticRuntime by default, and with its
         runtime (allocation, exceptions, ...) added to the code that is generated.
 
         By default (`strict = true`) the code is rejected with an [`UnsupportedCodeError`](@ref) if
@@ -119,7 +119,7 @@ for f in (:compile_executable, :compile_shlib, :static_code_typed, :static_llvm_
         compiles it anyway, with calls that need the runtime aborting the program if they are reached.
         `allow` is a collection of names of runtime functions (as in the error message) to accept even
         in strict mode. A call on a value of `Any` (or of an abstract type that can't be listed) is made over the registered types (see
-        [`add_dispatch_candidates!`](@ref)), and compiling says so in a debug message (`JULIA_DEBUG=StaticCompilerOverrides`).
+        [`add_dispatch_candidates!`](@ref)), and compiling says so in a debug message (`JULIA_DEBUG=StaticRuntime`).
 
         `libraries` is where a program looks for the libraries that it calls functions of (BigInt, Regex, a JLL, a library of yours): `:system` (the default)
         at the path that they have when compiling, or `:bundle`, in the folder `lib` next to the program, where they are copied (those that they need as

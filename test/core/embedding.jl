@@ -6,8 +6,8 @@
 # tag for some lengths. Check that, for every length, the right object is found.
 
 @testset "Interior pointers" begin
-    SC = StaticCompilerOverrides.StaticCompiler
-    Runtime = StaticCompilerOverrides.Runtime
+    SC = StaticRuntime.StaticCompiler
+    Runtime = StaticRuntime.Runtime
 
     # a module with a function that loads a byte from `addr`; returns the (name of the global,
     # offset into it) that the address was replaced by, or `nothing`
@@ -50,7 +50,7 @@
         for offset in (0, 8, 16, 24)
             offset == 0 || len >= offset - 8 + 1 || continue
             got = embedded(base + offset)
-            expected = ("static_object_" * string(base, base = 16), StaticCompilerOverrides.Runtime.EMBED_HEADER + offset)
+            expected = ("static_object_" * string(base, base = 16), StaticRuntime.Runtime.EMBED_HEADER + offset)
             got == expected || push!(failures, "length $len, offset $offset: got $got, expected $expected")
         end
     end
@@ -65,7 +65,7 @@
         for offset in (0, 16, 24)
             offset == 0 || len > offset - 16 || continue
             got = embedded(base + offset)
-            expected = ("static_object_" * string(base, base = 16), StaticCompilerOverrides.Runtime.EMBED_HEADER + offset)
+            expected = ("static_object_" * string(base, base = 16), StaticRuntime.Runtime.EMBED_HEADER + offset)
             got == expected || push!(failures, "Memory{UInt8} of length $len, offset $offset: got $got, expected $expected")
         end
     end
@@ -96,9 +96,9 @@ end
 # The type objects that a program has are there to be told apart (the tag of an object, the type of an `isa`), and to be named: the
 # supertypes, the wrappers and the names of the fields of them are not copied, which is most of the objects of a small program
 @testset "Types are not copied with their supertypes" begin
-    Runtime = StaticCompilerOverrides.Runtime
+    Runtime = StaticRuntime.Runtime
     embedded = Any[]
-    main = StaticCompilerOverrides.make_main(() -> (println(42); 1))
+    main = StaticRuntime.make_main(() -> (println(42); 1))
     mod = Base.invokelatest(static_llvm_module, main, Tuple{Int,Ptr{Ptr{UInt8}}}; llvm_postprocess = mod -> begin
         Runtime.link_runtime!(mod; strict = true, allow = (), gc = false)
         for g in LLVM.globals(mod)
@@ -147,8 +147,8 @@ end
 # the constant `115938146` was inside a symbol, and the program printed the address of a copy of it instead). A number is only an address if it is used as one.
 const NUMBER_STRING = "a string that is long enough to hold an address"
 @testset "Numbers that are data are not addresses" begin
-    SC = StaticCompilerOverrides.StaticCompiler
-    Runtime = StaticCompilerOverrides.Runtime
+    SC = StaticRuntime.StaticCompiler
+    Runtime = StaticRuntime.Runtime
     i64() = LLVM.Int64Type() # (types are made in the context that is active)
 
     # whether the number `N` is still a number (an integer constant) in the instruction that `make` makes of it, after the constants are embedded

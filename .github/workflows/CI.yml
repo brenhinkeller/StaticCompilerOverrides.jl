@@ -63,7 +63,7 @@ jobs:
       - uses: julia-actions/julia-runtest@v1
         env:
           GROUP: ${{ matrix.group }}
-          STATIC_COMPILER_OVERRIDES_GC: ${{ matrix.gc }}
+          STATIC_RUNTIME_GC: ${{ matrix.gc }}
           # (a case whose program is only a print of an answer that the compiler found fails; once is enough: the collector does not change that)
           TEST_FOLDED: ${{ matrix.gc == 'true' && '1' || '' }}
       - uses: julia-actions/julia-processcoverage@v1
@@ -114,6 +114,6 @@ jobs:
       - run: |
           julia --project=docs -e '
             using Documenter: DocMeta, doctest
-            using StaticCompilerOverrides
-            DocMeta.setdocmeta!(StaticCompilerOverrides, :DocTestSetup, :(using StaticCompilerOverrides); recursive=true)
-            doctest(StaticCompilerOverrides)'
+            using StaticRuntime
+            DocMeta.setdocmeta!(StaticRuntime, :DocTestSetup, :(using StaticRuntime); recursive=true)
+            doctest(StaticRuntime)'

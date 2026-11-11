@@ -1,8 +1,8 @@
 # `base64encode` and `base64decode` of a string or of bytes, written out: Base64's are streams that wrap an `IO` of a type that is not known when compiling, and that
 # write to it through methods that are looked up when the program runs. (`base64encode` of other values, and of a function that writes, are not supported.)
-module StaticCompilerOverridesBase64Ext
+module StaticRuntimeBase64Ext
 
-using StaticCompilerOverrides: @device_override
+using StaticRuntime: @device_override
 using Base64: Base64
 
 const ENCODE = Vector{UInt8}("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")

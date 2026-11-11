@@ -1,4 +1,4 @@
-# StaticCompilerOverrides
+# StaticRuntime
 
 [![Docs][docs-dev-img]][docs-dev-url]
 [![CI][ci-img]][ci-url]
@@ -18,7 +18,7 @@ Ordinary Julia code, with arrays, string interpolation, `parse`, and printing of
 native executable that doesn't need Julia installed:
 
 ```julia
-using StaticCompilerOverrides
+using StaticRuntime
 
 # A sieve of Eratosthenes, with the limit from the command line
 function main(args::Vector{String})
@@ -130,14 +130,14 @@ Code that we know can't work in a standalone binary is rejected when compiling, 
 
 The main limits, which the manual has in full:
 
-* **Dynamic behavior**: a value of an unregistered type aborts the program when it reaches a dispatch over registered types (compiling says what it did this way, with `JULIA_DEBUG=StaticCompilerOverrides`; `add_dispatch_candidates!` adds types). Not supported: types that are only known when the program runs and can't be listed, `eval`, tasks, `Channel`s and threads, and a tuple that has a `Union` as an element and is not removed by inlining (one that a function that is not inlined returns, or that is stored in a collection).
+* **Dynamic behavior**: a value of an unregistered type aborts the program when it reaches a dispatch over registered types (compiling says what it did this way, with `JULIA_DEBUG=StaticRuntime`; `add_dispatch_candidates!` adds types). Not supported: types that are only known when the program runs and can't be listed, `eval`, tasks, `Channel`s and threads, and a tuple that has a `Union` as an element and is not removed by inlining (one that a function that is not inlined returns, or that is stored in a collection).
 * **Libraries of Julia that are not libraries of their own**: `Markdown` (its parser needs Julia's), `TOML.parse`, `Unicode.normalize` and `graphemes` (utf8proc), `@time` and `Test`.
 * **Libraries**: by default a program needs its libraries at the paths that they had when compiling (`libraries = :bundle` copies them next to the program; BLAS is not bundled yet). `atexit` functions are not run, and a reduction in MPI with an operator of your own (a C callback into Julia) is not supported.
 * **Platforms**: macOS and Linux for the collector; the machine that compiles is the one that is targeted (no cross-compiling, no Windows). Linux is tested in CI (x86 and aarch64), and the libraries there are the least tested.
 * **Memory**: the collector is conservative and the heap is not thread-safe (a library called from several threads needs a lock; on a stack that is not its thread's it frees nothing).
 * **Runtime differences**: at most 256 nested `try` blocks, no stack overflow check (infinite recursion crashes), and uncaught exceptions exit with a short message and no backtrace.
 
-See [Known limitations](https://brenhinkeller.github.io/StaticCompilerOverrides.jl/dev/#Known-limitations) in the manual for the complete list and the reasons.
+See [Known limitations](https://brenhinkeller.github.io/StaticRuntime.jl/dev/#Known-limitations) in the manual for the complete list and the reasons.
 
 ### Source layout
 
@@ -151,12 +151,12 @@ See [Known limitations](https://brenhinkeller.github.io/StaticCompilerOverrides.
 
 `] test` runs all of them: the tests of the compiler, the runtime and the language (`test/core`), and those of the standard libraries and the packages that programs use (`test/packages`).
 Most of them compile a program and compare what it prints with what Julia prints for the same code. Set `GROUP=Core` or `GROUP=Packages` to run one of the two, `PACKAGES=Dates,MPI`
-to run some of the files of `Packages` (the MPI tests need an MPI library, which MPI.jl installs), `TEST_TIMING=1` to print the time that each file took, and `TEST_FOLDED=1` to fail the cases whose program is only a print of an answer that the compiler found (`opaque` in `test/helpers.jl` makes values that it does not know). `STATIC_COMPILER_OVERRIDES_GC=3`
+to run some of the files of `Packages` (the MPI tests need an MPI library, which MPI.jl installs), `TEST_TIMING=1` to print the time that each file took, and `TEST_FOLDED=1` to fail the cases whose program is only a print of an answer that the compiler found (`opaque` in `test/helpers.jl` makes values that it does not know). `STATIC_RUNTIME_GC=3`
 runs the programs with the collector in stress mode.
 
 [docs-dev-img]: https://img.shields.io/badge/docs-dev-blue.svg
-[docs-dev-url]: https://brenhinkeller.github.io/StaticCompilerOverrides.jl/dev/
-[ci-img]: https://github.com/brenhinkeller/StaticCompilerOverrides.jl/workflows/CI/badge.svg
-[ci-url]: https://github.com/brenhinkeller/StaticCompilerOverrides.jl/actions/workflows/CI.yml
-[codecov-img]: http://codecov.io/github/brenhinkeller/StaticCompilerOverrides.jl/coverage.svg?branch=main
-[codecov-url]: http://app.codecov.io/github/brenhinkeller/StaticCompilerOverrides.jl?branch=main
+[docs-dev-url]: https://brenhinkeller.github.io/StaticRuntime.jl/dev/
+[ci-img]: https://github.com/brenhinkeller/StaticRuntime.jl/workflows/CI/badge.svg
+[ci-url]: https://github.com/brenhinkeller/StaticRuntime.jl/actions/workflows/CI.yml
+[codecov-img]: http://codecov.io/github/brenhinkeller/StaticRuntime.jl/coverage.svg?branch=main
+[codecov-url]: http://app.codecov.io/github/brenhinkeller/StaticRuntime.jl?branch=main

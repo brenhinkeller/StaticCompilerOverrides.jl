@@ -93,7 +93,7 @@ dopen(a::DOpenE) = 5
 
     @testset "a type that is not registered is an error when running, and registering it" begin
         exe_output(f; kwargs...) = begin
-            main = StaticCompilerOverrides.make_main(f)
+            main = StaticRuntime.make_main(f)
             exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)); kwargs...)
             out = IOBuffer()
             p = run(ignorestatus(pipeline(`$exe`; stdout = out, stderr = devnull)))
@@ -130,13 +130,13 @@ dopen(a::DOpenE) = 5
     # the addresses of the types that are in it): all of the tests then fail, and the last method is called, for every type. The types
     # must not be numbers while the code is optimized, so what LLVM would have to do that with is not there.
     @testset "the tests of the types are not arithmetic on addresses" begin
-        SC = StaticCompilerOverrides.StaticCompiler
+        SC = StaticRuntime.StaticCompiler
         # (what the code has of the types when it has been optimized, which is when the runtime is added to it)
         type_numbers = Ref(-1)
-        check(mod) = (type_numbers[] = length(StaticCompilerOverrides.Runtime.type_number_constants(mod)) +
-                          count(a -> StaticCompilerOverrides.Runtime.object_type(a) === DataType, keys(StaticCompilerOverrides.Runtime.inttoptr_constants(mod)));
-                      StaticCompilerOverrides.Runtime.link_runtime!(mod))
-        main = StaticCompilerOverrides.make_main(() -> (s = 0; for a in DALL; s += dvalue(a); end; s))
+        check(mod) = (type_numbers[] = length(StaticRuntime.Runtime.type_number_constants(mod)) +
+                          count(a -> StaticRuntime.Runtime.object_type(a) === DataType, keys(StaticRuntime.Runtime.inttoptr_constants(mod)));
+                      StaticRuntime.Runtime.link_runtime!(mod))
+        main = StaticRuntime.make_main(() -> (s = 0; for a in DALL; s += dvalue(a); end; s))
         ir = SC.GPUCompiler.JuliaContext() do ctx
             mod = Base.invokelatest(static_llvm_module, main, Tuple{Int,Ptr{Ptr{UInt8}}}; llvm_postprocess = check)
             try string(mod) finally SC.LLVM.dispose(mod) end
@@ -155,18 +155,18 @@ end
 
 # GPUCompiler's functions are specialized for the parameters of this package only: what StaticCompiler compiles on its own is unchanged
 @testset "Our compilations only" begin
-    SC = StaticCompilerOverrides.StaticCompiler
+    SC = StaticRuntime.StaticCompiler
     splitting(params; kwargs...) = SC.GPUCompiler.inference_params(first(SC.static_job(identity, (Int,); params, kwargs...))).max_union_splitting
     # (also with our method table: it is the parameters that tell)
-    @test splitting(SC.StaticCompilerParams(); method_table = StaticCompilerOverrides.method_table) == Core.Compiler.InferenceParams().max_union_splitting
+    @test splitting(SC.StaticCompilerParams(); method_table = StaticRuntime.method_table) == Core.Compiler.InferenceParams().max_union_splitting
     @test splitting(SC.StaticCompilerParams()) == Core.Compiler.InferenceParams().max_union_splitting
-    @test splitting(StaticCompilerOverrides.OverridesParams(); method_table = StaticCompilerOverrides.method_table) >= StaticCompilerOverrides.SPLIT_LIMIT[]
+    @test splitting(StaticRuntime.OverridesParams(); method_table = StaticRuntime.method_table) >= StaticRuntime.SPLIT_LIMIT[]
     # the interpreter of our compilations is of a type of its own (so that the methods that change inference are for it only); StaticCompiler's own
     # compilations have GPUCompiler's interpreter, whatever is loaded
     interpreter(params; kwargs...) = SC.GPUCompiler.get_interpreter(first(SC.static_job(identity, (Int,); params, kwargs...)))
-    @test interpreter(StaticCompilerOverrides.OverridesParams(); method_table = StaticCompilerOverrides.method_table) isa StaticCompilerOverrides.OverridesInterpreter
-    @test !(interpreter(SC.StaticCompilerParams()) isa StaticCompilerOverrides.OverridesInterpreter)
-    @test !(interpreter(SC.StaticCompilerParams(); method_table = StaticCompilerOverrides.method_table) isa StaticCompilerOverrides.OverridesInterpreter)
+    @test interpreter(StaticRuntime.OverridesParams(); method_table = StaticRuntime.method_table) isa StaticRuntime.OverridesInterpreter
+    @test !(interpreter(SC.StaticCompilerParams()) isa StaticRuntime.OverridesInterpreter)
+    @test !(interpreter(SC.StaticCompilerParams(); method_table = StaticRuntime.method_table) isa StaticRuntime.OverridesInterpreter)
     # and they infer as they did: what `invokelatest` calls is not known to them
     plain_invokelatest() = Base.invokelatest(+, Base.inferencebarrier(1)::Int, 2)
     @test first(SC.static_code_typed(plain_invokelatest, ())).second === Any

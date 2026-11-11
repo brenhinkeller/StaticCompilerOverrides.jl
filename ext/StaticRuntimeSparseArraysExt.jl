@@ -2,9 +2,9 @@
 # task, in the storage of the task, which a program does not have, and calls back into Julia when something fails, through a function that Julia makes a C function of.
 # Here the program has one common for each size of integer, and the error is not given back by that function: the code of the failure is, in the `status` of the common,
 # which is what `check_status` looks at (the message that Julia keeps there is what the function was for, so the exception says the code instead).
-module StaticCompilerOverridesSparseArraysExt
+module StaticRuntimeSparseArraysExt
 
-using StaticCompilerOverrides: @device_override
+using StaticRuntime: @device_override
 using SparseArrays: SparseArrays
 using SparseArrays: LibSuiteSparse
 const ishermitian = SparseArrays.LinearAlgebra.ishermitian

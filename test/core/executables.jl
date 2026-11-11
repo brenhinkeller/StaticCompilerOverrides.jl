@@ -50,7 +50,7 @@ end
 @static if Sys.isapple()
     @testset "Object files have a platform load command" begin
         dir = mktempdir()
-        main = StaticCompilerOverrides.make_main(() -> 1)
+        main = StaticRuntime.make_main(() -> 1)
         name = string(nameof(main))
         Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), dir, name)
         @test occursin("LC_BUILD_VERSION", read(`otool -l $(joinpath(dir, name * ".o"))`, String))

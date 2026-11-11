@@ -246,7 +246,7 @@ function CC.abstract_call_gf_by_type(interp::OverridesInterpreter, @nospecialize
 end
 
 # What the compile that has just been done did over the registered types, as a debug message (shown with
-# `JULIA_DEBUG=StaticCompilerOverrides`): a program that has a value of a type that is not one of them aborts when it
+# `JULIA_DEBUG=StaticRuntime`): a program that has a value of a type that is not one of them aborts when it
 # reaches such a call (and says which one)
 function report_registered_dispatch()
     isempty(REGISTERED_CALLS) && return

@@ -19,7 +19,7 @@ end
 @testset "<: with the bounds checks on" begin
     script = joinpath(mktempdir(), "subtype_boundscheck.jl")
     write(script, """
-        using Test, Random, StaticCompilerOverrides
+        using Test, Random, StaticRuntime
         include($(repr(joinpath(@__DIR__, "subtype_cases.jl"))))
         print(static_result(sub_eltype_broadcast) == sub_eltype_broadcast() ? "ok" : "wrong")
         """)

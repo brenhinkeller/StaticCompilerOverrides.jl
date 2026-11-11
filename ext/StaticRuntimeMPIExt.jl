@@ -11,9 +11,9 @@
 #
 # The handles of the constants (`MPI.COMM_WORLD`, `MPI.INT`, `MPI.SUM`, ...) are the numbers that the library has them as when compiling, which are
 # the same each time for the MPICH family (MPICH, Intel MPI, and the libraries of the MPI ABI), and are addresses for Open MPI, which a program that is compiled can't use.
-module StaticCompilerOverridesMPIExt
+module StaticRuntimeMPIExt
 
-using StaticCompilerOverrides: @device_override
+using StaticRuntime: @device_override
 using MPI: MPI
 
 # the hooks that are registered now, written as calls of each (the functions are constants, so each call is to a function whose type is known)

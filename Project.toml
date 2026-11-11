@@ -1,4 +1,4 @@
-name = "StaticCompilerOverrides"
+name = "StaticRuntime"
 uuid = "d747b762-a330-4f6e-bc20-fedef305c130"
 version = "0.1.0"
 authors = ["C. Brenhin Keller and contributors"]
@@ -24,12 +24,12 @@ Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 
 [extensions]
-StaticCompilerOverridesBase64Ext = "Base64"
-StaticCompilerOverridesDatesExt = "Dates"
-StaticCompilerOverridesLinearAlgebraExt = "LinearAlgebra"
-StaticCompilerOverridesMPIExt = "MPI"
-StaticCompilerOverridesMmapExt = "Mmap"
-StaticCompilerOverridesSparseArraysExt = "SparseArrays"
+StaticRuntimeBase64Ext = "Base64"
+StaticRuntimeDatesExt = "Dates"
+StaticRuntimeLinearAlgebraExt = "LinearAlgebra"
+StaticRuntimeMPIExt = "MPI"
+StaticRuntimeMmapExt = "Mmap"
+StaticRuntimeSparseArraysExt = "SparseArrays"
 
 [sources]
 StaticCompiler = {rev = "postprocess", url = "https://github.com/tshort/StaticCompiler.jl"}

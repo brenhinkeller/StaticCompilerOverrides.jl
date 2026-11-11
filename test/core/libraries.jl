@@ -77,7 +77,7 @@ using Libdl
         global TEST_LIB_A = lib_a
         global TEST_LIB_B = lib_b
         function run_compiled(f; kwargs...)
-            main = StaticCompilerOverrides.make_main(f)
+            main = StaticRuntime.make_main(f)
             out = mktempdir()
             exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), out, string(nameof(main)); kwargs...)
             return out, exe
@@ -142,7 +142,7 @@ const TEST_LIBM = Libdl.LazyLibrary(Base.libm_name)
     @test isempty(undefined_symbols(f) ∩ ["ijl_lazy_load_and_lookup", "ijl_load_and_lookup"])
     # another library: loaded when the program runs, from the path that it had when compiling
     if Libdl.dlopen("libmpfr", throw_error = false) !== nothing
-        main = StaticCompilerOverrides.make_main(() -> (length(mpfr_version())))
+        main = StaticRuntime.make_main(() -> (length(mpfr_version())))
         exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)))
         @test parse(Int, readchomp(`$exe`)) == length(mpfr_version())
     else

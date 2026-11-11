@@ -7,7 +7,7 @@
 # `Vector`, a type, a `Dict` that is a `const`. A binary does not have the process, so the objects are copied into it (`embed_constants!`), and
 # each address is replaced by the copy. Nothing says which numbers are addresses of objects and which are only numbers, and the memory of
 # the process is not described anywhere that this can ask: so what is done is made of checks, each of which has to hold for an address to be
-# an object, and each of which is the reason for a failure that the messages say (`JULIA_DEBUG=StaticCompilerOverrides`):
+# an object, and each of which is the reason for a failure that the messages say (`JULIA_DEBUG=StaticRuntime`):
 #
 # 1. *An object is where its tag says.* The word before an address is its type tag: a small number (the builtin types), or the address of a
 #    `DataType`. That `DataType` has to have the tag of a `DataType`, a name with the tag of a `TypeName`, a supertype with the tag of a

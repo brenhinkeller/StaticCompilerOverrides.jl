@@ -3,7 +3,7 @@
 #
 # Base does these with libuv (`uv_fs_*`), which needs the event loop. What is different: an error is a `SystemError` (with the message of `strerror`), where Base's is an
 # `IOError` that has the code of libuv; a program that catches `IOError` for a missing file catches `SystemError` here (and `isfile` and `ispath` don't throw for one that is missing, as in Base).
-# (`Mmap` is in `ext/StaticCompilerOverridesMmapExt.jl`.) Not here: `symlink`, `chmod`, `touch`, and the others that Base has.
+# (`Mmap` is in `ext/StaticRuntimeMmapExt.jl`.) Not here: `symlink`, `chmod`, `touch`, and the others that Base has.
 
 # `errno`, as libc has it (a function that gives where it is: its name is not the same on the systems)
 @static if Sys.isapple()

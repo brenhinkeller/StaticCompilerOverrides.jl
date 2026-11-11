@@ -83,7 +83,7 @@ const USER_MODULES = Dict{Module,Bool}()
 function user_module(mod::Module)
     get!(USER_MODULES, mod) do
         root = Base.moduleroot(mod)
-        (root === Base || root === Core || root === Base.Compiler || root === StaticCompilerOverrides || root === StaticTools || root === StaticCompiler) && return false
+        (root === Base || root === Core || root === Base.Compiler || root === StaticRuntime || root === StaticTools || root === StaticCompiler) && return false
         dir = try pkgdir(root) catch; nothing end
         dir !== nothing && startswith(dir, Sys.STDLIB) && return false
         return true

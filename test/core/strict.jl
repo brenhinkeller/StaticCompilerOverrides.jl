@@ -4,7 +4,7 @@
 # The method table of this package does not contain StaticCompiler's overrides of the error
 # helpers (which print and exit), so that errors can be caught; and StaticCompiler's does.
 @testset "Method tables" begin
-    SC = StaticCompilerOverrides.StaticCompiler
+    SC = StaticRuntime.StaticCompiler
     domain_error(x::Int) = Base.Math.throw_complex_domainerror(:sqrt, x)
     function uses_quirk(table)
         ir = SC.GPUCompiler.JuliaContext() do ctx
@@ -13,7 +13,7 @@
         end
         return occursin("requires a complex input", ir) # the message of the override in quirks.jl
     end
-    @test !uses_quirk(StaticCompilerOverrides.method_table)
+    @test !uses_quirk(StaticRuntime.method_table)
     @test uses_quirk(SC.method_table)
 end
 
@@ -22,7 +22,7 @@ end
 @testset "Strict mode" begin
     # the type of the stream is not known when compiling (an abstract type that has too many subtypes, none of which is registered: dynamic dispatch)
     printing() = (io = Base.inferencebarrier(STDOUT)::IO; println(io, "a"); 1)
-    main = StaticCompilerOverrides.make_main(printing)
+    main = StaticRuntime.make_main(printing)
     compile(; kwargs...) = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)); kwargs...)
 
     err = try compile(); nothing catch e; e end
@@ -34,7 +34,7 @@ end
 
     # the global `stderr` has the abstract type `IO`: the message says to use `STDERR`
     uses_stderr() = (println(stderr, "message"); 1)
-    stderr_main = StaticCompilerOverrides.make_main(uses_stderr)
+    stderr_main = StaticRuntime.make_main(uses_stderr)
     err2 = try Base.invokelatest(compile_executable, stderr_main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(stderr_main))); nothing catch e; e end
     @test err2 isa UnsupportedCodeError
     @test occursin("STDERR", sprint(showerror, err2))
@@ -43,7 +43,7 @@ end
     # strict = false compiles code that has dynamic dispatch anyway (and the call aborts the program if
     # it is reached); `allow` accepts specific runtime functions, and keeps the check for the rest
     dynamic() = (io = Base.inferencebarrier(STDOUT)::IO; println(io, 3); 1)
-    dyn_main = StaticCompilerOverrides.make_main(dynamic)
+    dyn_main = StaticRuntime.make_main(dynamic)
     compile_dynamic(; kwargs...) = Base.invokelatest(compile_executable, dyn_main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(dyn_main)); kwargs...)
     @test_throws UnsupportedCodeError compile_dynamic()
     @test isfile(compile_dynamic(strict = false))
@@ -53,7 +53,7 @@ end
                                                         string(nameof(stderr_main)); allow = ("ijl_apply_generic",))
     # code that is supported is not affected
     ok() = 1
-    ok_main = StaticCompilerOverrides.make_main(ok)
+    ok_main = StaticRuntime.make_main(ok)
     @test isfile(Base.invokelatest(compile_executable, ok_main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(ok_main))))
 end
 
@@ -62,7 +62,7 @@ inference_leaf(x::Int) = x > 0 ? x : error("negative")
 inference_always() = inference_leaf(-1) + error("never")
 @testset "Entry points that do not infer to a concrete type" begin
     function message(f)
-        main = StaticCompilerOverrides.make_main(f)
+        main = StaticRuntime.make_main(f)
         err = try
             Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)))
             nothing

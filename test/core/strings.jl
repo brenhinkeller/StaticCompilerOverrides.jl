@@ -30,7 +30,7 @@ end
 
 # the tables of the properties of characters (src/unicode.jl) agree with utf8proc for every code point
 @testset "Unicode tables" begin
-    U = StaticCompilerOverrides
+    U = StaticRuntime
     function mismatches()
         bad = 0
         for cp in UInt32(0):UInt32(0x10ffff)

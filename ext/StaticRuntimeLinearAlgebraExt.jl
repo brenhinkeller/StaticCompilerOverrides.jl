@@ -4,9 +4,9 @@
 # the matrix, so their results are a `Union` of two tuple types, and `schur!` and `ordschur` splat that into `Schur(...)`, which is a call of `Core._apply_iterate`
 # over a `Union` that cannot be compiled. Indexing the result instead is split by the compiler into the two cases, so `schur` returns a `Union` of two `Schur`
 # types, as it does in Julia.
-module StaticCompilerOverridesLinearAlgebraExt
+module StaticRuntimeLinearAlgebraExt
 
-using StaticCompilerOverrides: @device_override
+using StaticRuntime: @device_override
 using LinearAlgebra: LinearAlgebra, Schur, LAPACK, BlasFloat, BlasInt
 
 @device_override function LinearAlgebra.schur!(A::StridedMatrix{<:Union{Float32, Float64, ComplexF32, ComplexF64}})

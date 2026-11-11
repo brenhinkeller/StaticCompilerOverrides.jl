@@ -1,7 +1,7 @@
 # The heap that allocation comes from, and the garbage collector (src/runtime/heap.jl): the allocators themselves, on the host, what they do to programs, and what the runtime does with
 # the memory of a program (the header of its objects, sizes that are refused, the limit of the stack).
 
-const Heap = StaticCompilerOverrides.Runtime.Heap
+const Heap = StaticRuntime.Runtime.Heap
 
 @testset "Heap: allocator that never frees" begin
     sizes = [0, 1, 8, 15, 16, 17, 100, 1000, 70_000, 300_000, 2_000_000, 24, 24, 24]
@@ -220,7 +220,7 @@ end
     script = joinpath(mktempdir(), "shlib_thread.jl")
     write(script, raw"""
         using Libdl: dlopen, dlsym, dlext
-        using StaticCompilerOverrides
+        using StaticRuntime
         function churn_vectors(n::Int)
             v = Vector{Vector{Int}}()
             s = 0
@@ -299,7 +299,7 @@ end
 # Memory safety. The size of a string or of the memory of an array has the header added to it, which wraps around for a size that is negative
 # (as a number of bytes, one that is far too large): the object was then a few bytes, and what was written in it was not.
 function exit_status_and_output(f)
-    main = StaticCompilerOverrides.make_main(f)
+    main = StaticRuntime.make_main(f)
     exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)))
     out = IOBuffer()
     proc = run(pipeline(ignorestatus(`$exe`); stdout = out, stderr = out))
@@ -319,7 +319,7 @@ end
 
 # On Linux the collector decides whether it is on the stack of the main thread by how far the stack pointer is from the base of the stack: the
 # limit of the size of the stack is the far end (`getrlimit`), which it reads
-rlimit_stack() = Int(StaticCompilerOverrides.Runtime.Heap.rlimit_stack_size())
+rlimit_stack() = Int(StaticRuntime.Runtime.Heap.rlimit_stack_size())
 @testset "The collector reads the size limit of the stack" begin
     @test 1 << 16 <= rlimit_stack() <= 1 << 40
     # (compiling it says nothing: an address that is made by adding to that of the state of the heap was reported as a pointer to a Julia object, in the log)
@@ -330,8 +330,8 @@ end
 # and has the allocator that does not collect. A `try` that does not go on (what `finally` is) does not catch, and one that does is a program that goes on. With `small = true` a program
 # also has none if everything that it allocates is allocated a finite number of times (nothing in a loop, in a function that calls itself, or in a function that is called from one).
 function has_collector(f, types = ENTRY_TYPES; small = false)
-    StaticCompilerOverrides.StaticCompiler.GPUCompiler.JuliaContext() do ctx
-        mod = Base.invokelatest(static_llvm_module, f, types; small, gc = true) # (`true`, not the default: with `STATIC_COMPILER_OVERRIDES_GC=3` the collector is run in stress mode, and is always there)
+    StaticRuntime.StaticCompiler.GPUCompiler.JuliaContext() do ctx
+        mod = Base.invokelatest(static_llvm_module, f, types; small, gc = true) # (`true`, not the default: with `STATIC_RUNTIME_GC=3` the collector is run in stress mode, and is always there)
         try
             any(fn -> startswith(LLVM.name(fn), "julia_collect") && !LLVM.isdeclaration(fn), LLVM.functions(mod))
         finally
@@ -340,7 +340,7 @@ function has_collector(f, types = ENTRY_TYPES; small = false)
     end
 end
 # (what `compile_executable(f, (Vector{String},))` compiles: the entry point that makes the vector of the arguments)
-has_collector_args(f; small = false) = has_collector(StaticCompilerOverrides.entry_point(f, "entry"); small)
+has_collector_args(f; small = false) = has_collector(StaticRuntime.entry_point(f, "entry"); small)
 raw_nothing(argc::Int, argv::Ptr{Ptr{UInt8}}) = (println("hello"); 0)
 raw_error_only(argc::Int, argv::Ptr{Ptr{UInt8}}) = (argc > 100 && throw(ArgumentError("too many")); println(argc); 0)
 raw_print_int(argc::Int, argv::Ptr{Ptr{UInt8}}) = (println(argc + 41); 0) # (`print` has a `try` that goes on to throw what it caught)
