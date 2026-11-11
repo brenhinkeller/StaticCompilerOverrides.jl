@@ -106,7 +106,17 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     linked |= link_heap!(mod; gc, finalizers) # (the shim, and the code, call `static_alloc`)
     haskey(LLVM.functions(mod), "gpu_gc_pool_alloc") && inline_allocation!(mod, gc)
     linked && run!(GlobalDCEPass(), mod)
+    inline_internal_functions!(mod)
     return mod
+end
+
+# The functions of the program are internal to it when this runs, and not when they were optimized (they are exported by the module of StaticCompiler until it is done): a function that is called from one
+# place was then not inlined, whatever its size, and what is made of calls to it (`pow`, which calls the function of the logarithm and gets two numbers back through memory) was up to twice as slow as in Julia.
+# The inliner is run again, for the functions that are now local (`noinline` and the functions that call `sigsetjmp` are not inlined by it).
+function inline_internal_functions!(mod::LLVM.Module)
+    run!("cgscc(inline),function(sroa,instcombine<no-verify-fixpoint>,simplifycfg)", mod)
+    run!(GlobalDCEPass(), mod)
+    return
 end
 
 end # module Runtime

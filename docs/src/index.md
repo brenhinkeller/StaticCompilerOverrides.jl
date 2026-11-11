@@ -548,16 +548,16 @@ data are laid out as in C.
 | Mandelbrot (1500)                | 0.25    |         | 0.26    | 34 kB                |
 | n-body (5M steps, array of structs) | 0.28 |         | 0.25    | 69 kB                |
 | Collatz (3M)                     | 0.43    |         | 0.43    | 69 kB                |
-| `sin`, `exp`, `log`, `atan`, `sqrt` (20M) | 0.25 |      | 0.39    | 102 kB               |
-| binary trees (allocation, depth 18) | 1.7  |         | 1.2     | 85 kB                |
-| string building and parsing (2M) | 0.13    | 0.067   | 0.10    | 102 kB               |
+| `sin`, `exp`, `log`, `atan`, `sqrt` (20M) | 0.25 |      | 0.34    | 102 kB               |
+| binary trees (allocation, depth 18) | 1.7  |         | 1.15    | 85 kB                |
+| string building and parsing (2M) | 0.13    | 0.067   | 0.09    | 102 kB               |
 | sort of 3M integers              | 0.27 (`qsort`) | 0.18 (`std::sort`) | 0.023 | 102 kB |
 | hash table of 2M keys            |         | 0.45    | 0.14    | 85 kB                |
 
 (The file sizes of the first four are for programs with `main(argc, argv)` and `atol` as in C; the others have `main(args)` and `parse`.)
 
 For arithmetic that is made of loops the programs are about as fast as C. What is faster than C or C++ is the library (`sort!` of integers is a counting sort for a small range, and `Dict` is a flat table where `unordered_map` has a node for each key; the allocator
-and collector of the binary tree program). The things that are slower: recursion (`fib`; plain Julia is the same: it is LLVM's code for it), and the functions of the math library (Julia's own `sin`, `log`, ... are 1.3 to 2 times slower than those of the C library on this machine).
+and collector of the binary tree program). The things that are slower: recursion (`fib`; plain Julia is the same: it is LLVM's code for it), and the functions of the math library (Julia's own `sin`, `log`, `^`, ... are 1.3 to 1.4 times slower than those of the C library on this machine).
 A program that allocates and keeps memory in lists and hash tables has more of it than C does (the hash table program is 135 MB where C++'s is 75 MB). The files are as small as C's for a program that does not allocate (`small = true`, a raw `main(argc, argv)`), and
 tens of kilobytes more when it prints, parses, or allocates in loops (see [Binary size](@ref)).
 
