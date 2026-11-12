@@ -8,7 +8,6 @@ sy_sym() = Base.inferencebarrier(:foo)::Symbol
 const SY_DICT = Dict(:a => 1, :b => 2, :abc => 3, :end => 4)
 const SY_SET = Set([:x, :y, :abc])
 const SY_TYPES = Dict(Int => 1, Float64 => 2, Number => 3, Vector{Int} => 4, Tuple{Int,String} => 5)
-const SY_NT = (alpha = 1, beta = 2.5)
 const SY_LIST = [:red, :green, :blue]
 
 sy_struct_a() = @opaque((s = Pair(:a, 3); getfield(s, Base.inferencebarrier(:first)::Symbol) === :a))
@@ -47,7 +46,6 @@ sy_length() = length(string(Symbol("pre", sy_word())))
 
 # getfield, getproperty and `NamedTuple`s with a symbol that is made
 sy_getfield() = (s = SyS(3, 4.5); getfield(s, Symbol("a")) + getfield(s, Symbol(Base.inferencebarrier("b"))))
-sy_namedtuple() = SY_NT[:alpha] + SY_NT[Symbol(Base.inferencebarrier("beta"))]
 struct SyS; a::Int; b::Float64; end
 
 # `show` of symbols: the ones that are `:name`, and the others as Julia writes them
@@ -79,10 +77,26 @@ const SYMBOL_CASES = [
     check_cases(SYMBOL_CASES)
 end
 
-# `getfield` of a field named by a symbol that is not known when compiling needs the types of the fields when the program runs (not supported yet)
-@testset "Fields named by a symbol that is made" begin
+# A `NamedTuple` with a name that is not known when compiling (`nt[name]`, `nt.name`, `get`): the type of the result is the union of the types of the fields (the table of the scales of UnicodePlots has a function for each)
+const SY_NT2 = (a = 1, b = 2, c = 3)
+const SY_NT_MIXED = (alpha = 1, beta = 2.5, gamma = "str", up = uppercase, down = lowercase)
+sy_nt_name(s) = Symbol(Base.inferencebarrier(s))
+@testset "NamedTuples with a name that is made" begin
+    check_cases([
+        "fields of one type"   => () -> SY_NT2[sy_nt_name("b")] + SY_NT2[sy_nt_name("c")],
+        "fields of two types"  => () -> Int(round(10 * (SY_NT_MIXED[sy_nt_name("alpha")] + SY_NT_MIXED[sy_nt_name("beta")]))),
+        "a String"             => () -> ncodeunits(SY_NT_MIXED[sy_nt_name("gamma")]),
+        "functions"            => () -> ncodeunits(SY_NT_MIXED[sy_nt_name("up")]("abc")) + 10 * Int(SY_NT_MIXED[sy_nt_name("down")]("ABC") == "abc"),
+        "getproperty"          => () -> getproperty(SY_NT2, sy_nt_name("c")) * 2,
+        "a name that is known"  => () -> SY_NT2.b + SY_NT_MIXED.alpha + SY_NT2[:c],
+        "get with a default"   => () -> get(SY_NT2, sy_nt_name("zz"), 100) + get(SY_NT2, sy_nt_name("a"), 100),
+        "a name that is not there" => () -> (try; SY_NT2[sy_nt_name("zz")] + 1; catch e; e isa FieldError ? 7 : 8; end),
+    ])
+end
+
+# `getfield` of a struct with a field named by a symbol that is not known when compiling needs the types of the fields when the program runs (not supported yet)
+@testset "Fields of a struct named by a symbol that is made" begin
     @test_broken static_status(sy_getfield)[1] == :ok
-    @test_broken static_status(sy_namedtuple)[1] == :ok
 end
 
 # The test that a name is a plain identifier, made in the linker and in the program, is the same one

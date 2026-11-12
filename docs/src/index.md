@@ -189,7 +189,7 @@ Julia keeps every symbol in one table, so that there is one object for each name
   identifiers or operators (empty, with a space or a control character or a quote, or starting with a digit) are written, as `Symbol("...")`; any other is an error.
 * Types as keys: `==` of types, `hash` of a `DataType`, and so `Dict{DataType,...}` and `Set{DataType}`, work (a type hashes by the number that it has in it). `==` of types
   that are not both concrete (a `Union`, an abstract type with parameters) goes by `<:` (see [Dynamic dispatch on abstract types and on `Any`](@ref)).
-* Not supported: `getfield(x, name)` and `x[name]` of a `NamedTuple` with a `Symbol` that is only known when the program runs (it needs the types of the fields).
+* `nt[name]`, `nt.name` and `get(nt, name, default)` of a `NamedTuple` with a `Symbol` that is only known when the program runs work: the result has the union of the types of the fields (a table of functions that is indexed by the name of the one that a keyword asks for), which is split where it is used. Not supported: `getfield(x, name)` of a struct (that is not a `NamedTuple`) with such a name.
 
 ## Entry points
 

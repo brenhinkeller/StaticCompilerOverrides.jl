@@ -178,3 +178,24 @@ function symbol_is_certainly_quoted(s::Symbol)
     end
     return false
 end
+
+## `NamedTuple`s with a name that is not known when compiling
+#
+# `nt[name]`, `nt.name` and `get(nt, name, default)` with a `Symbol` that the program has when it runs (`FSCALES[scale]` of UnicodePlots: a table of the functions that a scale
+# is made of, and a scale that a keyword says) is `getfield(nt, name)`, which for fields of different types has a type that depends on `name`, and is a call of the runtime that
+# looks the field up and boxes it. One comparison of the name with each of the names gives each field its own type, and the result is the union of them, which is split when it is
+# used (as the value of a `Union` is); for a name that is a constant the comparisons are folded, and for fields of one type they are selects. (Symbols are compared by address:
+# one that was made by the program is the one that the binary has, see `static_symbol`.) The same is done for the `getfield` of a tuple with an index that is not known: `tuple_getindex`.
+struct NoDefault end # (`default` of `namedtuple_field` when the name has to be there)
+@generated function namedtuple_field(nt::NamedTuple{names}, name::Symbol, default) where {names}
+    chain = default === NoDefault ? :(throw(FieldError(typeof(nt), name))) : :default
+    for k in length(names):-1:1
+        chain = :(name === $(QuoteNode(names[k])) ? getfield(nt, $k) : $chain)
+    end
+    return chain
+end
+namedtuple_field(nt::NamedTuple, name::Symbol) = namedtuple_field(nt, name, NoDefault())
+
+@device_override @inline Base.getindex(nt::NamedTuple, name::Symbol) = namedtuple_field(nt, name)
+@device_override @inline Base.getproperty(nt::NamedTuple, name::Symbol) = namedtuple_field(nt, name)
+@device_override @inline Base.get(nt::NamedTuple, name::Symbol, default) = namedtuple_field(nt, name, default)
