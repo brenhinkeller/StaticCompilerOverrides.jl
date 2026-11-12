@@ -166,6 +166,20 @@ size and type above them, and vectors, ranges, dictionaries, sets and structured
 decimal point (or the sign of the imaginary part, or the `//`) with regular expressions, which a program does not have: the same is found by a scan of the text. With `:limit` and
 `:displaysize` the output is cut as Julia cuts it (`display` does not set them, as on a terminal that is not one).
 
+### Color
+
+`printstyled` (with `color`, `bold`, `italic`, `underline`, `blink`, `reverse` and `hidden`, and a color that is a name or a number of 0 to 255) writes the escape sequences of Julia when the stream has
+`:color => true` in its context, and plain text when it has not. A program is not told whether its output is a terminal, so it is as `julia script.jl > file`: `STDOUT` has no color, and
+`Base.get_have_color()` (which Crayons, and so UnicodePlots, ask when the stream does not say) is `false`. A program that wants color asks for it: `printstyled(IOContext(STDOUT, :color => true), "text"; color = :red)`.
+
+### StyledStrings
+
+Styled strings (`styled"..."`, `AnnotatedString`, `AnnotatedChar`) are written to a stream with the escape sequences of Julia when its context has `:color => true`, and as plain text otherwise (loading
+`StyledStrings` is what enables this, as for the other standard libraries that have a part of their own). The faces are the ones that there are when compiling (the theme, and what has been added with
+`addface!`), as they are looked up by a comparison with each name; `withfaces`, `addface!` and the `faces.toml` of the user when the program runs are not supported. A terminal is taken to be one with
+italics, reverse and strikethrough (the terminfo of the terminal is not read), 24-bit color is used when the environment says so (`COLORTERM=truecolor`, ...) and else the closest of the 256 colors, and the underline of a color
+and style is a plain underline. Not supported: `show` of an `AnnotatedString` (`repr`), which shows annotations of the type `Any`.
+
 Limits: containers that contain themselves are not detected (they recurse until the program crashes); the keyword `context` of `sprint` with a pair that is written in the call
 (`sprint(show, v; context = :compact => true)`) works for what is not an array, and is not yet supported for the show of an array (give `IOContext` the stream instead, or a context that is
 a stream); `text/plain` of a `UniformScaling` (`2I`) is not supported (it uses a regular expression); a

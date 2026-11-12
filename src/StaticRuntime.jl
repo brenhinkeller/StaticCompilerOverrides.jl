@@ -19,6 +19,7 @@ include("overrides/base.jl")       # Base methods that can be written to compile
 include("overrides/io.jl")         # Standard input and output
 include("overrides/context.jl")    # IOContext: streams with properties known when compiling
 include("overrides/show.jl")       # show of types and containers
+include("overrides/color.jl")      # printstyled and the colors of text
 include("overrides/printf.jl")     # Printf, for formats without `*`
 include("overrides/unicode.jl")    # Properties of characters, without utf8proc
 include("overrides/symbols.jl")    # Symbols that are made when the program runs

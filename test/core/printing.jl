@@ -48,3 +48,20 @@ end
         "a type to an IOBuffer"   => () -> (io = IOBuffer(); print(io, Vector{Int}); println(String(take!(io))); 0),
     ])
 end
+
+# `printstyled`: the escape sequences when the context of the stream has color, and plain text when it has not (`STDOUT` is as the output of `julia script.jl > file`)
+sty_color(name) = Symbol(Base.inferencebarrier(name))
+@testset "printstyled and color" begin
+    check_cases([
+        "no color on STDOUT"       => () -> (printstyled("plain\n"; color = :red, bold = true); printstyled(STDOUT, "plain\n"; color = :blue); 0),
+        "a color"                  => () -> (printstyled(IOContext(STDOUT, :color => true), "red\n"; color = :red); 0),
+        "bold, underline, blink"   => () -> (printstyled(IOContext(STDOUT, :color => true), "x", 1, '\n'; bold = true, underline = true, blink = true); 0),
+        "italic, reverse, hidden"  => () -> (printstyled(IOContext(STDOUT, :color => true), "x\n"; italic = true, reverse = true, hidden = true, color = :light_cyan); 0),
+        "a number"                 => () -> (printstyled(IOContext(STDOUT, :color => true), "n\n"; color = 202); printstyled(IOContext(STDOUT, :color => true), "n\n"; color = 300); 0),
+        "lines"                    => () -> (printstyled(IOContext(STDOUT, :color => true), "one\n\ntwo\nthree"; color = :green); print(STDOUT, "\n"); 0),
+        "a name that is made"      => () -> (printstyled(IOContext(STDOUT, :color => true), "m\n"; color = sty_color("magenta")); printstyled(IOContext(STDOUT, :color => true), "m\n"; color = sty_color("nothing")); 0),
+        "the style is the color"   => () -> (printstyled(IOContext(STDOUT, :color => true), "b\n"; color = :bold, bold = true); 0),
+        "STDERR"                   => () -> (printstyled(IOContext(STDERR, :color => true), "e\n"; color = :yellow); 0),
+        "to a string"              => () -> (s = sprint(io -> printstyled(IOContext(io, :color => true), "s"; color = :red)); println(ncodeunits(s)); 0),
+    ])
+end

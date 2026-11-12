@@ -22,6 +22,7 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
 Mmap = "a63ad114-7e13-5084-954f-fe012c677804"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+StyledStrings = "f489334b-da3d-4c2e-b8f0-e476e12c162b"
 
 [extensions]
 StaticRuntimeBase64Ext = "Base64"
@@ -30,6 +31,7 @@ StaticRuntimeLinearAlgebraExt = "LinearAlgebra"
 StaticRuntimeMPIExt = "MPI"
 StaticRuntimeMmapExt = "Mmap"
 StaticRuntimeSparseArraysExt = "SparseArrays"
+StaticRuntimeStyledStringsExt = "StyledStrings"
 
 [compat]
 Base64 = "1"
@@ -47,5 +49,6 @@ Reexport = "1"
 SparseArrays = "1"
 StaticCompiler = "0.7.6"
 StaticTools = "0.9.1"
+StyledStrings = "1"
 Test = "1"
 julia = "1.14"

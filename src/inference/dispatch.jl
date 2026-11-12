@@ -314,6 +314,7 @@ const FIELD_BUILTINS = (Core.getfield, Core.setfield!)
 function CC.finishopt!(interp::OverridesInterpreter, opt::CC.OptimizationState, ir::CC.IRCode)
     ir = assert_field_receivers!(ir)
     expand_dynamic_getfield!(ir)
+    ir = concretize_namedtuples!(ir)
     return @invoke CC.finishopt!(interp::CC.AbstractInterpreter, opt::CC.OptimizationState, ir::CC.IRCode)
 end
 
@@ -351,6 +352,47 @@ function expand_dynamic_getfield!(ir::CC.IRCode)
         ir.stmts[pc][:stmt] = Expr(:invoke, mi, struct_field, st.args[2], st.args[3])
     end
     return ir
+end
+
+## `NamedTuple`s made of values of the type `Any`
+#
+# `(; label, value)` with a `value` of the type `Any` is made of a tuple, and the type of the `NamedTuple` is made of the type of the tuple: `typeof(tuple)`, which is the type of the values that the
+# tuple has when the program runs. An executable has no way to make that type (the tuple is `jl_f_tuple`, the type `jl_f_apply_type`). The type that inference gives the tuple (`Tuple{Symbol,Any}`)
+# is the one that the `NamedTuple` has when it is stored where it has that type (as in a `Vector` of them), and that is what a program can have: the type of the tuple is taken to be that.
+function concretize_namedtuples!(ir::CC.IRCode)
+    changed = false
+    for pc in 1:length(ir.stmts)
+        st = ir.stmts[pc][:stmt]
+        st isa Expr && st.head === :call && length(st.args) == 4 || continue
+        CC.singleton_type(CC.argextype(st.args[1], ir)) === Core.apply_type || continue
+        CC.singleton_type(CC.argextype(st.args[2], ir)) === NamedTuple || continue
+        names = CC.argextype(st.args[3], ir)
+        names isa Core.Const && names.val isa Tuple{Vararg{Symbol}} || continue
+        tt = st.args[4]
+        tt isa Core.SSAValue || continue
+        tst = ir.stmts[tt.id][:stmt]
+        tst isa Expr && tst.head === :call && length(tst.args) == 2 || continue
+        CC.singleton_type(CC.argextype(tst.args[1], ir)) === Core.typeof || continue
+        T = CC.widenconst(CC.argextype(tst.args[2], ir))
+        T isa DataType && T <: Tuple && !isconcretetype(T) && !(T isa UnionAll) && length(T.parameters) == length(names.val) || continue
+        any(p -> p isa Core.TypeVar || p isa Core.TypeofVararg, T.parameters) && continue
+        N = NamedTuple{names.val,T}
+        isconcretetype(N) || continue
+        ir.stmts[tt.id][:stmt] = T
+        ir.stmts[tt.id][:type] = Core.Const(T)
+        ir.stmts[pc][:stmt] = N
+        ir.stmts[pc][:type] = Core.Const(N)
+        changed = true
+    end
+    changed || return ir
+    for pc in 1:length(ir.stmts)
+        st = ir.stmts[pc][:stmt]
+        st isa Expr && st.head === :new && st.args[1] isa Core.SSAValue || continue
+        t = ir.stmts[st.args[1].id][:type]
+        t isa Core.Const && t.val isa DataType && t.val <: NamedTuple || continue
+        ir.stmts[pc][:type] = t.val
+    end
+    return CC.compact!(ir)
 end
 
 ## Tuples that have a `Union` as an element
