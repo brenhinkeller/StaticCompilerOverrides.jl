@@ -13,7 +13,10 @@ harness_throws() = (Base.inferencebarrier(1) > 0 ? throw(ArgumentError("it is no
         @test static_status(() -> (println(stderr, "to the standard error"); 1))[1] == :compile_error # (`stderr` is a global of an abstract type: see `STDERR`)
         @test static_status(() -> (println(STDERR, "to the standard error"); 1)) == (:ok, "")
     end
-    @test static_status(() -> rand(Int))[1] == :mismatch # (the generator of the program is not seeded as Julia's is)
+    # (the generator of the program is not seeded as Julia's is; what is said of a program that fails is in the message, which the log of a test that fails has)
+    let (status, detail) = static_status(() -> rand(Int))
+        @test (status, status == :mismatch ? "" : first(string(detail), 600)) == (:mismatch, "")
+    end
     @test static_status(harness_dynamic)[1] == :compile_error
     @test static_status(harness_throws)[1] == :runtime_error
     @test static_status(harness_dynamic; strict = false)[1] == :runtime_error # (the dynamic call aborts the program)
@@ -22,7 +25,7 @@ end
 @testset "static_status_batch" begin
     fs = Function[() -> 1 + 1, () -> rand(Int), () -> harness_add(1), harness_dynamic, () -> (println("hi"); 3)]
     batch = static_status_batch(fs)
-    @test [s[1] for s in batch] == [:ok, :mismatch, :ok, :compile_error, :ok] # (the cases that do not pass do not change those that do)
+    @test [s[1] for s in batch] == [:ok, :mismatch, :ok, :compile_error, :ok] || (@info "the second case" batch[2]; false) # (the cases that do not pass do not change those that do)
     @test [s[1] for s in batch] == [static_status(f)[1] for f in fs] # (the same as each on its own: the text of a mismatch has the numbers that were drawn)
     @test static_status_batch(Function[() -> 2]) == [(:ok, "")]
     @test isempty(static_status_batch(Function[]))

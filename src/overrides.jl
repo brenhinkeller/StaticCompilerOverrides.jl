@@ -65,6 +65,10 @@ function default_gc()
     return Sys.isapple() || Sys.islinux() ? :auto : false
 end
 
+# Whether the program is optimized once more after it is linked (`optimize = true`: the pipeline `O2` of the optimizer, on the whole program, see `inline_internal_functions!`). Not by default. The environment variable
+# `STATIC_RUNTIME_OPTIMIZE` (`true` or `false`) sets the default, for running all of the tests with it.
+default_optimize() = get(ENV, "STATIC_RUNTIME_OPTIMIZE", "false") in ("true", "1", "yes")
+
 # what `gc` can be: `true` (the collector is always in the program), `false` (never), `:auto` (it is if the program needs it), or a number of allocations (the collector is always in, and runs that often)
 check_gc(gc) = (gc isa Bool || gc === :auto || gc isa Integer) ||
     throw(ArgumentError("`gc` is `true`, `false`, `:auto`, or a number of allocations, not `$(repr(gc))`"))
@@ -88,7 +92,13 @@ end
 function default_target()
     Sys.isapple() || return StaticCompiler.StaticTarget()
     arch, minimum = Sys.ARCH === :x86_64 ? ("x86_64", "10.13.0") : ("aarch64", "11.0.0")
-    return StaticCompiler.StaticTarget(string(arch, "-apple-macosx", minimum), LLVM.host_cpu_name(), LLVM.host_cpu_features())
+    features = LLVM.host_cpu_features()
+    # On Apple Silicon, without `fuse-literals`: the CPU model of the Apple cores has it, and with it the code generator makes every
+    # floating-point constant that is not tiny from four integer instructions (`mov`, three `movk`) and a `fmov`, in place of one load from
+    # the constant pool, which is what it does for the generic CPU, and what the C library does. The math functions of Julia (`log`, `exp`,
+    # `atan`, `pow`, ...) have tens of constants each, and are 15% to 35% slower with it; nothing else changes, in speed or size.
+    arch == "aarch64" && (features = isempty(features) ? "-fuse-literals" : features * ",-fuse-literals")
+    return StaticCompiler.StaticTarget(string(arch, "-apple-macosx", minimum), LLVM.host_cpu_name(), features)
 end
 
 # StaticCompiler's entry points, with our method table as the default, and the runtime of this
@@ -96,8 +106,8 @@ end
 for f in (:compile_executable, :compile_shlib, :static_code_typed, :static_llvm_module)
     @eval begin
         function $f(args...; method_table = method_table, params = nothing, strict::Bool = true, allow = (), gc = default_gc(), target = default_target(),
-                    libraries::Symbol = :system, small::Bool = false,
-                    llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc, libraries, bounded = $(f in (:compile_executable, :static_llvm_module)))), kwargs...)
+                    libraries::Symbol = :system, small::Bool = false, optimize::Bool = default_optimize(),
+                    llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc, libraries, optimize, bounded = $(f in (:compile_executable, :static_llvm_module)))), kwargs...)
             libraries in (:system, :bundle) || throw(ArgumentError("`libraries` is `:system` or `:bundle`, not `$(repr(libraries))`"))
             check_gc(gc)
             register_custom_deepcopy!() # (this can change the parameters: they have the version of the lists of types)
@@ -137,6 +147,9 @@ for f in (:compile_executable, :compile_shlib, :static_code_typed, :static_llvm_
         times, so there only what is allocated to stop with an error is not counted. `gc = true` always has the collector: memory that is not used any more is freed (see the section on memory in the manual).
         `gc = false` never has it, and never frees memory. A number (`gc = 100`) is `true` that also collects every that many allocations and overwrites what it frees, which is for finding bugs
         in the collector.
+
+        `optimize = true` optimizes the program once more after it is linked (the pipeline `O2` of LLVM on the whole program): recursion and allocation can be faster. The program can add up a reduction in `@simd`
+        (or the elements of a `Float16` sum) in another order than Julia does, and so give another result in the last digits. It is `false` by default.
 
         `small = true` makes a smaller file, where that can be done without a difference in what the program does: the linker leaves out what the program does not look at (the names of its functions, a
         segment of constants on macOS).

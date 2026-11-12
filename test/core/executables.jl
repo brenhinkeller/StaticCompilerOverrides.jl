@@ -95,10 +95,32 @@ end
 # that nothing wrote (`drop_type_based_aliasing!`): the second `@printf` into a file threw an exception
 two_printf(args::Vector{String}) = (path = string(args[1], "/two_printf.txt"); open(path, "w") do io; Printf.@printf(io, "%s %d %5.2f\n", "third", 3, 3.14159); Printf.@printf(io, "%s=%d\n", "four", 4); end; print(read(path, String)); 0)
 @testset "Two @printf into a file, with the pipeline after linking" begin
-    for (name, post) in (("the default", nothing), ("GVN", mod -> (StaticRuntime.Runtime.link_runtime!(mod; bounded = true); LLVM.run!("function(gvn)", mod); mod)))
+    for (name, post) in (("optimize = true", nothing), ("GVN after dropping the aliasing", mod -> (StaticRuntime.Runtime.link_runtime!(mod; bounded = true); StaticRuntime.Runtime.drop_type_based_aliasing!(mod); LLVM.run!("function(gvn)", mod); mod)))
         dir = mktempdir()
-        exe = post === nothing ? compile_executable(two_printf, (Vector{String},), dir, "two_printf") :
+        exe = post === nothing ? compile_executable(two_printf, (Vector{String},), dir, "two_printf"; optimize = true) :
                                  compile_executable(two_printf, (Vector{String},), dir, "two_printf"; llvm_postprocess = post)
         @test readchomp(`$exe $dir`) == "third 3  3.14\nfour=4"
+    end
+end
+
+# The code that runs only to stop with an error (the constructors of exceptions and their messages) is optimized for size: `minsize`, which also makes the machine outliner work on it. The code of the program is not.
+@testset "Code for errors is optimized for size" begin
+    ir = sprint(io -> static_code_llvm(parse_substring, (Vector{String},); io))
+    groups = Dict(m.captures[1] => m.captures[2] for m in eachmatch(r"^attributes #(\d+) = \{ ([^}]*) \}"m, ir))
+    minsize(line) = (m = match(r"\) [^{]*#(\d+) \{", line); m !== nothing && occursin("minsize", get(groups, m.captures[1], "")))
+    defined = [l for l in split(ir, '\n') if startswith(l, "define ")]
+    @test any(l -> occursin("throw_parseint_error", l) && minsize(l), defined) # (only called to throw)
+    @test any(l -> occursin("BoundsError", l) && minsize(l), defined)
+    @test !any(l -> occursin("@julia_parse_substring", l) && minsize(l), defined) # (the program)
+    @test !any(l -> occursin("@julia__parse_", l) && minsize(l), defined) # (what `parse` does when it does not throw)
+end
+
+# On Apple Silicon, a floating-point constant is loaded from the constant pool, as the C library does. With the CPU model of the Apple cores (`fuse-literals`), the code generator makes each from a `mov`, three `movk` and a `fmov`, which makes the math functions (`log`, `exp`, `atan`, ...) 15% to 35% slower.
+if Sys.isapple() && Sys.ARCH === :aarch64
+    @testset "Constants of the math functions are loaded, not built" begin
+        @eval constant_poly(x::Float64) = muladd(x, muladd(x, 0.6931471805599453, 0.2402265069591007), 0.0555041086648216)
+        asm = sprint(io -> static_code_native(constant_poly, (Float64,); io))
+        @test !occursin("movk", asm)
+        @test occursin("ldr\td", asm) || occursin("ldp\td", asm) || occursin("ldr\tq", asm)
     end
 end

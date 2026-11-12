@@ -35,7 +35,7 @@ function main(args::Vector{String})
     return 0
 end
 
-compile_executable(main, (Vector{String},), "build", "primes"; small=true)   # about 132 kB, no libjulia
+compile_executable(main, (Vector{String},), "build", "primes"; small=true)   # about 118 kB, no libjulia
 ```
 
 ```

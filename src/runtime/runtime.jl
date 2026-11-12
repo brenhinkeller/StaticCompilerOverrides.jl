@@ -60,7 +60,7 @@ include("libraries.jl")   # the functions of libraries that are called by their 
 include("cfunctions_link.jl") # the wrappers of `@cfunction`, that call the functions of the program
 
 # Define the runtime functions that `mod` calls but does not define.
-function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux() ? :auto : false, libraries::Symbol = :system, bounded::Bool = false)
+function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux() ? :auto : false, libraries::Symbol = :system, bounded::Bool = false, optimize::Bool = false)
     link_cfunctions!(mod) && run!(GlobalDCEPass(), mod)
     blas = resolve_blas_lookups!(mod) # (before what they are given is embedded)
     library_plan = resolve_library_lookups!(mod; libraries)
@@ -110,15 +110,16 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     linked |= link_heap!(mod; gc, finalizers) # (the shim, and the code, call `static_alloc`)
     haskey(LLVM.functions(mod), "gpu_gc_pool_alloc") && inline_allocation!(mod, gc)
     linked && run!(GlobalDCEPass(), mod)
-    inline_internal_functions!(mod)
+    inline_internal_functions!(mod; optimize)
     return mod
 end
 
 # The functions of the program are internal to it when this runs, and not when they were optimized (they are exported by the module of StaticCompiler until it is done): a function that is called from one
 # place was then not inlined, whatever its size, and what is made of calls to it (`pow`, which calls the function of the logarithm and gets two numbers back through memory) was up to twice as slow as in Julia.
-# The inliner is run again, for the functions that are now local (`noinline` and the functions that call `sigsetjmp` are not inlined by it), and then the optimizer's pipeline (`O2`) on the whole module, which has
+# The inliner is run again, for the functions that are now local (`noinline` and the functions that call `sigsetjmp` are not inlined by it). With `optimize = true` the optimizer's pipeline (`O2`) is run on the whole module as well, which has
 # what it could not do before: the functions that are local can have their arguments and results changed, and what is known of the calls of the runtime (the allocator) is used. (`fib` is 30% faster, the allocation of
-# the binary trees 4%, and the strings of the string program 9%: the code of a math function can be 8% slower; see the benchmarks in the manual.) It needs `drop_invariant_root_loads!`: see there.
+# the binary trees 4%, and the strings of the string program 9%: the code of a math function can be 8% slower; see the benchmarks in the manual.) It is not the default: on CI, programs that crashed on Linux (`rand(Int)`), added up
+# `Float16` in another order than Julia does, and had more of the raw pointers that StaticCompiler warns about, with it. It needs `drop_invariant_root_loads!` and `drop_type_based_aliasing!`: see there.
 # Type-based aliasing information (`!tbaa`) says which loads and stores cannot be of the same memory. In Julia's IR it is true, and the passes that ran on it used it. It is not after the inliner and the passes that
 # follow it have changed that IR: a load of an immutable tuple (`jtbaa_const`) of a copy that a `memcpy` made (`jtbaa_field`) was taken to be of memory that nothing wrote, which is `undef`, and `GVN` made
 # of `dynamic_width || dynamic_precision`, of the `@printf` of two things into a file, `true`. The aliasing is dropped before the pipeline (the information of scopes, `!alias.scope` and `!noalias`, is kept).
@@ -131,7 +132,59 @@ function drop_type_based_aliasing!(mod::LLVM.Module)
     return
 end
 
-function inline_internal_functions!(mod::LLVM.Module)
+# The functions that run only where the program is about to stop with an error: those that are `cold` or `noreturn` (what Julia marks the functions that throw), and those that are only called from them or from a
+# block that ends in `unreachable` (the constructors of the exceptions and their messages, `show` of them, ...).
+function cold_functions(mod::LLVM.Module)
+    key(f) = Ptr{Cvoid}(f.ref)
+    cold = Set{Ptr{Cvoid}}()
+    for fn in LLVM.functions(mod)
+        LLVM.isdeclaration(fn) && continue
+        attrs = collect(LLVM.function_attributes(fn))
+        (LLVM.EnumAttribute("cold") in attrs || LLVM.EnumAttribute("noreturn") in attrs) && push!(cold, key(fn))
+    end
+    sites = Dict{Ptr{Cvoid},Vector{Tuple{LLVM.Function,LLVM.BasicBlock}}}() # (where each is called from)
+    referred = Set{Ptr{Cvoid}}()                                               # (those that something refers to otherwise: they can be called from anywhere)
+    for fn in LLVM.functions(mod)
+        LLVM.isdeclaration(fn) && continue
+        for use in LLVM.uses(fn)
+            inst = LLVM.user(use)
+            if inst isa LLVM.CallInst && LLVM.called_operand(inst) == fn
+                push!(get!(Vector{Tuple{LLVM.Function,LLVM.BasicBlock}}, sites, key(fn)), (LLVM.parent(LLVM.parent(inst)), LLVM.parent(inst)))
+            else
+                push!(referred, key(fn))
+            end
+        end
+    end
+    changed = true
+    while changed
+        changed = false
+        for fn in LLVM.functions(mod)
+            LLVM.isdeclaration(fn) && continue
+            k = key(fn)
+            (k in cold || k in referred || !haskey(sites, k)) && continue
+            if all(site -> key(site[1]) in cold || LLVM.terminator(site[2]) isa LLVM.UnreachableInst, sites[k])
+                push!(cold, k)
+                changed = true
+            end
+        end
+    end
+    return cold
+end
+
+# The code that runs only to stop with an error is optimized for size (`optsize` and `minsize`, as `-Oz` does): it is 10% of the code of a program that prints, parses or sorts, and nothing waits for it. (The machine
+# outliner of AArch64 runs on the functions that are `minsize`.) The rest of the program is not: the same for all of it takes 12 to 34% more time.
+function optimize_cold_for_size!(mod::LLVM.Module)
+    cold = cold_functions(mod)
+    for fn in LLVM.functions(mod)
+        LLVM.isdeclaration(fn) && continue
+        Ptr{Cvoid}(fn.ref) in cold || continue
+        push!(LLVM.function_attributes(fn), LLVM.EnumAttribute("optsize"))
+        push!(LLVM.function_attributes(fn), LLVM.EnumAttribute("minsize"))
+    end
+    return
+end
+
+function inline_internal_functions!(mod::LLVM.Module; optimize::Bool = false)
     # Only the functions that are internal: the others (`static_alloc` of the heap, the loader of BLAS, ...) are the runtime, which is called and was not inlined before; inlining
     # `static_alloc` into every allocation of a program, with its slow paths, made programs crash (the one that calls BLAS, on the machines of CI).
     kept = LLVM.Function[]
@@ -151,9 +204,12 @@ function inline_internal_functions!(mod::LLVM.Module)
         end
     end
     run!(GlobalDCEPass(), mod)
-    drop_type_based_aliasing!(mod)
-    run!("default<O2>", mod)
-    run!(GlobalDCEPass(), mod)
+    optimize_cold_for_size!(mod)
+    if optimize
+        drop_type_based_aliasing!(mod)
+        run!("default<O2>", mod)
+        run!(GlobalDCEPass(), mod)
+    end
     return
 end
 

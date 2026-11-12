@@ -486,20 +486,20 @@ grows with the square of their number (about 125 kB for a thousand types), and i
 A program has the code it uses, and the Julia objects that it refers to, copied into the binary (strings, constant
 arrays and `Dict`s, and the type objects that the type tags and `isa` read). What is not used is not there. Measured on macOS (arm64,
 Julia 1.14.0-alpha2): the bytes of the sections of the executable that are in the file (code, constants and data; `size -m`), and the file, which is made of pages of 16 kB
-and has the table of the symbols of the entry point. The last two columns are with `small = true` (see below; the collector is left out of a program that does not need it in both):
+and has the table of the symbols of the entry point. The last column is with `small = true` (see below), which changes the file and not the sections (the sections differ by a few bytes at most). The collector is left out of a program that does not need it (`gc = :auto`), and the code that only runs to stop with an error is optimized for size:
 
-| program                                            | sections | file    | sections, `small` | file, `small` |
-|:---------------------------------------------------|---------:|--------:|------------------:|--------------:|
-| `main(argc, argv)`: `println("hello")`             |   2.1 kB |  51 kB  |    2.1 kB         |  34 kB        |
-| `main(argc, argv)`: `println(fib(30))`             |   8.9 kB |  54 kB  |    8.9 kB         |  34 kB        |
-| `main(args)`: `println("hello")`                   |  28 kB   |  73 kB  |   13 kB           |  34 kB        |
-| `main(args)`: `println(length(args) + 42)`         |  32 kB   |  75 kB  |   17 kB           |  35 kB        |
-| a `Dict` of strings, a lookup                      |  38 kB   |  77 kB  |   38 kB           |  52 kB        |
-| `parse(Int, ...)` in a `try`, the message printed  |  73 kB   | 115 kB  |   60 kB           |  69 kB        |
-| `sqrt` and `println` of a `Float64`                |  76 kB   | 111 kB  |   61 kB           |  84 kB        |
-| `sort(rand(100))`                                  |  77 kB   | 131 kB  |   77 kB           | 101 kB        |
-| a sieve of Eratosthenes (the README example)       | 122 kB   | 152 kB  |  110 kB           | 135 kB        |
-| a `Dict` of tuples, a matrix product, `display`    | 196 kB   | 244 kB  |  196 kB           | 217 kB        |
+| program                                            | sections | file    | file, `small` |
+|:---------------------------------------------------|---------:|--------:|--------------:|
+| `main(argc, argv)`: `println("hello")`             |   2.1 kB |   51 kB |     34 kB |
+| `main(argc, argv)`: `println(fib(30))`             |   7.6 kB |   53 kB |     34 kB |
+| `main(args)`: `println("hello")`                   |    11 kB |   55 kB |     34 kB |
+| `main(args)`: `println(length(args) + 42)`         |    15 kB |   57 kB |     35 kB |
+| a `Dict` of strings, a lookup                      |    36 kB |   77 kB |     52 kB |
+| `parse(Int, ...)` in a `try`, the message printed  |    54 kB |   99 kB |     69 kB |
+| `sqrt` and `println` of a `Float64`                |    57 kB |   92 kB |     84 kB |
+| `sort(rand(100))`                                  |    69 kB |  129 kB |    101 kB |
+| a sieve of Eratosthenes (the README example)       |   101 kB |  135 kB |    118 kB |
+| a `Dict` of tuples, a matrix product, `display`    |   134 kB |  171 kB |    151 kB |
 
 What a program has, and when:
 
@@ -511,6 +511,8 @@ What a program has, and when:
 * **The tables of the characters** are one for each question that is asked: `isspace` of a character that is not ASCII is a table of a few bytes; `show` of a string (the printable characters) 12 kB; `isletter`
   and the like 33 kB.
 * **The collector looks at** only the objects that can refer to objects of the heap: not strings, symbols, arrays of numbers, or types.
+* **The code that runs only to stop with an error** (the exceptions that are made and thrown, their messages, and what shows them) is optimized for size, as `-Oz` does: it is about 10% of the code of a program that
+  prints, parses or sorts, and nothing waits for it. The same for all of the program would be 18 to 23% smaller, and 12 to 34% slower.
 
 **No collector if the program allocates a finite amount of memory in all** (`gc = :auto`, the default, for an executable: a library can be called any number of times, so there only what is allocated to stop with an error is not counted):
 nothing that it allocates is in a loop, or in a function that is called from a loop or that calls itself (or that something refers to without
@@ -549,24 +551,25 @@ data are laid out as in C. (The C is compiled with clang's default, which fuses 
 
 | program                          | C       | C++     | here    | here, `small` (file) |
 |:---------------------------------|--------:|--------:|--------:|---------------------:|
-| recursive `fib(38)`              | 0.12    |         | 0.105   | 34 kB (C: 33 kB)     |
+| recursive `fib(38)`              | 0.12    |         | 0.15    | 34 kB (C: 33 kB)     |
 | sieve of Eratosthenes (50M)      | 0.099   |         | 0.106   | 34 kB                |
 | matrix product (500, loops)      | 0.021   |         | 0.022   | 34 kB                |
 | Mandelbrot (1500)                | 0.33    |         | 0.38    | 34 kB                |
 | n-body (5M steps, array of structs) | 0.19 |         | 0.21    | 34 kB                |
 | Collatz (3M)                     | 0.43    |         | 0.43    | 34 kB                |
-| `sin`, `exp`, `log`, `atan`, `sqrt` (20M) | 0.22 |      | 0.35    | 34 kB                |
-| binary trees (allocation, depth 18) | 1.67 |         | 1.16    | 51 kB                |
-| string building and parsing (2M) |         | 0.124   | 0.19    | 102 kB               |
+| `sin`, `exp`, `log`, `atan`, `sqrt` (20M) | 0.22 |      | 0.23    | 34 kB                |
+| binary trees (allocation, depth 18) | 1.67 |         | 1.21    | 51 kB                |
+| string building and parsing (2M) |         | 0.124   | 0.21    | 86 kB                |
 | sort of 3M integers              | 0.28 (`qsort`) | 0.18 (`std::sort`) | 0.024 | 102 kB |
-| hash table of 2M keys            |         | 0.64    | 0.091   | 102 kB               |
+| hash table of 2M keys            |         | 0.64    | 0.091   | 86 kB                |
 
 (The files are of programs made with `small = true`. The first eight have `main(argc, argv)` and `atol` as in C; the others have `main(args)` and `parse`. Programs that allocate a finite amount of memory have no collector, which is why the loops are 34 kB.)
 
 For arithmetic that is made of loops the programs are within about 15% of C, and equal to it where the C has no fused multiply-add. What is faster than C or C++ is the library (`sort!` of integers is a counting sort for a small range, and `Dict` is a flat table where `unordered_map` has a node for each key; the allocator
-and collector of the binary tree program). The things that are slower: the functions of the math library (Julia's own `sin`, `log`, `^`, ... are 1.6 times slower than those of the C library on this machine), and string building, where `string` of
-several pieces and `parse` of a `SubString` take 1.5 times what C++'s `std::string` and `strtol` do. (The program is optimized once more after it is linked, which makes recursion such as `fib` and allocation faster; it can add up the elements of a
-reduction in `@simd` in another order than Julia does, and so give a result that differs from Julia's in the last digit.)
+and collector of the binary tree program). The things that are slower: recursion (`fib`, 25% behind; plain Julia is the same: it is LLVM's code for it), some functions of the math library (Julia's own `log`, `tan` and `^` take 1.1 to 1.3 times what those of the C library do on this machine; `sin`, `cos` and `atan` are as fast or faster. On Apple Silicon the code generator is told not to build constants from integer instructions (`fuse-literals`), which made them 1.3 to 1.5 times slower), and string building, where `string` of
+several pieces and `parse` of a `SubString` take 1.7 times what C++'s `std::string` and `strtol` do.
+With `optimize = true` the program is optimized once more after it is linked (`O2` on the whole program): `fib` takes 0.105 s (faster than C), the binary trees 1.16 s and the strings 0.19 s. It is not the default: it can add up the
+elements of a reduction in `@simd` (and of a `Float16` sum) in another order than Julia does, and so give a result that differs from Julia's in the last digits, and it has failed tests on CI that the default passes.
 A program that allocates and keeps memory in lists and hash tables has more of it than C does (the hash table program is 135 MB where C++'s is 75 MB). The files are as small as C's for a program that does not allocate (`small = true`, a raw `main(argc, argv)`), and
 tens of kilobytes more when it prints, parses, or allocates in loops (see [Binary size](@ref)).
 
