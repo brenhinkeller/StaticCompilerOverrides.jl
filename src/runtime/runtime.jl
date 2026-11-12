@@ -60,7 +60,7 @@ include("libraries.jl")   # the functions of libraries that are called by their 
 include("cfunctions_link.jl") # the wrappers of `@cfunction`, that call the functions of the program
 
 # Define the runtime functions that `mod` calls but does not define.
-function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux(), libraries::Symbol = :system, bounded::Bool = false)
+function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux() ? :auto : false, libraries::Symbol = :system, bounded::Bool = false)
     link_cfunctions!(mod) && run!(GlobalDCEPass(), mod)
     blas = resolve_blas_lookups!(mod) # (before what they are given is embedded)
     library_plan = resolve_library_lookups!(mod; libraries)
@@ -72,6 +72,7 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     e = ObjectEmbedder(mod, Dict())
     define_well_known_objects!(e)
     lower_gc_frames!(mod)
+    drop_invariant_root_loads!(mod) # (the slots of the frames are written after they are zeroed: see there)
     gc === false || classify_allocations!(mod)
     queries = subtype_queries(mod)
     embed_constants!(e)
@@ -99,9 +100,12 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     end
     linked |= link_blas!(mod, blas)
     linked |= link_libraries!(mod, library_plan; libraries)
-    if gc === true && !finalizers && haskey(LLVM.functions(mod), "static_alloc")
-        run!(GlobalDCEPass(), mod) # (what the program does not use does not count)
-        allocation_is_finite(mod; bounded) && (gc = false)
+    if gc === :auto # (the collector is in the program if it needs it: if something that it allocates is not allocated a finite number of times, or it has finalizers)
+        gc = true
+        if !finalizers && haskey(LLVM.functions(mod), "static_alloc")
+            run!(GlobalDCEPass(), mod) # (what the program does not use does not count)
+            allocation_is_finite(mod; bounded) && (gc = false)
+        end
     end
     linked |= link_heap!(mod; gc, finalizers) # (the shim, and the code, call `static_alloc`)
     haskey(LLVM.functions(mod), "gpu_gc_pool_alloc") && inline_allocation!(mod, gc)
@@ -112,7 +116,21 @@ end
 
 # The functions of the program are internal to it when this runs, and not when they were optimized (they are exported by the module of StaticCompiler until it is done): a function that is called from one
 # place was then not inlined, whatever its size, and what is made of calls to it (`pow`, which calls the function of the logarithm and gets two numbers back through memory) was up to twice as slow as in Julia.
-# The inliner is run again, for the functions that are now local (`noinline` and the functions that call `sigsetjmp` are not inlined by it).
+# The inliner is run again, for the functions that are now local (`noinline` and the functions that call `sigsetjmp` are not inlined by it), and then the optimizer's pipeline (`O2`) on the whole module, which has
+# what it could not do before: the functions that are local can have their arguments and results changed, and what is known of the calls of the runtime (the allocator) is used. (`fib` is 30% faster, the allocation of
+# the binary trees 4%, and the strings of the string program 9%: the code of a math function can be 8% slower; see the benchmarks in the manual.) It needs `drop_invariant_root_loads!`: see there.
+# Type-based aliasing information (`!tbaa`) says which loads and stores cannot be of the same memory. In Julia's IR it is true, and the passes that ran on it used it. It is not after the inliner and the passes that
+# follow it have changed that IR: a load of an immutable tuple (`jtbaa_const`) of a copy that a `memcpy` made (`jtbaa_field`) was taken to be of memory that nothing wrote, which is `undef`, and `GVN` made
+# of `dynamic_width || dynamic_precision`, of the `@printf` of two things into a file, `true`. The aliasing is dropped before the pipeline (the information of scopes, `!alias.scope` and `!noalias`, is kept).
+function drop_type_based_aliasing!(mod::LLVM.Module)
+    ctx = LLVM.context(mod)
+    ids = [LLVM.API.LLVMGetMDKindIDInContext(ctx, k, length(k)) for k in ("tbaa", "tbaa.struct")]
+    for fn in LLVM.functions(mod), bb in LLVM.blocks(fn), inst in LLVM.instructions(bb), id in ids
+        LLVM.API.LLVMSetMetadata(inst, id, C_NULL)
+    end
+    return
+end
+
 function inline_internal_functions!(mod::LLVM.Module)
     # Only the functions that are internal: the others (`static_alloc` of the heap, the loader of BLAS, ...) are the runtime, which is called and was not inlined before; inlining
     # `static_alloc` into every allocation of a program, with its slow paths, made programs crash (the one that calls BLAS, on the machines of CI).
@@ -132,6 +150,9 @@ function inline_internal_functions!(mod::LLVM.Module)
             delete!(LLVM.function_attributes(fn), noinline)
         end
     end
+    run!(GlobalDCEPass(), mod)
+    drop_type_based_aliasing!(mod)
+    run!("default<O2>", mod)
     run!(GlobalDCEPass(), mod)
     return
 end

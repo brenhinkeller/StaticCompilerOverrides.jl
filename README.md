@@ -44,8 +44,9 @@ The 10 primes up to 30: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
 Their mean is 12.9
 ```
 
-`compile_executable(...; small = true)` makes the file smaller where that makes no difference to what the program does: no garbage collector in a program that allocates a finite amount of memory in all
-(nothing that it allocates is in a loop), and no names of functions or segment of constants in the file. A small program is then a few tens of kilobytes (see [Binary size](docs/src/index.md)).
+A program has a garbage collector only if it needs it (`gc = :auto`, the default): not if it allocates a finite amount of memory in all (nothing that it allocates is in a loop), which is what a small program usually does. `gc = true` always has
+one, and `gc = false` never does. `compile_executable(...; small = true)` makes the file smaller where that makes no difference to what the program does (no names of functions or segment of constants in the file). A small program is then
+a few tens of kilobytes (see [Binary size](docs/src/index.md)).
 
 ### More advanced examples
 
@@ -121,7 +122,7 @@ Code that we know can't work in a standalone binary is rejected when compiling, 
 * **A runtime written for compiled programs** is linked into the code: allocation, exceptions, boxing, type tags and the like. Julia objects that the code uses as constants (strings, arrays,
   `Ref`s, types, symbols, non-`const` globals) are copied into the binary, with their type information, so no libjulia is needed.
 * **A garbage collector** (conservative, non-moving, mark and sweep, written in Julia and compiled into the program) frees memory as Julia does, and runs the C finalizers of
-  libraries (GMP's). `gc = false` leaves it out. See the [manual](docs/src/index.md) for how it works and what it can't see.
+  libraries (GMP's). It is only in the programs that need it (`gc = :auto`); `gc = true` and `gc = false` always and never include it. See the [manual](docs/src/index.md) for how it works and what it can't see.
 * **A loader for libraries** looks functions up the first time that they are called (`dlopen`, `dlsym`), after the libraries that they need, and can find them in a `lib` folder next to the program.
 * **Inference is helped along in some cases**: calls on abstract values are made over registered types, calls of functions that are not known (a closure taken out of a collection) over the closures that the program has, `@cfunction`
   callbacks are given a target that is compiled, tuples that have a `Union` as an element are favored for inlining, and keyword and context arguments propagate as constants so that code like `IOContext(io, :compact => true)` compiles.
@@ -153,7 +154,7 @@ See [Known limitations](https://brenhinkeller.github.io/StaticRuntime.jl/dev/#Kn
 `] test` runs all of them: the tests of the compiler, the runtime and the language (`test/core`), and those of the standard libraries and the packages that programs use (`test/packages`).
 Most of them compile a program and compare what it prints with what Julia prints for the same code. Set `GROUP=Core` or `GROUP=Packages` to run one of the two, `PACKAGES=Dates,MPI`
 to run some of the files of `Packages` (the MPI tests need an MPI library, which MPI.jl installs), `TEST_TIMING=1` to print the time that each file took, and `TEST_FOLDED=1` to fail the cases whose program is only a print of an answer that the compiler found (`opaque` in `test/helpers.jl` makes values that it does not know). `STATIC_RUNTIME_GC=3`
-runs the programs with the collector in stress mode.
+runs the programs with the collector in stress mode (`true` has it always, `auto` is the default).
 
 [docs-dev-img]: https://img.shields.io/badge/docs-dev-blue.svg
 [docs-dev-url]: https://brenhinkeller.github.io/StaticRuntime.jl/dev/

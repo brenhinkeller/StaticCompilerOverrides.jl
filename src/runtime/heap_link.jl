@@ -46,6 +46,31 @@ function lower_gc_frames!(mod::LLVM.Module)
     return changed
 end
 
+# Julia marks the loads of the GC roots of a call (a function that returns an object that refers to others is given the slots for them, and the loads of them in the caller, and of those that it is given, are
+# `!invariant.load`) as if the memory did not change after it is read. That is so in Julia, where the slots are made and zeroed when the GC frames are lowered, after the optimizer has run. Here that was done above, so
+# the frame is zeroed, and a callee then stores the object: an optimizer that runs after this (the inliner and the passes that follow it, and any other) can take the zero that is stored first as what the load gives (the
+# slot's pointer is then null: `GVN` made `getelementptr null, 8` of the pointer to the characters of a `SubString`). The loads of globals (`jl_nothing`, ...) are what the metadata is true of.
+function drop_invariant_root_loads!(mod::LLVM.Module)
+    kind = LLVM.API.LLVMGetMDKindIDInContext(LLVM.context(mod), "invariant.load", 14)
+    function underlying(v)
+        while v isa LLVM.GetElementPtrInst || v isa LLVM.BitCastInst || v isa LLVM.ConstantExpr
+            ops = LLVM.operands(v)
+            isempty(ops) && break
+            v = ops[1]
+        end
+        return v
+    end
+    changed = false
+    for fn in LLVM.functions(mod), bb in LLVM.blocks(fn), inst in LLVM.instructions(bb)
+        inst isa LLVM.LoadInst || continue
+        LLVM.API.LLVMGetMetadata(inst, kind) == C_NULL && continue
+        underlying(LLVM.operands(inst)[1]) isa LLVM.GlobalValue && continue
+        LLVM.API.LLVMSetMetadata(inst, kind, C_NULL)
+        changed = true
+    end
+    return changed
+end
+
 # The allocation functions are small and called from everywhere, and nothing optimizes the module after this: they are
 # inlined where they are called
 # The allocation functions are small and called from everywhere, and nothing optimizes the module after this: they are

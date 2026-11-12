@@ -49,7 +49,8 @@ simd_sin_sum(n) = (s = 0.0f0; (@simd for i in 1:n; s += sin(Float32(i)); end); s
     check_cases([
         "sum of Float32 and Float16"   => () -> (println(sum(fill(opaque(0.1f0), 1000)), " ", sum(fill(opaque(Float16(0.1)), 1000)), " ", cumsum(fill(opaque(0.1f0), 100))[end]); 0),
         "dot of Float32"               => () -> (println(dot(fill(opaque(0.1f0), 1003), fill(opaque(0.3f0), 1003))); 0),
-        "mean, var, std, prod"         => () -> (x = [opaque(0.1) * i^2 for i in 1:1001]; println(mean(x), " ", var(x), " ", std(x), " ", prod(fill(opaque(1.001), 1000))); 0),
+        # (`prod` of a vector is a reduction with `@simd`, which may add up in any order: the program is optimized again after it is linked, and can do so differently from Julia, by a unit in the last place)
+        "mean, var, std, prod"         => () -> (x = [opaque(0.1) * i^2 for i in 1:1001]; println(mean(x), " ", var(x), " ", std(x), " ", round(prod(fill(opaque(1.001), 1000)); sigdigits = 12)); 0),
         "@simd and @fastmath loops"    => () -> (println(simd_sin_sum(opaque(1000)), " ", fastmath_sum(fill(opaque(0.1), 1000))); 0),
         "NaN in minimum, findmax, sort" => () -> (x = [1.0, NaN, opaque(0.5)]; println(minimum(x), maximum(x), extrema(x), findmax(x), findmin(x)); y = [opaque(1.0), NaN, -0.0, 0.0, -Inf, 2.0]; println(sort(y), sortperm(y)); 0),
         "rounding of halves"           => () -> (println(round(opaque(2.5)), round(opaque(-0.5)), round(opaque(3.5)), round(Int, opaque(2.5)), trunc(opaque(-1.7)), floor(Int, opaque(-1.1)), ceil(opaque(-0.2))); 0),

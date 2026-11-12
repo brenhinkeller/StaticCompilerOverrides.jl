@@ -52,17 +52,22 @@ macro device_override(ex)
     return esc(:($Base.Experimental.@consistent_overlay($(GlobalRef(@__MODULE__, :method_table)), $ex)))
 end
 
-# the collector is on, where it can be (it needs to know where the stack of the program starts); the environment variable
-# `STATIC_RUNTIME_GC` (`false`, `true`, or a number of allocations: see `gc`) is for running all the tests (or any
+# `gc` is `:auto`, where the collector is available (it needs to know where the stack of the program starts): the program has the collector if it needs it (see `allocation_is_finite`), and not otherwise.
+# The environment variable `STATIC_RUNTIME_GC` (`auto`, `false`, `true`, or a number of allocations: see `gc`) is for running all the tests (or any
 # program that is compiled) with another, for finding bugs in the collector
 function default_gc()
     setting = get(ENV, "STATIC_RUNTIME_GC", "")
     if !isempty(setting)
+        setting == "auto" && return :auto
         n = tryparse(Int, setting)
         return n === nothing ? parse(Bool, setting) : n
     end
-    return Sys.isapple() || Sys.islinux()
+    return Sys.isapple() || Sys.islinux() ? :auto : false
 end
+
+# what `gc` can be: `true` (the collector is always in the program), `false` (never), `:auto` (it is if the program needs it), or a number of allocations (the collector is always in, and runs that often)
+check_gc(gc) = (gc isa Bool || gc === :auto || gc isa Integer) ||
+    throw(ArgumentError("`gc` is `true`, `false`, `:auto`, or a number of allocations, not `$(repr(gc))`"))
 
 # The math library: on Linux its functions (`erfc`, which Julia code calls by name, see `runtime/libraries.jl`) are in `libm`, which is
 # not linked by default, as it is on macOS (where it is part of libSystem).
@@ -92,8 +97,9 @@ for f in (:compile_executable, :compile_shlib, :static_code_typed, :static_llvm_
     @eval begin
         function $f(args...; method_table = method_table, params = nothing, strict::Bool = true, allow = (), gc = default_gc(), target = default_target(),
                     libraries::Symbol = :system, small::Bool = false,
-                    llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc, libraries, bounded = small && $(f in (:compile_executable, :static_llvm_module)))), kwargs...)
+                    llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc, libraries, bounded = $(f in (:compile_executable, :static_llvm_module)))), kwargs...)
             libraries in (:system, :bundle) || throw(ArgumentError("`libraries` is `:system` or `:bundle`, not `$(repr(libraries))`"))
+            check_gc(gc)
             register_custom_deepcopy!() # (this can change the parameters: they have the version of the lists of types)
             explicit_params = params
             result = with_function_candidates(; strict) do
@@ -125,15 +131,15 @@ for f in (:compile_executable, :compile_shlib, :static_code_typed, :static_llvm_
         at the path that they have when compiling, or `:bundle`, in the folder `lib` next to the program, where they are copied (those that they need as
         well), and, if they are not there, at that path.
 
-        By default (`gc = true`, where the collector is available) the program has a garbage collector: memory that is not
-        used any more is freed (see the section on memory in the manual). `gc = false` never frees it. A number
-        (`gc = 100`) also collects every that many allocations and overwrites what it frees, which is for finding bugs
+        `gc` says whether the program has a garbage collector. By default (`gc = :auto`, where the collector is available) it has one if it needs it: a program that allocates only a finite amount of memory in all
+        (nothing that is allocated is in a loop, or in a function that is called from one or that calls itself, or that a library calls; what makes the arguments of the command line, and what is allocated only to
+        stop with an error, are not counted) never frees anything, and has the allocator that does not collect (see [Binary size](@ref)). A library, `compile_shlib`, can be called any number of
+        times, so there only what is allocated to stop with an error is not counted. `gc = true` always has the collector: memory that is not used any more is freed (see the section on memory in the manual).
+        `gc = false` never has it, and never frees memory. A number (`gc = 100`) is `true` that also collects every that many allocations and overwrites what it frees, which is for finding bugs
         in the collector.
 
         `small = true` makes a smaller file, where that can be done without a difference in what the program does: the linker leaves out what the program does not look at (the names of its functions, a
-        segment of constants on macOS), and the program has no collector if it allocates a finite amount of memory in all (nothing that is allocated is in a loop, or in a function that
-        is called from one or that calls itself, or that a library calls): see [Binary size](@ref). Without it, a program has no collector if it allocates only to stop with an error. (Not for a library, `compile_shlib`, which can be
-        called any number of times.)
+        segment of constants on macOS).
         """ $f
     end
 end

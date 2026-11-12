@@ -328,12 +328,12 @@ rlimit_stack() = Int(StaticRuntime.Runtime.Heap.rlimit_stack_size())
     @test_logs (@test static_status(rlimit_stack)[1] == :ok)
 end
 
-# A program has the collector only if it needs it. One that allocates only where it is about to stop (the message and the exception of an error, which nothing catches) never frees anything,
-# and has the allocator that does not collect. A `try` that does not go on (what `finally` is) does not catch, and one that does is a program that goes on. With `small = true` a program
-# also has none if everything that it allocates is allocated a finite number of times (nothing in a loop, in a function that calls itself, or in a function that is called from one).
-function has_collector(f, types = ENTRY_TYPES; small = false)
+# A program has the collector only if it needs it (`gc = :auto`). One that allocates only where it is about to stop (the message and the exception of an error, which nothing catches) never frees anything,
+# and has the allocator that does not collect. A `try` that does not go on (what `finally` is) does not catch, and one that does is a program that goes on. A program also has none if everything that it
+# allocates is allocated a finite number of times (nothing in a loop, in a function that calls itself, or in a function that is called from one): that is for an executable, and not a library.
+function has_collector(f, types = ENTRY_TYPES; gc = :auto)
     StaticRuntime.StaticCompiler.GPUCompiler.JuliaContext() do ctx
-        mod = Base.invokelatest(static_llvm_module, f, types; small, gc = true) # (`true`, not the default: with `STATIC_RUNTIME_GC=3` the collector is run in stress mode, and is always there)
+        mod = Base.invokelatest(static_llvm_module, f, types; gc) # (`:auto`, not the default: with `STATIC_RUNTIME_GC=3` the collector is run in stress mode, and is always there)
         try
             any(fn -> startswith(LLVM.name(fn), "julia_collect") && !LLVM.isdeclaration(fn), LLVM.functions(mod))
         finally
@@ -342,7 +342,7 @@ function has_collector(f, types = ENTRY_TYPES; small = false)
     end
 end
 # (what `compile_executable(f, (Vector{String},))` compiles: the entry point that makes the vector of the arguments)
-has_collector_args(f; small = false) = has_collector(StaticRuntime.entry_point(f, "entry"); small)
+has_collector_args(f; gc = :auto) = has_collector(StaticRuntime.entry_point(f, "entry"); gc)
 raw_nothing(argc::Int, argv::Ptr{Ptr{UInt8}}) = (println("hello"); 0)
 raw_error_only(argc::Int, argv::Ptr{Ptr{UInt8}}) = (argc > 100 && throw(ArgumentError("too many")); println(argc); 0)
 raw_print_int(argc::Int, argv::Ptr{Ptr{UInt8}}) = (println(argc + 41); 0) # (`print` has a `try` that goes on to throw what it caught)
@@ -373,28 +373,42 @@ args_loop(args::Vector{String}) = (s = 0; for i in 1:1000 + length(args); s += l
     @test !has_collector(raw_message_loop) # (the loop is in the error)
     @test has_collector(raw_loop_until_error) # (the loop is the program)
     @test has_collector(raw_finalizer)
-    @test has_collector(raw_once) # (without `small`, a program that allocates has one)
+    # (a finite amount: what is allocated once, and a `try` that catches and goes on, if it is not in a loop either)
+    @test !has_collector(raw_once)
+    @test !has_collector(raw_catch_once)
     @test !has_collector_args(args_nothing) # (what makes `args` is not counted)
     @test !has_collector_args(args_sum)
+    # (these allocate again and again: in a loop, in a function that is called in one, in a function that calls itself)
+    @test has_collector(raw_recursion)
+    @test has_collector(raw_mutual_recursion)
+    @test has_collector(raw_loop_calls_function)
     @test has_collector_args(args_loop)
-    @testset "small = true: no collector where what is allocated is a finite amount" begin
-        @test !has_collector(raw_nothing; small = true)
-        @test !has_collector(raw_once; small = true)
-        @test !has_collector(raw_catch_once; small = true)
-        @test !has_collector_args(args_nothing; small = true)
-        @test !has_collector_args(args_sum; small = true)
-        # (these allocate again and again: in a loop, in a function that is called in one, in a function that calls itself)
-        @test has_collector(raw_allocates; small = true)
-        @test has_collector(raw_catches; small = true)
-        @test has_collector(raw_finalizer; small = true)
-        @test has_collector(raw_recursion; small = true)
-        @test has_collector(raw_mutual_recursion; small = true)
-        @test has_collector(raw_loop_calls_function; small = true)
-        @test has_collector_args(args_loop; small = true)
+    @testset "gc = true, false and a number do not look at the program" begin
+        @test has_collector(raw_nothing; gc = true)
+        @test has_collector(raw_error_only; gc = true)
+        @test has_collector_args(args_nothing; gc = true)
+        @test has_collector(raw_nothing; gc = 7)
+        @test !has_collector(raw_allocates; gc = false)
+        @test !has_collector(raw_finalizer; gc = false)
+        @test_throws ArgumentError has_collector(raw_nothing; gc = :sometimes)
+        @test_throws ArgumentError has_collector(raw_nothing; gc = "auto")
     end
-    # (and they do what they do)
+    @testset "a library can be called any number of times" begin
+        # (what it allocates once is allocated at each call; what is only for an error is not counted)
+        StaticRuntime.StaticCompiler.GPUCompiler.JuliaContext() do ctx
+            for (f, expected) in ((raw_nothing, false), (raw_error_only, false), (raw_once, true))
+                mod = Base.invokelatest(StaticRuntime.static_llvm_module, f, ENTRY_TYPES; gc = :auto, llvm_postprocess = m -> StaticRuntime.Runtime.link_runtime!(m; gc = :auto, bounded = false))
+                try
+                    @test any(fn -> startswith(LLVM.name(fn), "julia_collect") && !LLVM.isdeclaration(fn), LLVM.functions(mod)) == expected
+                finally
+                    LLVM.dispose(mod)
+                end
+            end
+        end
+    end
+    # (and they do what they do, with the default and with a collector that is always there)
     cases = [raw_nothing, raw_error_only, raw_message_loop, raw_print_int, raw_allocates, raw_catches, raw_once, raw_catch_once, raw_recursion, raw_mutual_recursion, raw_loop_calls_function]
-    for small in (false, true)
-        check_cases(["$(nameof(f)), small = $small" => (() -> f(opaque(1), Ptr{Ptr{UInt8}}(C_NULL))) for f in cases]; small)
+    for gc in (:auto, true)
+        check_cases(["$(nameof(f)), gc = $gc" => (() -> f(opaque(1), Ptr{Ptr{UInt8}}(C_NULL))) for f in cases]; gc)
     end
 end
