@@ -94,9 +94,17 @@ sy_nt_name(s) = Symbol(Base.inferencebarrier(s))
     ])
 end
 
-# `getfield` of a struct with a field named by a symbol that is not known when compiling needs the types of the fields when the program runs (not supported yet)
+# `getfield` of a struct with a field named by a symbol that is not known when compiling: a comparison with each of the names
+mutable struct SyM; x::String; y::Int; end
 @testset "Fields of a struct named by a symbol that is made" begin
-    @test_broken static_status(sy_getfield)[1] == :ok
+    check_cases([
+        "getfield, two types"   => () -> sy_getfield(),
+        "a String field"        => () -> (s = SyM("hello", 2); v = getfield(s, sy_nt_name("x")); v isa String ? ncodeunits(v) : -1),
+        "getproperty"           => () -> (s = SyS(3, 4.5); Int(getproperty(s, sy_nt_name("b")) * 2)),
+        "a mutable struct"      => () -> (s = SyM("hello", 2); getfield(s, sy_nt_name("y")) + 1),
+        "a name that is not there" => () -> (try; getfield(SyS(1, 2.0), sy_nt_name("zz")); 0; catch e; e isa FieldError ? 7 : 8; end),
+        "a NamedTuple"          => () -> getfield(SY_NT2, sy_nt_name("c")) + 1,
+    ])
 end
 
 # The test that a name is a plain identifier, made in the linker and in the program, is the same one

@@ -186,16 +186,18 @@ end
 # looks the field up and boxes it. One comparison of the name with each of the names gives each field its own type, and the result is the union of them, which is split when it is
 # used (as the value of a `Union` is); for a name that is a constant the comparisons are folded, and for fields of one type they are selects. (Symbols are compared by address:
 # one that was made by the program is the one that the binary has, see `static_symbol`.) The same is done for the `getfield` of a tuple with an index that is not known: `tuple_getindex`.
-struct NoDefault end # (`default` of `namedtuple_field` when the name has to be there)
-@generated function namedtuple_field(nt::NamedTuple{names}, name::Symbol, default) where {names}
-    chain = default === NoDefault ? :(throw(FieldError(typeof(nt), name))) : :default
-    for k in length(names):-1:1
-        chain = :(name === $(QuoteNode(names[k])) ? getfield(nt, $k) : $chain)
+function field_chain(T::DataType, fallback)
+    chain = fallback
+    for k in fieldcount(T):-1:1
+        chain = :(name === $(QuoteNode(fieldname(T, k))) ? getfield(x, $k) : $chain)
     end
     return chain
 end
-namedtuple_field(nt::NamedTuple, name::Symbol) = namedtuple_field(nt, name, NoDefault())
 
-@device_override @inline Base.getindex(nt::NamedTuple, name::Symbol) = namedtuple_field(nt, name)
-@device_override @inline Base.getproperty(nt::NamedTuple, name::Symbol) = namedtuple_field(nt, name)
-@device_override @inline Base.get(nt::NamedTuple, name::Symbol, default) = namedtuple_field(nt, name, default)
+# `getfield(x, name)` of any struct (or `NamedTuple`) with a name that is not known when compiling is that chain over the fields of its type. Julia compiles it as `jl_f_getfield`; the
+# compiler replaces that call with a call of this (see `expand_dynamic_getfield!`), which is also what `nt[name]` and `nt.name` are.
+@generated struct_field(x, name::Symbol) = field_chain(x, :(throw(FieldError($x, name))))
+
+# `get(nt, name, default)` is the same chain that ends in the default.
+@generated namedtuple_get(x::NamedTuple, name::Symbol, default) = field_chain(x, :default)
+@device_override @inline Base.get(nt::NamedTuple, name::Symbol, default) = namedtuple_get(nt, name, default)

@@ -313,6 +313,7 @@ const FIELD_BUILTINS = (Core.getfield, Core.setfield!)
 
 function CC.finishopt!(interp::OverridesInterpreter, opt::CC.OptimizationState, ir::CC.IRCode)
     ir = assert_field_receivers!(ir)
+    expand_dynamic_getfield!(ir)
     return @invoke CC.finishopt!(interp::CC.AbstractInterpreter, opt::CC.OptimizationState, ir::CC.IRCode)
 end
 
@@ -332,6 +333,24 @@ function assert_field_receivers!(ir::CC.IRCode)
         changed = true
     end
     return changed ? CC.compact!(ir) : ir
+end
+
+# `getfield(x, name)` of a struct, with a `name` that is not a constant, is `jl_f_getfield` too, and the type of what it gives depends on `name` (see `struct_field`, which is a comparison with each name):
+# the call is replaced by an `invoke` of it.
+function expand_dynamic_getfield!(ir::CC.IRCode)
+    for pc in 1:length(ir.stmts)
+        st = ir.stmts[pc][:stmt]
+        st isa Expr && st.head === :call && 3 <= length(st.args) <= 4 || continue
+        CC.singleton_type(CC.argextype(st.args[1], ir)) === Core.getfield || continue
+        name = CC.argextype(st.args[3], ir)
+        (name isa Core.Const || CC.widenconst(name) !== Symbol) && continue
+        T = CC.widenconst(CC.argextype(st.args[2], ir))
+        (T isa DataType && isconcretetype(T) && !(T <: Tuple) && !(T <: Type) && T !== DataType && T !== Module &&
+         Base.datatype_fieldcount(T) isa Int && 0 < Base.datatype_fieldcount(T) <= 64) || continue
+        mi = CC.specialize_method(only(methods(struct_field)), Tuple{typeof(struct_field),T,Symbol}, Core.svec())
+        ir.stmts[pc][:stmt] = Expr(:invoke, mi, struct_field, st.args[2], st.args[3])
+    end
+    return ir
 end
 
 ## Tuples that have a `Union` as an element

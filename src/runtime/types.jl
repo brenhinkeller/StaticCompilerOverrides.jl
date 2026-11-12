@@ -65,10 +65,9 @@ end
 # `ijl_field_index(T, name, 0)`, the number of the field of the type `T` of that name, or -1. `T` is a constant, so the names
 # of its fields are, and the answer is a comparison with each of them (as the symbols of the same name are the same object).
 #
-# OPEN: that is the number of the field, and not the field. `getfield(x, name)` itself with a name that is only known at run time, of fields of different types, is
-# `jl_f_getfield`, whose result has a type that the program does not know: the program is refused. Julia avoids it by inlining the method that has the name and folding it
-# to a constant, which does not happen under `--code-coverage`, and is what fails for `MvNormal` in `test/packages/distributions.jl`. (`test/core/symbols.jl` has the
-# cases of this that are known: `@test_broken`.)
+# `getfield(x, name)` itself with a name that is only known at run time, of fields of different types, is `jl_f_getfield` in Julia, whose result has a type that the program does not know:
+# for a struct the compiler makes it a comparison with each name (`expand_dynamic_getfield!`, `struct_field`). OPEN: it is not done for the fields of a type object (`getproperty(T, name)`),
+# which is what fails for `MvNormal` in `test/packages/distributions.jl` under `--code-coverage` (that disables the inlining and the folding that avoid it).
 function define_field_index!(mod::LLVM.Module)
     fns = LLVM.functions(mod)
     haskey(fns, "ijl_field_index") && LLVM.isdeclaration(fns["ijl_field_index"]) || return false
