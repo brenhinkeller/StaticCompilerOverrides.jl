@@ -4,6 +4,7 @@ testfile.*
 *.jl.*.cov
 *.jl.cov
 *.jl.mem
+build/
 /docs/build/
 *.bak
 *.o

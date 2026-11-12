@@ -35,34 +35,53 @@ function main(args::Vector{String})
     return 0
 end
 
-compile_executable(main, (Vector{String},), "build", "primes"; small=true)   # about 118 kB, no libjulia
+compile_executable(main, (Vector{String},), "build", "primes"; small=true)
 ```
 
 ```
-$ ./build/primes 30
+shell> ls -logh build
+total 568
+-rwxr-xr-x  1    115K Nov 12 11:04 primes
+-rw-r--r--  1    168K Nov 12 11:04 primes.o
+
+shell> ./build/primes 30
 The 10 primes up to 30: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
 Their mean is 12.9
 ```
 
-The entry point is `main(args)` above, though `main()` is also an option for a program with no arguments, as is a C-style `main(argc, argv)` (`(Int, Ptr{Ptr{UInt8}})`, which must return an integer); see [Entry points](docs/src/index.md).
+The entry point used in the example above is `main(args)`, though `main()` is also an option for a program with no arguments, as is a C-style `main(argc, argv)` (`(Int, Ptr{Ptr{UInt8}})`, which must return an integer); see [Entry points](docs/src/index.md).
 
 If not otherwise specified, the garbage collector will be included only if it is thought to be needed (`gc = :auto`, the default). This includes the GC for anything that allocates repeatedly in a loop or other cycle (not counting error paths), and excludes it otherwise. Alternatively, a program compiled with `gc = true` always has one, and with `gc = false` never does. Meanwhile, the `small = true` option attempts to make the file smaller where possible (no names of functions or segment of constants in the file). A small program is then a few tens of kilobytes, depending on architecture (see [Binary size](docs/src/index.md)).
 
 ### More advanced examples
 
-Big numbers and regular expressions work, by calling GMP, MPFR and PCRE2 when the program runs; `libraries = :bundle` copies those libraries next to the program, so that the folder can be moved:
+Big numbers and regular expressions are some of the Julia base features that currently rely on external libraries (GMP, MPFR, and PCRE2). These will continue to work in compiled Julia code, linking against the same libraries; `libraries = :bundle` copies those libraries next to the program, so that the folder can be moved:
 
 ```julia
-function main(args::Vector{String})
-    println("30! = ", factorial(big(30)))                      # BigInt (GMP)
-    println("sqrt(2) = ", sqrt(big(2)))                        # BigFloat (MPFR), 256 bits
-    m = match(r"(?<key>[a-z]+)=(?<val>\d+)", get(args, 1, "answer=42"))   # Regex (PCRE2)
-    m === nothing && return 1
-    println(m[:key], " is ", parse(Int, m[:val]) + 1)
+function bignums(args::Vector{String})
+    n = length(args) > 0 ? parse(Int, args[1]) : 1
+    println("$(n)! = ", factorial(big(n)))                      # BigInt (GMP)
+    println("sqrt($n) = ", sqrt(big(n)))                        # BigFloat (MPFR), 256 bits
     return 0
 end
 
-compile_executable(main, (Vector{String},), "build", "bignums"; libraries = :bundle)   # build/lib has libgmp, libmpfr, libpcre2
+compile_executable(bignums, (Vector{String},), "build"; libraries = :bundle)
+```
+
+```
+shell> tree --du -h build
+[1.5M]  build
+├── [207K]  bignums
+├── [266K]  bignums.o
+└── [1016K]  lib
+    ├── [490K]  libgmp.10.dylib
+    └── [526K]  libmpfr.6.dylib
+
+ 1.5M used in 2 directories, 4 files
+
+shell> ./build/bignums 42
+42! = 1405006117752879898543142606244511569936384000000000
+sqrt(42) = 6.480740698407860230965967436087996657705204307058346549711354397809617377844025
 ```
 
 Heterogeneous data, dictionaries of symbols, structs and matrices print as they do in Julia (here, through the static `IOContext` and `text/plain` machinery), and the garbage collector frees what the program no longer uses:
