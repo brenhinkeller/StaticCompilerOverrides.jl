@@ -35,7 +35,30 @@ Compile `f()` into a standalone executable, run it, and return its result reduce
 function static_result(f; dir = mktempdir(), kwargs...)
     main = make_main(f)
     exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), dir, string(nameof(main)); kwargs...)
-    return parse(Int, readchomp(`$exe`))
+    try
+        return parse(Int, readchomp(`$exe`))
+    catch
+        crash_backtrace(exe) # (what a crash of the program was, in the log of CI, where it can't be run again by hand)
+        rethrow()
+    end
+end
+
+# print a backtrace of the program, run again under a debugger, if there is one (`lldb` on macOS, `gdb` on Linux)
+function crash_backtrace(exe)
+    cmd = if Sys.which("lldb") !== nothing
+        `lldb --batch -o run -o bt -o "image list" -o "register read" -- $exe`
+    elseif Sys.which("gdb") !== nothing
+        `gdb --batch -ex run -ex bt -ex "info sharedlibrary" -ex "info registers" $exe`
+    else
+        return
+    end
+    try
+        @info "The program failed: a backtrace of it" exe
+        println(stderr, read(ignorestatus(cmd), String))
+    catch err
+        @info "No backtrace" err
+    end
+    return
 end
 
 # what `f()` writes to stdout and to stderr in this process (the result, which the compiled `main`
