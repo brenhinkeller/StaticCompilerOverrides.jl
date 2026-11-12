@@ -193,14 +193,26 @@ Julia keeps every symbol in one table, so that there is one object for each name
 
 ## Entry points
 
-`compile_executable(f, (Int, Ptr{Ptr{UInt8}}))` compiles `f(argc, argv)` to the `main` of a C program. For
-a program written like a Julia script, `(Vector{String},)` compiles `f(args)`, which gets the arguments
-of the command line like `ARGS` (which is also set), and the status of the program is its return value,
-if that is an integer. See [`compile_executable`](@ref).
+An executable is made of a function, in one of three forms:
+
+| form                                    | `compile_executable(f, ...)`  | the arguments of the command line | exit status                                            | file, `small = true` |
+|:----------------------------------------|:------------------------------|:----------------------------------|:-------------------------------------------------------|---------------------:|
+| `main(args::Vector{String})`            | `(Vector{String},)`           | `args` (and `ARGS`)               | the integer that it returns, 0 for anything else       | 34.4 kB              |
+| `main()`                                | `()`, or no types             | none (`ARGS` is empty)            | the integer that it returns, 0 for anything else       | 33.6 kB              |
+| `main(argc::Int, argv::Ptr{Ptr{UInt8}})` | `(Int, Ptr{Ptr{UInt8}})`      | as C has them                     | the integer that it returns: **not defined** for anything else | 33.6 kB      |
+
+`main(args)` is the form to use for a program that is written like a Julia script: it has the arguments as `ARGS` has them, and the status of the program is what it returns if that is an
+integer (a function that ends with `println` returns `nothing`, and exits with 0). `main()` is the same for a program that takes no arguments. The third form is C's: it compiles `f(argc, argv)` to the
+`main` of a C program, with no code of ours between the two, which is as small as a program can be (the others add a kilobyte or less), and what the examples of the sizes and speeds below use. Its
+status is the return value as C has it, so the function has to return an `Int` (or an `Int32`): for `nothing` it is whatever the machine had in the register, and the compiler warns of it.
+See [`compile_executable`](@ref).
 
 ```julia
 main(args) = (println("got ", length(args), " arguments"); length(args))
 compile_executable(main, (Vector{String},))    # `./main a b c` prints "got 3 arguments" and exits with 3
+
+hello() = println("hello")
+compile_executable(hello)                      # `./hello` prints "hello" and exits with 0
 ```
 
 ## Writing overrides

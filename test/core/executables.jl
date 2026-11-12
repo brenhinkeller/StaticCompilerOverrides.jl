@@ -124,3 +124,48 @@ if Sys.isapple() && Sys.ARCH === :aarch64
         @test occursin("ldr\td", asm) || occursin("ldp\td", asm) || occursin("ldr\tq", asm)
     end
 end
+
+# The three forms of the entry point: `main()`, `main(args)` and `main(argc, argv)`, and the exit status of each
+@testset "Entry points: main(), main(args), main(argc, argv)" begin
+    exit_code(exe, args...) = run(ignorestatus(pipeline(`$exe $args`; stdout = devnull))).exitcode
+
+    # without arguments: the result of `f` that is an integer is the status, and anything else is 0 (a `println` that ends the function returns `nothing`)
+    @eval no_args_nothing() = println("no arguments")
+    @eval no_args_three() = (println("three"); 3)
+    @eval no_args_cond() = (rand() < 2 ? 5 : 0)
+    @eval no_args_arguments() = (print(length(ARGS)); 0)
+    exe = Base.invokelatest(compile_executable, no_args_nothing, (), mktempdir())
+    @test read(`$exe`, String) == "no arguments\n"
+    @test exit_code(exe) == 0
+    @test exit_code(exe, "a", "b") == 0
+    exe = Base.invokelatest(compile_executable, no_args_three, (), mktempdir())
+    @test read(ignorestatus(`$exe`), String) == "three\n"
+    @test exit_code(exe) == 3
+    exe = Base.invokelatest(compile_executable, no_args_cond, (), mktempdir())
+    @test exit_code(exe) == 5
+    # (`compile_executable(f)`: the types are `()`, and the name is that of the function)
+    dir = mktempdir()
+    exe = cd(dir) do
+        Base.invokelatest(compile_executable, no_args_nothing)
+    end
+    @test basename(exe) == "no_args_nothing" && exit_code(exe) == 0
+    # `ARGS` is empty without arguments, whatever the command line has
+    push!(Base.ARGS, "an argument of the process that compiles")
+    exe = try
+        Base.invokelatest(compile_executable, no_args_arguments, (), mktempdir())
+    finally
+        pop!(Base.ARGS)
+    end
+    @test read(`$exe a b c`, String) == "0"
+
+    # with `args`: `nothing` is 0 as well, and an integer is the status
+    @eval args_nothing(args::Vector{String}) = println(length(args))
+    exe = Base.invokelatest(compile_executable, args_nothing, (Vector{String},), mktempdir())
+    @test read(`$exe a b`, String) == "2\n" && exit_code(exe, "a", "b") == 0
+
+    # `main(argc, argv)` is C's: the integer that it returns is the status (`Int` or `Int32`)
+    @eval raw_main(argc::Int, argv::Ptr{Ptr{UInt8}}) = (println(argc); Int32(4))
+    exe = Base.invokelatest(compile_executable, raw_main, (Int, Ptr{Ptr{UInt8}}), mktempdir())
+    @test read(ignorestatus(`$exe a b`), String) == "3\n"
+    @test exit_code(exe, "a", "b") == 4
+end

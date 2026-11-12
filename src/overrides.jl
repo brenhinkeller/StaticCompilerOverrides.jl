@@ -215,31 +215,43 @@ end
     return nothing
 end
 
-# what the entry point of `f(args::Vector{String})` does: `ARGS` is also set, as it is in Julia,
-# and the result of `f` is the exit status of the program (if it is an integer)
+# The exit status of the program is the integer that `f` returns, and 0 if it returns something else (`nothing`, for one): the entry point
+# that StaticCompiler makes of `f` itself has whatever is in the register of the result, when `f` does not return an integer.
+exit_status(status) = status isa Integer ? Int(status) : 0
+
+# what the entry point of `f(args::Vector{String})` does: `ARGS` is also set, as it is in Julia
 function run_entry(f, argc::Int, argv::Ptr{Ptr{UInt8}})
     args = command_line_arguments(argc, argv)
     set_base_args(args)
-    status = f(args)
-    return status isa Integer ? Int(status) : 0
+    return exit_status(f(args))
 end
 
-# A function `main(argc::Int, argv::Ptr{Ptr{UInt8}})` that runs `f(args)`, named `name`. The entry
+# what the entry point of `f()` does: `ARGS` is empty (and not what it has when compiling)
+function run_entry_without_arguments(f, argc::Int, argv::Ptr{Ptr{UInt8}})
+    empty!(Base.ARGS)
+    return exit_status(f())
+end
+
+# A function `main(argc::Int, argv::Ptr{Ptr{UInt8}})` that runs `f(args)` (or `f()`, with `arguments = false`), named `name`. The entry
 # point of the executable has the name of the function, so it is made in a module of its own.
-function entry_point(f, name::AbstractString)
+function entry_point(f, name::AbstractString; arguments::Bool = true)
     entry = Module(:StaticEntryPoint)
+    runner = arguments ? run_entry : run_entry_without_arguments
     Core.eval(entry, :(function $(Symbol(name))(argc::Int, argv::Ptr{Ptr{UInt8}})
-        return $run_entry($f, argc, argv)
+        return $runner($f, argc, argv)
     end))
     return Base.invokelatest(getproperty, entry, Symbol(name))
 end
 
 """
     compile_executable(f, (Vector{String},), [path], [name]; kwargs...)
+    compile_executable(f, (), [path], [name]; kwargs...)
+    compile_executable(f; kwargs...)
 
 Compile an executable that runs `f(args)`, where `args` are the arguments of the command line, as
-`ARGS` is in Julia (they are also available as `ARGS`). If `f` returns an integer, it is the exit
-status of the program. This is the convention of Julia's `main(args)`:
+`ARGS` is in Julia (they are also available as `ARGS`), or `f()`, for a program that takes no arguments
+(`compile_executable(f)` is the same; `ARGS` is empty). If `f` returns an integer, it is the exit
+status of the program, and it is 0 if `f` returns anything else (`nothing`, for one). This is the convention of Julia's `main(args)`:
 
 ```julia
 function main(args::Vector{String})
@@ -247,15 +259,20 @@ function main(args::Vector{String})
 end
 compile_executable(main, (Vector{String},))
 ```
+
+The third form of the entry point is C's: `compile_executable(f, (Int, Ptr{Ptr{UInt8}}))` compiles `f(argc, argv)` to the `main` of a C program,
+with the arguments as C has them. The exit status is then what `f` returns, which has to be an integer (`Int` or `Int32`): for anything else it is not defined.
 """
 function compile_executable(f::Function, types::Tuple{DataType}, args...; kwargs...)
     # (the type of a tuple of types is a tuple of `DataType`s: it is the value that tells)
     types == (Vector{String},) || return invoke(compile_executable, Tuple{Vararg{Any}}, f, types, args...; kwargs...)
     return compile_executable_with_arguments(f, args...; kwargs...)
 end
+compile_executable(f::Function, types::Tuple{}, args...; kwargs...) = compile_executable_with_arguments(f, args...; arguments = false, kwargs...)
+compile_executable(f::Function; kwargs...) = compile_executable(f, (); kwargs...)
 
-function compile_executable_with_arguments(f::Function, path::String = pwd(), name::AbstractString = string(nameof(f)); kwargs...)
-    entry = entry_point(f, name)
+function compile_executable_with_arguments(f::Function, path::String = pwd(), name::AbstractString = string(nameof(f)); arguments::Bool = true, kwargs...)
+    entry = entry_point(f, name; arguments)
     # (the entry point was just defined, so look at the latest world)
     return Base.invokelatest(compile_executable, entry, (Int, Ptr{Ptr{UInt8}}), path, String(name); kwargs...)
 end

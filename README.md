@@ -44,14 +44,13 @@ The 10 primes up to 30: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
 Their mean is 12.9
 ```
 
-A program has a garbage collector only if it needs it (`gc = :auto`, the default): not if it allocates a finite amount of memory in all (nothing that it allocates is in a loop), which is what a small program usually does. `gc = true` always has
-one, and `gc = false` never does. `compile_executable(...; small = true)` makes the file smaller where that makes no difference to what the program does (no names of functions or segment of constants in the file). A small program is then
-a few tens of kilobytes (see [Binary size](docs/src/index.md)).
+The entry point is `main(args)` above, though `main()` is also an option for a program with no arguments, as is a C-style `main(argc, argv)` (`(Int, Ptr{Ptr{UInt8}})`, which must return an integer); see [Entry points](docs/src/index.md).
+
+If not otherwise specified, the garbage collector will be included only if it is thought to be needed (`gc = :auto`, the default). This includes the GC for anything that allocates repeatedly in a loop or other cycle (not counting error paths), and excludes it otherwise. Alternatively, a program compiled with `gc = true` always has one, and with `gc = false` never does. Meanwhile, the `small = true` option attempts to make the file smaller where possible (no names of functions or segment of constants in the file). A small program is then a few tens of kilobytes, depending on architecture (see [Binary size](docs/src/index.md)).
 
 ### More advanced examples
 
-Big numbers and regular expressions work, by calling GMP, MPFR and PCRE2 when the program runs; `libraries = :bundle` copies
-those libraries next to the program, so that the folder can be moved:
+Big numbers and regular expressions work, by calling GMP, MPFR and PCRE2 when the program runs; `libraries = :bundle` copies those libraries next to the program, so that the folder can be moved:
 
 ```julia
 function main(args::Vector{String})
@@ -66,8 +65,7 @@ end
 compile_executable(main, (Vector{String},), "build", "bignums"; libraries = :bundle)   # build/lib has libgmp, libmpfr, libpcre2
 ```
 
-Heterogeneous data, dictionaries of symbols, structs and matrices print as they do in Julia (here, through the static `IOContext`
-and `text/plain` machinery), and the garbage collector frees what the program no longer uses:
+Heterogeneous data, dictionaries of symbols, structs and matrices print as they do in Julia (here, through the static `IOContext` and `text/plain` machinery), and the garbage collector frees what the program no longer uses:
 
 ```julia
 using LinearAlgebra
@@ -101,16 +99,13 @@ compile_executable(main, (Vector{String},), "build", "crc")
 
 What compiles to a standalone binary (the arguments of the command line included), and is checked against Julia in the tests:
 
-* **The language and Base**: allocating code (`Vector`, `Dict` including mixed key and value types, `Set`, `String`, `Symbol` including `Symbol(string)` made at run time, structs, tuples, fields of a `Union{Node,Nothing}`),
-  closures (also stored in collections and called through them), `@cfunction` callbacks (`qsort`, `bsearch`, ...), `try`/`catch`/`finally`, non-`const` global variables, `deepcopy`, `IdDict`, `rand` and `RandomDevice`,
-  files and the standard input, and logging (`@warn` and friends).
+* **The language and Base**: allocating code (`Vector`, `Dict` including mixed key and value types, `Set`, `String`, `Symbol` including `Symbol(string)` made at run time, structs, tuples, fields of a `Union{Node,Nothing}`), closures (also stored in collections and called through them), `@cfunction` callbacks (`qsort`, `bsearch`, ...), `try`/`catch`/`finally`, non-`const` global variables, `deepcopy`, `IdDict`, `rand` and `RandomDevice`, files and the standard input, and logging (`@warn` and friends).
 * **Printing**: `print`, `println`, `show`, `display` and `text/plain` of numbers, strings, symbols, containers, structs, tuples and matrices, with `IOContext` properties known when compiling; `printf` and `@printf(STDOUT, ...)`.
 * **Filesystem**: `stat`, `mkdir`, `rm`, `readdir`, `cp`, `mv`, and temporary files.
 * **Dynamic dispatch**: calls on `Any` and abstract types are closed over a list of registered types, so they compile (and are exact for abstract types with few concrete subtypes).
 * **Libraries**: BLAS and LAPACK (through libblastrampoline), `BigInt`, `BigFloat`, `Regex`, SuiteSparse (sparse `\`, `lu`, `cholesky`, `qr`), **MPI** (MPI.jl programs run under `mpiexec`), any JLL or library of your own through `ccall`, with `libraries = :system` or `:bundle`; and `finalizer(f, x)` frees what they allocate.
 * **Standard libraries**: `Base64`, `CRC32c`, `LinearAlgebra` (including `schur`, `sqrt` and `log` of matrices), `Mmap` (of files by their path), `Printf`, `Random`, `SHA`, `Statistics`, `UUIDs` (including `uuid4()`), the address types of `Sockets`, and most of `Dates` and `SparseArrays`.
-* **Packages**: code from other packages compiles like Base's. The standard libraries and these packages are a survey kept as tests (`test/packages`), with the cases that don't work listed in the manual:
-  DataStructures.jl, Distributions.jl, Graphs.jl, NaNStatistics.jl, OrderedCollections.jl, Parsers.jl, StatsBase.jl, StaticArrays.jl and MPI.jl.
+* **Packages**: code from other packages compiles like Base's. The standard libraries and these packages are a survey kept as tests (`test/packages`), with the cases that don't work listed in the manual: DataStructures.jl, Distributions.jl, Graphs.jl, NaNStatistics.jl, OrderedCollections.jl, Parsers.jl, StatsBase.jl, StaticArrays.jl and MPI.jl.
 
 `test/` is the up-to-date list of what is checked, and `test/core/limitations.jl` of what is refused, and what happens then.
 
@@ -119,13 +114,10 @@ Code that we know can't work in a standalone binary is rejected when compiling, 
 ### How it works
 
 * **An overlay method table** (`@device_override`) replaces the methods of Base that can't be compiled (they use tasks, locks, libuv, `inferencebarrier`, ...) with ones that can.
-* **A runtime written for compiled programs** is linked into the code: allocation, exceptions, boxing, type tags and the like. Julia objects that the code uses as constants (strings, arrays,
-  `Ref`s, types, symbols, non-`const` globals) are copied into the binary, with their type information, so no libjulia is needed.
-* **A garbage collector** (conservative, non-moving, mark and sweep, written in Julia and compiled into the program) frees memory as Julia does, and runs the C finalizers of
-  libraries (GMP's). It is only in the programs that need it (`gc = :auto`); `gc = true` and `gc = false` always and never include it. See the [manual](docs/src/index.md) for how it works and what it can't see.
+* **A runtime written for compiled programs** is linked into the code: allocation, exceptions, boxing, type tags and the like. Julia objects that the code uses as constants (strings, arrays, `Ref`s, types, symbols, non-`const` globals) are copied into the binary, with their type information, so no libjulia is needed.
+* **A garbage collector** (conservative, non-moving, mark and sweep, written in Julia and compiled into the program) frees memory as Julia does, and runs the C finalizers of libraries (e.g., GMP's). It is only in the programs that need it (`gc = :auto`); `gc = true` and `gc = false` always and never include it. See the [manual](docs/src/index.md) for how it works and what it can't see.
 * **A loader for libraries** looks functions up the first time that they are called (`dlopen`, `dlsym`), after the libraries that they need, and can find them in a `lib` folder next to the program.
-* **Inference is helped along in some cases**: calls on abstract values are made over registered types, calls of functions that are not known (a closure taken out of a collection) over the closures that the program has, `@cfunction`
-  callbacks are given a target that is compiled, tuples that have a `Union` as an element are favored for inlining, and keyword and context arguments propagate as constants so that code like `IOContext(io, :compact => true)` compiles.
+* **Inference is helped along in some cases**: calls on abstract values are made over registered types, calls of functions that are not known (a closure taken out of a collection) over the closures that the program has, `@cfunction` callbacks are given a target that is compiled, tuples that have a `Union` as an element are favored for inlining, and keyword and context arguments propagate as constants so that code like `IOContext(io, :compact => true)` compiles.
 * **Checks for silent wrong results**: what would differ from Julia is refused when compiling (for instance constant tables hashed by address), and numbers are never mistaken for addresses.
 
 ### Limitations
@@ -151,10 +143,8 @@ See [Known limitations](https://brenhinkeller.github.io/StaticRuntime.jl/dev/#Kn
 
 ### Running the tests
 
-`] test` runs all of them: the tests of the compiler, the runtime and the language (`test/core`), and those of the standard libraries and the packages that programs use (`test/packages`).
-Most of them compile a program and compare what it prints with what Julia prints for the same code. Set `GROUP=Core` or `GROUP=Packages` to run one of the two, `PACKAGES=Dates,MPI`
-to run some of the files of `Packages` (the MPI tests need an MPI library, which MPI.jl installs), `TEST_TIMING=1` to print the time that each file took, and `TEST_FOLDED=1` to fail the cases whose program is only a print of an answer that the compiler found (`opaque` in `test/helpers.jl` makes values that it does not know). `STATIC_RUNTIME_GC=3`
-runs the programs with the collector in stress mode (`true` has it always, `auto` is the default).
+`] test` runs all: the tests of the compiler, the runtime and the language (`test/core`), as well as those of the standard libraries and the packages that programs use (`test/packages`).
+Most of them compile a program and compare what it prints with what Julia prints for the same code. Set `GROUP=Core` or `GROUP=Packages` to run one of the two, `PACKAGES=Dates,MPI` to run some of the files of `Packages` (the MPI tests need an MPI library, which MPI.jl installs), `TEST_TIMING=1` to print the time that each file took, and `TEST_FOLDED=1` to fail the cases whose program is only a print of an answer that the compiler found (`opaque` in `test/helpers.jl` makes values that it does not know). `STATIC_RUNTIME_GC=3` runs the programs with the collector in stress mode, sweeping every three allocations.
 
 [docs-dev-img]: https://img.shields.io/badge/docs-dev-blue.svg
 [docs-dev-url]: https://brenhinkeller.github.io/StaticRuntime.jl/dev/
