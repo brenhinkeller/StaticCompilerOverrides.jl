@@ -46,7 +46,8 @@ end
 # print a backtrace of the program, run again under a debugger, if there is one (`lldb` on macOS, `gdb` on Linux)
 function crash_backtrace(exe)
     cmd = if Sys.which("lldb") !== nothing
-        `lldb --batch -o run -o bt -o "image list" -o "register read" -- $exe`
+        # (`-k` runs when the program crashes: in batch mode, nothing that is given with `-o` runs after it does)
+        `lldb --batch -o run -k bt -k "register read" -k "disassemble --pc --count 40" -k "memory read --force --size 8 --count 16 \$sp" -- $exe`
     elseif Sys.which("gdb") !== nothing
         `gdb --batch -ex run -ex bt -ex "info sharedlibrary" -ex "info registers" $exe`
     else

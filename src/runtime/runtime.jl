@@ -114,7 +114,24 @@ end
 # place was then not inlined, whatever its size, and what is made of calls to it (`pow`, which calls the function of the logarithm and gets two numbers back through memory) was up to twice as slow as in Julia.
 # The inliner is run again, for the functions that are now local (`noinline` and the functions that call `sigsetjmp` are not inlined by it).
 function inline_internal_functions!(mod::LLVM.Module)
-    run!("cgscc(inline),function(sroa,instcombine<no-verify-fixpoint>,simplifycfg)", mod)
+    # Only the functions that are internal: the others (`static_alloc` of the heap, the loader of BLAS, ...) are the runtime, which is called and was not inlined before; inlining
+    # `static_alloc` into every allocation of a program, with its slow paths, made programs crash (the one that calls BLAS, on the machines of CI).
+    kept = LLVM.Function[]
+    noinline = LLVM.EnumAttribute("noinline")
+    for fn in LLVM.functions(mod)
+        LLVM.isdeclaration(fn) && continue
+        LLVM.linkage(fn) in (LLVM.API.LLVMInternalLinkage, LLVM.API.LLVMPrivateLinkage) && continue
+        any(==(noinline), collect(LLVM.function_attributes(fn))) && continue
+        push!(LLVM.function_attributes(fn), noinline)
+        push!(kept, fn)
+    end
+    try
+        run!("cgscc(inline),function(sroa,instcombine<no-verify-fixpoint>,simplifycfg)", mod)
+    finally
+        for fn in kept
+            delete!(LLVM.function_attributes(fn), noinline)
+        end
+    end
     run!(GlobalDCEPass(), mod)
     return
 end
