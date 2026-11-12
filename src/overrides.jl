@@ -188,13 +188,19 @@ end
     return args
 end
 
+# `ARGS` of the binary is the vector of the Julia that compiled it, with what that had in it: the arguments of the command line of that. (Not inlined, like `command_line_arguments`: what these two
+# allocate is as much as the arguments are, and `allocation_is_finite` ignores it: it knows them by their names.)
+@noinline function set_base_args(args::Vector{String})
+    empty!(Base.ARGS)
+    append!(Base.ARGS, args)
+    return nothing
+end
+
 # what the entry point of `f(args::Vector{String})` does: `ARGS` is also set, as it is in Julia,
 # and the result of `f` is the exit status of the program (if it is an integer)
 function run_entry(f, argc::Int, argv::Ptr{Ptr{UInt8}})
     args = command_line_arguments(argc, argv)
-    # (`ARGS` of the binary is the vector of the Julia that compiled it, with what that had in it: the arguments of the command line of that)
-    empty!(Base.ARGS)
-    append!(Base.ARGS, args)
+    set_base_args(args)
     status = f(args)
     return status isa Integer ? Int(status) : 0
 end

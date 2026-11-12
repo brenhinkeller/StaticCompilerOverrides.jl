@@ -500,8 +500,8 @@ and has the table of the symbols of the entry point. The last two columns are wi
 What a program has, and when:
 
 * **The collector** (20 kB of code and 8 kB of data) is there if the program allocates anywhere that it can go on from. A program that allocates only where it is about to stop (the message
-  and the exception of an error that nothing catches, or that a `try` only runs the `finally` of) never frees anything, and has the allocator that doesn't collect: that is what `main(argc, argv)` with `println` is. A
-  `main(args)` makes the vector of the arguments, which is an allocation that goes on. `gc = false` leaves the collector out of any program.
+  and the exception of an error that nothing catches, or that a `try` only runs the `finally` of; a loop that builds the message is part of that, if it is in the error and not in the program) never frees anything, and has the
+  allocator that doesn't collect: that is what `main(argc, argv)` with `println` is. The vector of the arguments of `main(args)` is not counted: it is as large as the command line, which the program does not decide. `gc = false` leaves the collector out of any program.
 * **The support for finalizers** (5 kB) is there if the program registers a finalizer (`BigInt`, the wrappers of libraries, `finalizer(f, x)`).
 * **The tables of the characters** are one for each question that is asked: `isspace` of a character that is not ASCII is a table of a few bytes; `show` of a string (the printable characters) 12 kB; `isletter`
   and the like 33 kB.

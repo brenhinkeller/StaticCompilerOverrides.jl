@@ -191,12 +191,14 @@ mutable struct HeapNode; v::Int; next::Union{HeapNode,Nothing}; end
                 s += v[1]
             end
             GC.gc()
-            printf(c"%d %d %d\n", gc_collections() > 0, gc_heap_bytes() < 64 << 20, gc_live_bytes() < 1 << 20)
+            # (`s` is printed, so that the loop is not dead code: the allocations are what this is about, and the compiler may remove a loop that has no result)
+            printf(c"%d %d %d %ld\n", gc_collections() > 0, gc_heap_bytes() < 64 << 20, gc_live_bytes() < 1 << 20, s)
             return 0
         end
-        @test run_heap_program(bounded; gc = true) == "1 1 1"
+        total = 3_000_000 * 3_000_001 ÷ 2
+        @test run_heap_program(bounded; gc = true) == "1 1 1 $total"
         # and without it, it grows (which is what `gc = false` is: nothing is freed)
-        @test run_heap_program(bounded; gc = false) == "0 0 1"
+        @test run_heap_program(bounded; gc = false) == "0 0 1 $total"
         function disabled(argc::Int, argv::Ptr{Ptr{UInt8}})
             was = GC.enable(false)
             before = gc_collections()
@@ -349,6 +351,9 @@ raw_catches(argc::Int, argv::Ptr{Ptr{UInt8}}) = (s = 0; for i in 1:argc * 2000; 
 raw_finalizer(argc::Int, argv::Ptr{Ptr{UInt8}}) = (x = Ref(argc); finalizer(r -> nothing, x); println(x[]); 0)
 raw_once(argc::Int, argv::Ptr{Ptr{UInt8}}) = (v = collect(1:argc + 5); w = sort(v); println(sum(w), " ", length(string(w))); 0) # (allocates, once)
 raw_catch_once(argc::Int, argv::Ptr{Ptr{UInt8}}) = (r = try; parse(Int, argc > 5 ? "x" : "7"); catch; -1; end; println(r, " ", string(r)); 0) # (a catch that goes on, once)
+# (a loop that builds the message of an error, which is run once, for the error; and a loop that is the program, which goes on until it throws)
+raw_message_loop(argc::Int, argv::Ptr{Ptr{UInt8}}) = (if argc > 100; s = ""; for i in 1:argc; s *= "x$i"; end; throw(ArgumentError(s)); end; println(argc); 0)
+raw_loop_until_error(argc::Int, argv::Ptr{Ptr{UInt8}}) = (n = argc; while true; v = zeros(Int, 100 + n % 7); n += length(v) % 3 + 1; n > 30_000 && error("done: $n"); end; 0)
 rec_allocates(n::Int) = n == 0 ? Int[] : (v = push!(rec_allocates(n - 1), n); v)
 raw_recursion(argc::Int, argv::Ptr{Ptr{UInt8}}) = (println(length(rec_allocates(argc + 100))); 0)
 even_allocates(n::Int) = n == 0 ? [0] : push!(odd_allocates(n - 1), n)
@@ -365,9 +370,13 @@ args_loop(args::Vector{String}) = (s = 0; for i in 1:1000 + length(args); s += l
     @test !has_collector(raw_print_int)
     @test has_collector(raw_allocates)
     @test has_collector(raw_catches)
+    @test !has_collector(raw_message_loop) # (the loop is in the error)
+    @test has_collector(raw_loop_until_error) # (the loop is the program)
     @test has_collector(raw_finalizer)
     @test has_collector(raw_once) # (without `small`, a program that allocates has one)
-    @test has_collector_args(args_nothing)
+    @test !has_collector_args(args_nothing) # (what makes `args` is not counted)
+    @test !has_collector_args(args_sum)
+    @test has_collector_args(args_loop)
     @testset "small = true: no collector where what is allocated is a finite amount" begin
         @test !has_collector(raw_nothing; small = true)
         @test !has_collector(raw_once; small = true)
@@ -384,7 +393,7 @@ args_loop(args::Vector{String}) = (s = 0; for i in 1:1000 + length(args); s += l
         @test has_collector_args(args_loop; small = true)
     end
     # (and they do what they do)
-    cases = [raw_nothing, raw_error_only, raw_print_int, raw_allocates, raw_catches, raw_once, raw_catch_once, raw_recursion, raw_mutual_recursion, raw_loop_calls_function]
+    cases = [raw_nothing, raw_error_only, raw_message_loop, raw_print_int, raw_allocates, raw_catches, raw_once, raw_catch_once, raw_recursion, raw_mutual_recursion, raw_loop_calls_function]
     for small in (false, true)
         check_cases(["$(nameof(f)), small = $small" => (() -> f(opaque(1), Ptr{Ptr{UInt8}}(C_NULL))) for f in cases]; small)
     end

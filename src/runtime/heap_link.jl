@@ -239,7 +239,8 @@ end
 #
 # Always: when nothing that is thrown is caught (a `try` that only runs what is to be done after, and throws on, as `finally` does: the part of it that runs for an exception ends in
 # `unreachable`), and everything that the program allocates is allocated where it can only go on to throw (the message and the exception of an error: such a block ends in
-# `unreachable`, and the program stops). What is allocated is then a few objects, and the allocator that does not collect is enough.
+# `unreachable`, and the program stops; a loop that builds the message is fine, if it is in the part that only stops, and not where the function starts). What is allocated is then a few objects, and the allocator
+# that does not collect is enough. What makes the arguments of the command line is not counted (`ignored`, below).
 #
 # With `bounded` (the program is one that runs once, as an executable does): when everything that it allocates is allocated a finite number of times. An allocation is not repeated if it is not
 # in a loop of its function, and the function is called, where it is, only from places that are not repeated either (not in a loop, in a function that is not repeated, and not in a function that calls
@@ -247,22 +248,81 @@ end
 # is then what it allocates in all, which is some number of objects, and not what it allocates for as long as it runs. (A catch that goes on is fine, if what it is in is not repeated.)
 function allocation_is_finite(mod::LLVM.Module; bounded::Bool = false)
     allocators = Set([INLINED_ALLOCATORS..., "static_alloc"])
-    # whether every way on from the block ends in `unreachable`, in a finite number of steps (a loop does not: what it allocates is allocated each time round)
-    function dies(bb::LLVM.BasicBlock)
-        state = Dict{Ptr{Cvoid},Int}() # (1: on the way from `bb`, 2: known to end)
+    # whether the program is about to stop where the block is: whether every way on from it ends in `unreachable` (an error that is thrown, or an abort), and none of it goes on to a `ret` or to anything that is not
+    # known. A loop on the way is fine if it is in the part of the program that only stops: what builds the message of an error (`show`, `escape_string`, `join`) is a loop, and runs once, for an
+    # error. It is not if that part is where the program starts: a loop that goes on until it throws, or exits, is the program, and what it allocates is allocated each time round.
+    abort_only_cache = Dict{Ptr{Cvoid},Bool}() # (whether no way on from the block goes on, and one ends in `unreachable`: loops do not matter)
+    function abort_only(bb::LLVM.BasicBlock)
+        get!(abort_only_cache, Ptr{Cvoid}(bb.ref)) do
+            seen = Set{Ptr{Cvoid}}()
+            todo = [bb]
+            aborts = false
+            while !isempty(todo)
+                b = pop!(todo)
+                key = Ptr{Cvoid}(b.ref)
+                key in seen && continue
+                push!(seen, key)
+                term = LLVM.terminator(b)
+                if term isa LLVM.UnreachableInst
+                    aborts = true
+                elseif term isa LLVM.BrInst || term isa LLVM.SwitchInst
+                    append!(todo, LLVM.successors(term))
+                else
+                    return false # (`ret`, and what is not known)
+                end
+            end
+            aborts
+        end
+    end
+    # whether a way on from the block goes round (in the blocks that can be reached from it)
+    function goes_round(bb::LLVM.BasicBlock)
+        state = Dict{Ptr{Cvoid},Int}() # (1: on the way from `bb`, 2: done)
         function visit(b)
             key = Ptr{Cvoid}(b.ref)
-            get(state, key, 0) == 1 && return false
-            get(state, key, 0) == 2 && return true
+            get(state, key, 0) == 1 && return true
+            get(state, key, 0) == 2 && return false
             state[key] = 1
             term = LLVM.terminator(b)
-            ends = term isa LLVM.UnreachableInst ||
-                   ((term isa LLVM.BrInst || term isa LLVM.SwitchInst) && all(visit, LLVM.successors(term))) # (`ret`, and what is not known, do not)
+            found = (term isa LLVM.BrInst || term isa LLVM.SwitchInst) && any(visit, LLVM.successors(term))
             state[key] = 2
-            return ends
+            return found
         end
         return visit(bb)
     end
+    predecessors_cache = Dict{Ptr{Cvoid},Dict{Ptr{Cvoid},Vector{LLVM.BasicBlock}}}() # (of the blocks of each function)
+    function predecessors(fn::LLVM.Function)
+        get!(predecessors_cache, Ptr{Cvoid}(fn.ref)) do
+            preds = Dict{Ptr{Cvoid},Vector{LLVM.BasicBlock}}()
+            for b in LLVM.blocks(fn)
+                term = LLVM.terminator(b)
+                (term isa LLVM.BrInst || term isa LLVM.SwitchInst) || continue
+                for succ in LLVM.successors(term)
+                    push!(get!(Vector{LLVM.BasicBlock}, preds, Ptr{Cvoid}(succ.ref)), b)
+                end
+            end
+            preds
+        end
+    end
+    # whether the way from the start of the function to the block is through blocks that only stop: whether the function begins with the part that it is about to stop in
+    function starts_stopping(bb::LLVM.BasicBlock)
+        fn = LLVM.parent(bb)
+        entry = first(LLVM.blocks(fn))
+        preds = predecessors(fn)
+        seen = Set{Ptr{Cvoid}}()
+        todo = [bb]
+        while !isempty(todo)
+            b = pop!(todo)
+            b == entry && return true
+            key = Ptr{Cvoid}(b.ref)
+            key in seen && continue
+            push!(seen, key)
+            for p in get(preds, key, LLVM.BasicBlock[])
+                abort_only(p) && push!(todo, p) # (a block that can go on is a place that this part is entered from)
+            end
+        end
+        return false
+    end
+    dies(bb::LLVM.BasicBlock) = abort_only(bb) && (!goes_round(bb) || !starts_stopping(bb))
     # whether the block is in a loop of its function: whether it can be reached from itself (what is not known is taken to be)
     function in_loop(bb::LLVM.BasicBlock)
         seen = Set{Ptr{Cvoid}}()
@@ -358,6 +418,9 @@ function allocation_is_finite(mod::LLVM.Module; bounded::Bool = false)
     for (stub, target) in stubs # (what calls the stub calls the function)
         haskey(calls, Ptr{Cvoid}(target.ref)) && haskey(calls, Ptr{Cvoid}(stub.ref)) && append!(calls[Ptr{Cvoid}(target.ref)], calls[Ptr{Cvoid}(stub.ref)])
     end
+    # What makes the arguments of the command line (`command_line_arguments`, `set_base_args`) allocates as much as there are arguments, which the system limits and the program does not
+    # decide: it is not counted, in any function that they call (that is only called from them, or where the program is about to stop) either
+    ignored(fn) = startswith(LLVM.name(fn), "julia_command_line_arguments") || startswith(LLVM.name(fn), "julia_set_base_args")
     stops = Dict{Ptr{Cvoid},Bool}() # (the blocks that only lead to `unreachable`)
     dying_is_final = Ref(stops_at_throw) # (whether what is after a throw is no more of the program)
     block_dies(b) = dying_is_final[] && get!(() -> dies(b), stops, Ptr{Cvoid}(b.ref))
@@ -400,7 +463,7 @@ function allocation_is_finite(mod::LLVM.Module; bounded::Bool = false)
         for fn in defined
             key = Ptr{Cvoid}(fn.ref)
             key in doomed || continue
-            if !all(site -> block_dies(site[2]) || Ptr{Cvoid}(site[1].ref) in doomed, calls[key])
+            if !all(site -> block_dies(site[2]) || ignored(site[1]) || Ptr{Cvoid}(site[1].ref) in doomed, calls[key])
                 delete!(doomed, key)
                 changed = true
             end
@@ -408,7 +471,7 @@ function allocation_is_finite(mod::LLVM.Module; bounded::Bool = false)
     end
     for fn in defined
         key = Ptr{Cvoid}(fn.ref)
-        key in doomed && continue
+        (key in doomed || ignored(fn)) && continue
         for bb in LLVM.blocks(fn)
             allocating = false
             for inst in LLVM.instructions(bb)
