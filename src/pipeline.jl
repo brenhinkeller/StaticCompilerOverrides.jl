@@ -12,9 +12,39 @@ using LLVM: LLVM, @dispose
 # GPUCompiler runs the loop and SLP vectorizers only for the jobs that say they can (`can_vectorize`, false by default: it is true for its native and GPU
 # targets, and not for StaticCompiler's). Without them a loop with `@simd` is not vectorized, nor its reduction reordered, so the result of `sum`, `dot` and
 # the like is that of a plain loop: different in the last digits from what Julia gives (which uses the vectorizer) and less accurate, and code that works on a few numbers together (a struct of
-# floats: `nbody`) is twice as slow. Our jobs (the type of the parameters is ours) run them, as Julia does. (The SLP vectorizer was left out for a time, as the LLVM of Julia 1.14 crashed in
+# floats: `nbody`) is twice as slow. Our jobs (the type of the parameters is ours) run them, as Julia does. (The SLP vectorizer was left out for a time, as that of the LLVM of Julia 1.14 crashed on some code: see `buildVectorPipeline` below.)
 # `BoUpSLP::getTreeCost` on some code with `--check-bounds=yes`; that is not seen in the tests of the package any more, which have a good deal of such code.)
 GPUCompiler.can_vectorize(::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}) = true
+
+# The vectorizers of GPUCompiler (`buildVectorPipeline`), with the blocks that nothing jumps to removed before the SLP vectorizer. The passes before it (the range check elimination of loops,
+# `IRCEPass`, which makes the loop twice, a `guard_pass` block for each check that it removes) leave such blocks, that a block that is reached still has in its `phi`s: that is valid, and the SLP
+# vectorizer of the LLVM of Julia 1.14 (23.1, 1.14.0-beta1) takes the dominator tree to have each of them (it has none for what is not reached) and stops with a null pointer in `BoUpSLP::getTreeCost`
+# (`--check-bounds=yes`, which is what CI uses, has many such checks: the code of `show` for arrays, `hvcat`).
+function GPUCompiler.buildVectorPipeline(fpm, job::GPUCompiler.CompilerJob{<:StaticCompiler.StaticCompilerTarget, OverridesParams}, opt_level)
+    LLVM.add!(fpm, LLVM.LoopPassManager()) do lpm
+        LLVM.add!(lpm, LLVM.LoopRotatePass())
+        LLVM.add!(lpm, LLVM.LoopDeletionPass())
+    end
+    LLVM.add!(fpm, LLVM.LoopDistributePass())
+    LLVM.add!(fpm, LLVM.InjectTLIMappings())
+    LLVM.add!(fpm, LLVM.LoopVectorizePass())
+    LLVM.add!(fpm, LLVM.LoopLoadEliminationPass())
+    LLVM.add!(fpm, GPUCompiler.simplifycfg_pass(job, GPUCompiler.AggressiveSimplifyCFGOptions))
+    LLVM.add!(fpm, LLVM.LoopPassManager(; use_memory_ssa = true)) do lpm
+        LLVM.add!(lpm, LLVM.LICMPass())
+    end
+    LLVM.add!(fpm, LLVM.EarlyCSEPass())
+    LLVM.add!(fpm, LLVM.CorrelatedValuePropagationPass())
+    LLVM.add!(fpm, GPUCompiler.instcombine_pass(job))
+    LLVM.add!(fpm, "unreachableblockelim")
+    LLVM.add!(fpm, LLVM.SLPVectorizerPass())
+    LLVM.add!(fpm, LLVM.VectorCombinePass())
+    LLVM.version() >= v"17" && LLVM.add!(fpm, LLVM.VectorizerStartCallbacks(; opt_level))
+    LLVM.add!(fpm, LLVM.LoopUnrollPass(; opt_level))
+    LLVM.version() >= v"21" && LLVM.add!(fpm, LLVM.VectorizerEndCallbacks(; opt_level))
+    LLVM.add!(fpm, LLVM.SROAPass(; preserve_cfg = true))
+    LLVM.add!(fpm, LLVM.InstSimplifyPass())
+end
 
 # GPUCompiler lowers the intrinsics of Julia (allocation, ...) in `buildIntrinsicLoweringPipeline`, which
 # is after the optimization of Julia (so only for the allocations that remain, not for those that are
