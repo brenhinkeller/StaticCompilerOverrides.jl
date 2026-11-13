@@ -126,15 +126,6 @@ end
 @device_override Base.trylock(::ReentrantLock) = true
 @device_override Base.islocked(::ReentrantLock) = false
 
-# Cancellation (Julia 1.14). Whether an operation has been cancelled is looked up from the scope of
-# the current task, which compiled programs don't have: there is never a cancellation token. (This
-# is checked by operations that may block or allocate, so without it much of Base needs the scheduler.)
-@device_override Base.default_cancel_token() = nothing
-
-# The slow path of a cancellation point (`@cancel_check`), which is only reached when it reports a pending
-# yield or cancellation. Without a source it can only be a request to let another task run: there are none.
-@device_override Base.handle_cancellation!(::Nothing, ::UInt8) = nothing
-
 # Letting another task run: there is no other task
 @device_override Base.yield() = nothing
 

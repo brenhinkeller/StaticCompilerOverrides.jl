@@ -13,10 +13,10 @@ declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)
 @_static_oom_msg = private unnamed_addr constant [20 x i8] c"Out of memory error\00"
 ; a zeroed dummy task: `julia.get_pgcstack` points into the middle of it, since compiled code
 ; addresses the task and its fields relative to that pointer
-; (the field of the task that has the current scope, 152 bytes before it, is `nothing`, the object that the program has (see `link_runtime!`): the
+; (the field of the task that has the current scope, 120 bytes before it (152 in Julia 1.14.0-alpha2), is `nothing`, the object that the program has (see `link_runtime!`): the
 ; values of a `ScopedValue` are not set, as it is in a task that none has set one in)
 @static_jl_nothing = external hidden global i8
-@_static_task = internal global { [45 x i64], ptr, [82 x i64] } { [45 x i64] zeroinitializer, ptr getelementptr inbounds (i8, ptr @static_jl_nothing, i64 16), [82 x i64] zeroinitializer }, align 16
+@_static_task = internal global { [49 x i64], ptr, [78 x i64] } { [49 x i64] zeroinitializer, ptr getelementptr inbounds (i8, ptr @static_jl_nothing, i64 16), [78 x i64] zeroinitializer }, align 16
 
 define internal void @_static_oom() noreturn {
   %s = call i32 @puts(ptr @_static_oom_msg)

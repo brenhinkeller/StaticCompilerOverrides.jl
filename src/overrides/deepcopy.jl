@@ -102,7 +102,7 @@ end
         return :(error("deepcopy of a value whose type is not known when compiling"))
     end
     # (types with methods of `deepcopy_internal` that can't be written here: they hold what libjulia or the system owns)
-    if T <: Union{BigInt, BigFloat, Base.AbstractLock, Core.WaitEntryN}
+    if T <: Union{BigInt, BigFloat, Base.AbstractLock}
         return :(error(string("deepcopy of a ", $(string(T)), " is not supported in standalone binaries")))
     end
     # a method of `deepcopy_internal` that a package defines for the type would be what Julia calls, and can't be called from here (see above): so the
