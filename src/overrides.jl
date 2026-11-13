@@ -30,7 +30,10 @@ const CANDIDATES_VERSION = Ref(0)
 # `Vector{Function}`, a `Dict`, a variable that a closure captures and is changed) is made over: those that were found in the code that is compiled (see closures.jl). The
 # list is the one of the compilation that is made now, and what is inferred is kept apart for each (`OverridesParams()` has a number made from it).
 const FUNCTION_CANDIDATES = Type[]
-OverridesParams() = OverridesParams(hash(FUNCTION_CANDIDATES, hash(CANDIDATES_VERSION[])) % Int)
+
+# The callbacks of the program that is compiled now: the types that were registered with `note_callback` (see closures.jl), each with the type of the value that it is called with
+const CALLBACK_CANDIDATES = Tuple{Type,Type}[]
+OverridesParams() = OverridesParams(hash(CALLBACK_CANDIDATES, hash(FUNCTION_CANDIDATES, hash(CANDIDATES_VERSION[]))) % Int)
 
 Base.Experimental.@MethodTable(method_table)
 @doc """

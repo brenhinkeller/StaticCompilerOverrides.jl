@@ -297,9 +297,20 @@ function CC.optimize(interp::OverridesInterpreter, opt::CC.OptimizationState, ca
     note_functions_of!(code, opt.src.ssavaluetypes, caller.linfo) # (the functions that the code has: see closures.jl)
     for pc in eachindex(code)
         st = code[pc]
-        st isa Expr && st.head === :call && length(st.args) >= 2 || continue
-        called_function(code, st.args[1]) === Core.invokelatest || continue
-        code[pc] = Expr(:call, st.args[2:end]...)
+        # (a call that is assigned to a variable is the second of the arguments of `=`)
+        assigned = st isa Expr && st.head === :(=) && length(st.args) == 2 && st.args[2] isa Expr
+        call = assigned ? st.args[2] : st
+        call isa Expr && call.head === :call && length(call.args) >= 2 || continue
+        called = called_function(code, call.args[1])
+        replacement = if called === Core.invokelatest
+            Expr(:call, call.args[2:end]...)
+        elseif called === call_callback && length(call.args) >= 3
+            # (`call_callback(T, f, args...)` is `f(args...)`, or no call at all where no function was registered for `T`: see closures.jl)
+            opt.src.ssavaluetypes[pc] === Union{} ? Expr(:call, Core.throw, "a callback that was not registered") : Expr(:call, call.args[3:end]...)
+        else
+            continue
+        end
+        assigned ? (st.args[2] = replacement) : (code[pc] = replacement)
     end
     return @invoke CC.optimize(interp::CC.AbstractInterpreter, opt::CC.OptimizationState, caller::CC.InferenceResult)
 end

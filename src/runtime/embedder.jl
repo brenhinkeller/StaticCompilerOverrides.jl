@@ -276,7 +276,7 @@ function memory_pieces(e::ObjectEmbedder, T, addr::UInt)
         check_readable(data, n)
         types = LLVM.LLVMType[LLVM.Int64Type(), ptrT, LLVM.ArrayType(LLVM.Int8Type(), n)]
         return types, g -> LLVM.Constant[i64(len), LLVM.const_gep(LLVM.Int8Type(), g, [i64(EMBED_HEADER + 16)]), something(bytes_piece(data, n), LLVM.null(types[3]))]
-    elseif !isbitstype(ET) && !(ET isa Union) && Base.allocatedinline(ET) == false # boxed elements
+    elseif !isbitstype(ET) && Base.allocatedinline(ET) == false # boxed elements (a union that has a type with references, `Union{Nothing,Symbol}`, is stored as references too)
         check_readable(data, 8 * len)
         refs = [unsafe_load(Ptr{UInt}(data + 8(i - 1))) for i in 1:len]
         types = LLVM.LLVMType[LLVM.Int64Type(), ptrT, (ptrT for _ in 1:len)...]

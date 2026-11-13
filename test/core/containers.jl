@@ -66,6 +66,17 @@ runtime_dict() = (d = Dict{AddrKey,Int}(); k = AddrKey(1); d[k] = 3; get(d, k, -
     end
 end
 
+# a vector of a union that has a type with references (`Union{Nothing,Symbol}`) is a vector of references: as a constant it is copied into the binary
+const UNION_SYMBOLS = Union{Nothing,Symbol}[:a, nothing, :bc]
+const UNION_REFS = Union{Nothing,String,Int}[nothing, "xy", 7]
+
+@testset "constants that are vectors of unions of types with references" begin
+    check_cases([
+        "Union{Nothing,Symbol}" => () -> (s = UNION_SYMBOLS; length(string(s[1])) + length(string(s[3])) + (s[2] === nothing ? 100 : 0) + opaque(0)),
+        "Union{Nothing,String,Int}" => () -> (s = UNION_REFS; length(s[2]::String) + (s[3]::Int) + (s[1] === nothing ? 100 : 0) + opaque(0)),
+    ])
+end
+
 @testset "IdDict and IdSet" begin
     check_cases([
         "keys are compared by identity" => @opaque(() -> (d = IdDict{Vector{Int},Int}(); a = [1]; b = [1]; d[a] = 1; d[b] = 2; d[a] + 10 * d[b] + 100 * length(d) + 1000 * Int(haskey(d, [1])))),

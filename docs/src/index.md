@@ -180,6 +180,15 @@ Styled strings (`styled"..."`, `AnnotatedString`, `AnnotatedChar`) are written t
 italics, reverse and strikethrough (the terminfo of the terminal is not read), 24-bit color is used when the environment says so (`COLORTERM=truecolor`, ...) and else the closest of the 256 colors, and the underline of a color
 and style is a plain underline. Not supported: `show` of an `AnnotatedString` (`repr`), which shows annotations of the type `Any`.
 
+### Observables
+
+`Observable`s (the package Makie is built on) work with `on`, `map`, `map!` and `onany`, as the package that has them is loaded (`Observables`: an extension of this package). A listener is
+called with a direct call, as the package does it with `invokelatest`, which a program has no use for. Not supported: a connection that is `weak` is not removed when it is collected, and what
+shows a listener (`show` of an `Observable` with its listeners, which asks where the function is defined). The listeners of an `Observable` are kept as functions of the type `Any`: when the
+code compiles, the functions that were given to `on` (and `map`, `onany`) for an `Observable` of a type of value are the ones that are called when an `Observable` of that type is set, and
+no others. So a listener has to compile for the type of the value of the `Observable` that it is given to (as it does in Julia), and an `Observable` that has no listener has no call. A function
+is found where it is given, so it is not found if the listeners are made by something that compiled code does not go through (`register_callback` is what they all go through).
+
 Limits: containers that contain themselves are not detected (they recurse until the program crashes); the keyword `context` of `sprint` with a pair that is written in the call
 (`sprint(show, v; context = :compact => true)`) works for what is not an array, and is not yet supported for the show of an array (give `IOContext` the stream instead, or a context that is
 a stream); `text/plain` of a `UniformScaling` (`2I`) is not supported (it uses a regular expression); a

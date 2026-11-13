@@ -128,11 +128,11 @@ end
 
 # The types of the candidates that fit a call, as a union, or `nothing`: those that are subtypes of the type that the function is known to have, and that a method of the
 # call is for (the arity, and the types of the arguments that are known: the one that has none is not a case of it)
-function function_union(@nospecialize(T), argtypes::Vector{Any}, position::Int = 1)
+function function_union(@nospecialize(T), argtypes::Vector{Any}, position::Int = 1; candidates = FUNCTION_CANDIDATES)
     any(a -> a isa Core.TypeofVararg, argtypes) && return nothing
     world = Base.get_world_counter()
     found = Type[]
-    for C in FUNCTION_CANDIDATES
+    for C in candidates
         C <: T || continue
         sig = Tuple{(i == position ? C : CC.widenconst(a) for (i, a) in enumerate(argtypes))...}
         ms = Base._methods_by_ftype(sig, nothing, -1, world)
@@ -144,6 +144,83 @@ function function_union(@nospecialize(T), argtypes::Vector{Any}, position::Int =
     # (a call over one type is a call of that function, with no test that `f` is one: the type that is not callable, and that has no method, is the case that the others are tested against)
     length(found) == 1 && return Union{found[1], Nothing}
     return Union{found...}
+end
+
+## Callbacks
+#
+# A program that keeps functions where their types are lost (the listeners of an `Observable`, in a `Vector{Pair{Int,Any}}`) calls them with a call of a function that is not known,
+# which is made over the types of all the functions that the program has (`FUNCTION_CANDIDATES`): `string`, `iterate` and the other functions that it passes as arguments are among them, and are
+# called with whatever the value is, which may be something that they can't be compiled for. The code that stores the functions says what is stored (`note_callback(T, f)`: `f` is
+# called with a value of the type `T`), and the code that calls them says that it does (`call_callback(T, f, args...)`, which is `f(args...)`), so that the call is made over
+# those of the type `T`, and no others.
+
+"""
+    StaticRuntime.note_callback(T, f)
+
+For code that is compiled with this package: say that the function `f` (the type that it has when this is inferred) may be called by a `call_callback(T, g, args...)`
+of the same `T`, where the compiler does not know that `g` is `f`. Does nothing when the code runs.
+"""
+@noinline note_callback(@nospecialize(T), @nospecialize(f)) = nothing
+
+"""
+    StaticRuntime.call_callback(T, f, args...)
+
+`f(args...)`, for an `f` that is one of those of `note_callback(T, f)`: when compiling with this package, the call is made over the types of those functions, and not over all those
+that the program has.
+"""
+call_callback(@nospecialize(T), @nospecialize(f), args...) = f(args...)
+
+# The callbacks that the compilation that is made now has found, and whether it has a call that they are for
+const SEEN_CALLBACKS = Tuple{Type,Type}[]
+const CALLBACK_CALL_REQUESTED = Ref(false)
+
+function CC.abstract_call_known(interp::OverridesInterpreter, f::typeof(note_callback), arginfo::CC.ArgInfo, si::CC.StmtInfo,
+                                vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int = CC.get_max_methods(interp, f, sv))
+    if length(arginfo.argtypes) == 3
+        V = callback_value_type(arginfo.argtypes[2])
+        F = CC.widenconst(arginfo.argtypes[3])
+        if V !== nothing && F isa DataType && isconcretetype(F) && !(F <: Core.Builtin) && !((V, F) in SEEN_CALLBACKS)
+            push!(SEEN_CALLBACKS, (V, F))
+        end
+    end
+    return @invoke CC.abstract_call_known(interp::CC.AbstractInterpreter, f::Any, arginfo::CC.ArgInfo, si::CC.StmtInfo,
+                                          vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int)
+end
+
+# the `T` of `Type{T}` that an argument is (a constant, or of that type), or `nothing`
+function callback_value_type(@nospecialize(t))
+    t isa Core.Const && return t.val isa Type ? t.val : nothing
+    T = CC.widenconst(t)
+    return T isa DataType && T <: Type && length(T.parameters) == 1 && T.parameters[1] isa Type ? T.parameters[1] : nothing
+end
+
+# `call_callback(T, f, args...)` is inferred as the call `f(args...)`, for the functions of the callbacks of `T` if there are some, and as for any function that is not known if not
+function CC.abstract_call_known(interp::OverridesInterpreter, f::typeof(call_callback), arginfo::CC.ArgInfo, si::CC.StmtInfo,
+                                vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int = CC.get_max_methods(interp, f, sv))
+    if length(arginfo.argtypes) >= 3
+        CALLBACK_CALL_REQUESTED[] = true
+        V = callback_value_type(arginfo.argtypes[2])
+        inner = copy(arginfo.argtypes[3:end])
+        T = CC.widenconst(inner[1])
+        fargs = arginfo.fargs === nothing ? nothing : arginfo.fargs[3:end]
+        if unknown_function_type(T) && V !== nothing
+            candidates = Type[F for (W, F) in CALLBACK_CANDIDATES if W === V]
+            # (none registered for `T`: nothing is called, as far as is known; the compilation is made again if the code that is inferred registers one)
+            isempty(candidates) && return CC.Future{CC.CallMeta}(CC.CallMeta(Union{}, Union{}, CC.EFFECTS_THROWS, CC.NoCallInfo()))
+            u = function_union(T, inner, 1; candidates)
+            if u !== nothing
+                FUNCTION_UNION_USED[] = true
+                inner[1] = u
+                call = CC.abstract_call(interp, CC.ArgInfo(fargs, inner), si, vtypes, sv)
+                return CC.Future{CC.CallMeta}(call, interp, sv) do result, interp, sv
+                    return CC.CallMeta(result.rt, result.exct, result.effects, uncovered(result.info), result.refinements)
+                end
+            end
+        end
+        return CC.abstract_call(interp, CC.ArgInfo(fargs, inner), si, vtypes, sv)
+    end
+    return @invoke CC.abstract_call_known(interp::CC.AbstractInterpreter, f::Any, arginfo::CC.ArgInfo, si::CC.StmtInfo,
+                                          vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int)
 end
 
 # The type of a function that is not known: `Function`, a type of functions that has subtypes (`Base.Callable` is not one: it has types), or `Any`
@@ -206,11 +283,14 @@ function with_function_candidates(compile; strict::Bool = true)
     empty!(FUNCTION_CANDIDATES)
     empty!(Runtime.CFUNCTION_ROOTS)
     empty!(CFUNCTION_FUNCTIONS)
+    empty!(CALLBACK_CANDIDATES)
     local failure = nothing
     for pass in 1:MAX_FUNCTION_PASSES
         empty!(SEEN_FUNCTIONS)
         empty!(SEEN_FUNCTIONS_SET)
         empty!(SEEN_CFUNCTIONS)
+        empty!(SEEN_CALLBACKS)
+        CALLBACK_CALL_REQUESTED[] = false
         FUNCTION_DISPATCH_REQUESTED[] = false
         FUNCTION_UNION_USED[] = false
         failure = nothing
@@ -222,12 +302,15 @@ function with_function_candidates(compile; strict::Bool = true)
             (e isa UnsupportedCodeError || e isa InferenceError) || rethrow()
             failure = e
         end
-        @debug "compilation pass" pass seconds = round(time() - started; digits = 1) candidates = length(FUNCTION_CANDIDATES) cfunctions = length(Runtime.CFUNCTION_ROOTS) failed = failure !== nothing requested = FUNCTION_DISPATCH_REQUESTED[] _id = :static_passes
         new = Type[T for T in SEEN_FUNCTIONS if !(T in FUNCTION_CANDIDATES)]
+        @debug "compilation pass" pass seconds = round(time() - started; digits = 1) candidates = length(FUNCTION_CANDIDATES) new = length(new) cfunctions = length(Runtime.CFUNCTION_ROOTS) failed = failure !== nothing requested = FUNCTION_DISPATCH_REQUESTED[] _id = :static_passes
         newc = [c for c in SEEN_CFUNCTIONS if !any(r -> r.ftype === c[1] && r.args == c[2] && r.ret === c[3], Runtime.CFUNCTION_ROOTS)]
         more_functions = FUNCTION_DISPATCH_REQUESTED[] && !isempty(new) && (failure !== nothing || !strict || FUNCTION_UNION_USED[])
-        retry = pass < MAX_FUNCTION_PASSES && (more_functions || !isempty(newc))
+        newcb = Tuple{Type,Type}[c for c in SEEN_CALLBACKS if !(c in CALLBACK_CANDIDATES)]
+        more_callbacks = CALLBACK_CALL_REQUESTED[] && !isempty(newcb)
+        retry = pass < MAX_FUNCTION_PASSES && (more_functions || more_callbacks || !isempty(newc))
         if retry
+            more_callbacks && append!(CALLBACK_CANDIDATES, newcb)
             more_functions && append!(FUNCTION_CANDIDATES, new)
             for c in newc
                 id = length(Runtime.CFUNCTION_ROOTS) + 1

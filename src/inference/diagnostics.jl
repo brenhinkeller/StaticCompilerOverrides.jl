@@ -72,6 +72,17 @@ method_instance(x::Core.MethodInstance) = x
 method_instance(x::Core.CodeInstance) = x.def isa Core.MethodInstance ? x.def : nothing
 method_instance(x) = nothing
 
+# whether a statement is a call of a function that is made to throw (`_throw_boundserror_indices`, `throw_boundserror`, `error`)
+function thrower_call(ci::Core.CodeInfo, st::Expr)
+    name = if st.head === :invoke
+        mi = method_instance(st.args[1])
+        mi !== nothing && mi.def isa Method ? string(mi.def.name) : callee_name(ci, st.args[2])
+    else
+        callee_name(ci, st.args[1])
+    end
+    return startswith(name, "_throw") || startswith(name, "throw") || name in ("error", "Base.error")
+end
+
 # the calls, inside the code of `f(types...)`, that have the type `Union{}` (what makes it that), as lines to say; and what is wrong with
 # the arguments of the last one
 function explain_inference!(path::Vector{String}, notes::Vector{String}, f, tt::Type, seen::Set; depth::Int = 0, kwargs...)
@@ -81,10 +92,12 @@ function explain_inference!(path::Vector{String}, notes::Vector{String}, f, tt::
     catch
         return false
     end
-    for (i, st) in enumerate(ci.code)
+    for allow_throwers in (false, true), (i, st) in enumerate(ci.code)
         T = ci.ssavaluetypes isa Vector ? ci.ssavaluetypes[i] : Any
         T === Union{} || continue
         st isa Expr && st.head in (:call, :invoke) || continue
+        # (the calls that only throw, `_throw_boundserror_indices` of a check of the bounds, are the end of a path that is not taken, as often as the cause: they are looked at last)
+        allow_throwers || !thrower_call(ci, st) || continue
         if st.head === :invoke
             mi = method_instance(st.args[1])
             if mi !== nothing && mi.specTypes isa DataType && (mi in seen) == false
