@@ -1,6 +1,6 @@
 # StyledStrings: styled strings (`styled"..."`, `AnnotatedString`, `AnnotatedChar`) written to a stream with and without color, with the faces of the theme, and the operations that make them. The escape
-# sequences are compared with Julia's, in the environment that the tests run in (as the colors with 24 bits are asked of it, and a terminal that has no italics is asked of its terminfo, which a program does not read: see
-# `ext/StaticRuntimeStyledStringsExt.jl`).
+# sequences are compared with Julia's, in the environment that the tests run in (the colors with 24 bits are asked of it; the terminal is `xterm-256color`, which `runtests.jl` sets, as a terminal that has no italics is asked of its terminfo,
+# which a program does not read: see `ext/StaticRuntimeStyledStringsExt.jl`).
 
 using StyledStrings
 const COLOR_OUT = IOContext(STDOUT, :color => true)

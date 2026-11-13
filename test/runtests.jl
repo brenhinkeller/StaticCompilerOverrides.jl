@@ -3,6 +3,10 @@
 #
 # Most of the tests compile a program to an executable and compare what it prints with what Julia prints for the same code (`check_cases`, in `helpers.jl`).
 
+# The terminal that the tests are run in is `xterm-256color` (set before anything asks for the terminfo: it is read once), as what Julia writes in color depends on it (italics, reverse and strikethrough, if the
+# terminal has them), and a program does not read it: see `ext/StaticRuntimeStyledStringsExt.jl`. Julia has the terminfo of it, so that this does not depend on the system.
+ENV["TERM"] = "xterm-256color"
+
 using Test, Random, Printf, LinearAlgebra, Libdl, Dates, SparseArrays, Base64, CRC32c, Logging, Statistics
 using SHA, UUIDs, Sockets, Unicode, TOML, Markdown, Mmap
 using LLVM
