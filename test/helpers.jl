@@ -101,13 +101,18 @@ function program_size(f)
     main = StaticRuntime.make_main(f)
     return Base.invokelatest() do
         StaticRuntime.StaticCompiler.GPUCompiler.JuliaContext() do ctx
-            mod = Base.invokelatest(static_llvm_module, main, ENTRY_TYPES; strict = false, llvm_postprocess = m -> nothing)
-            try
-                fns = [fn for fn in LLVM.functions(mod) if !LLVM.isdeclaration(fn) && !startswith(LLVM.name(fn), "j_")]
-                sum(count(_ -> true, (i for bb in LLVM.blocks(fn) for i in LLVM.instructions(bb))) for fn in fns)
-            finally
-                LLVM.dispose(mod)
+            # (the objects are embedded in the module, in place of their addresses, as the runtime does it: before that the module has raw pointers, which StaticCompiler warns about. The rest of the runtime is not linked)
+            size = Ref(0)
+            count_program!(mod) = begin
+                e = StaticRuntime.Runtime.ObjectEmbedder(mod, Dict())
+                StaticRuntime.Runtime.define_well_known_objects!(e)
+                StaticRuntime.Runtime.embed_constants!(e)
+                size[] = sum(count(_ -> true, (i for bb in LLVM.blocks(fn) for i in LLVM.instructions(bb))) for fn in LLVM.functions(mod) if !LLVM.isdeclaration(fn) && !startswith(LLVM.name(fn), "j_"); init = 0)
+                return mod
             end
+            mod = Base.invokelatest(static_llvm_module, main, ENTRY_TYPES; strict = false, llvm_postprocess = count_program!)
+            LLVM.dispose(mod)
+            size[]
         end
     end
 end

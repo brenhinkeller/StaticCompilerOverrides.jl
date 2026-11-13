@@ -80,6 +80,6 @@ tu_make3(r, label::Symbol, value) = (; region = r, label, value)
         "two fields"      => () -> (a = tu_make(:face, tu_any_value()); a.label === :face && a.value === :red ? 1 : 0),
         "three fields"    => () -> (a = tu_make3(2:5, :face, tu_any_value()); first(a.region) + length(a.region) + (a.value === :red ? 10 : 0)),
         "in a Vector"     => () -> (v = Vector{@NamedTuple{label::Symbol,value::Any}}(); push!(v, tu_make(:a, tu_any_value())); push!(v, tu_make(:b, 3)); length(v) + (v[2].value === 3 ? 10 : 0)),
-        "a mix"           => () -> (a = tu_make(:x, "text"); b = tu_make(:y, 2.5); ncodeunits(a.value) + b.value),
+        "a mix"           => () -> (a = tu_make(:x, opaque("text")); b = tu_make(:y, opaque(2.5)); ncodeunits(a.value) + b.value),
     ])
 end

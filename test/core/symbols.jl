@@ -91,7 +91,7 @@ sy_nt_name(s) = Symbol(Base.inferencebarrier(s))
         "a name that is known"  => () -> SY_NT2.b + SY_NT_MIXED.alpha + SY_NT2[:c],
         "get with a default"   => () -> get(SY_NT2, sy_nt_name("zz"), 100) + get(SY_NT2, sy_nt_name("a"), 100),
         "a name that is not there" => () -> (try; SY_NT2[sy_nt_name("zz")] + 1; catch e; e isa FieldError ? 7 : 8; end),
-    ])
+    ]; folded_ok = ("a name that is known",)) # (the names and the values are all constants)
 end
 
 # `getfield` of a struct with a field named by a symbol that is not known when compiling: a comparison with each of the names
