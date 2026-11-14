@@ -283,3 +283,9 @@ end
 # the type is not known) and what used it was a call without a method. The matrix is not hidden here: inference of `getindex` of the matrix gives the type itself, and
 # the assertion says it as before.
 @device_override Base.Broadcast._bc_eltype(x, i) = Base.Broadcast._broadcast_getindex(x, i)::eltype(x)
+
+## `f ∘ g`
+#
+# Base calls a `ComposedFunction` through `call_composed(unwrap_composed(c), x...)`, which makes a tuple of the functions of a chain and reads them by an index that the compiler
+# does not know (`getfield(fs, i)`, a runtime call). The call of the outer function on the result of the inner one is the same, and is what each `ComposedFunction` of a chain is.
+@device_override (c::ComposedFunction)(x...; kw...) = c.outer(c.inner(x...; kw...))

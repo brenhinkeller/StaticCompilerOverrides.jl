@@ -63,11 +63,17 @@ function drop_ignorable_calls!(mod::LLVM.Module)
     return !isempty(dead)
 end
 
+# the name of a function of the module as the Julia function: the functions of our method table are named for where the method is (`__overlay__globalref___julia__StaticRuntime__method_table_____Base__inert_map_____2`)
+function readable_name(name::AbstractString)
+    name = replace(name, r"^julia_" => "", r"_\d+$" => "")
+    m = match(r"^__overlay__globalref___julia__StaticRuntime__method_table_____(.*?)__inert_(.*?)_+\d*$", name)
+    m === nothing || (name = string(m[1], ".", m[2], " (our method)"))
+    return name
+end
+
 # the Julia function that an instruction belongs to, as a readable name
 function function_of(inst::LLVM.Instruction)
-    name = LLVM.name(LLVM.parent(LLVM.parent(inst)))
-    name = replace(name, r"^julia_" => "", r"_\d+$" => "")
-    return name
+    return readable_name(LLVM.name(LLVM.parent(LLVM.parent(inst))))
 end
 
 # Runtime functions for errors, which are reported by aborting. The bodies are generated from the
@@ -83,6 +89,120 @@ function define_aborting_functions!(mod::LLVM.Module)
     return changed
 end
 
+# Where in the Julia code a call of the runtime is: the source lines (the innermost first, and what it was inlined into), the types of the arguments of the function that has it (an argument of the
+# type `<unknown type>` is one that the compiler did not know the type of), and the functions that lead to it from the entry point of the program
+struct DynamicSite
+    function_name::String
+    signature::String
+    frames::Vector{String}
+    path::Vector{String}
+end
+
+# "file.jl:12 in `name`", for the debug location of an instruction and the places that it was inlined into
+function debug_frames(inst::LLVM.Instruction)
+    frames = String[]
+    loc = try LLVM.debug_location(inst) catch; nothing end
+    depth = 0
+    while loc !== nothing && depth < 8
+        line = try Int(LLVM.line(loc)) catch; 0 end
+        scope = try LLVM.scope(loc) catch; nothing end
+        name = scope === nothing ? nothing : try chomp(LLVM.name(scope), ";") catch; nothing end
+        file = scope === nothing ? nothing : try
+            f = LLVM.file(scope)
+            f === nothing ? nothing : basename(LLVM.filename(f))
+        catch; nothing end
+        file === nothing && name === nothing && line == 0 && break
+        push!(frames, string(file === nothing ? "?" : file, ":", line, name === nothing ? "" : string(" in `", name, "`")))
+        loc = try LLVM.inlined_at(loc) catch; nothing end
+        depth += 1
+    end
+    return frames
+end
+
+# the arguments of a function of the module as the compiler named them (`viewport::Observable`, `c::<unknown type>`)
+function signature_of(fn::LLVM.Function)
+    names = String[]
+    for p in LLVM.parameters(fn)
+        n = LLVM.name(p)
+        n = replace(n, r"\d+$" => "")
+        isempty(n) || push!(names, n)
+    end
+    return string(readable_name(LLVM.name(fn)), "(", join(names, ", "), ")")
+end
+
+# the callers of each function of the module, to find the way from the entry point to a function
+function callers_of(mod::LLVM.Module)
+    callers = Dict{String,Vector{String}}()
+    for f in LLVM.functions(mod)
+        LLVM.isdeclaration(f) && continue
+        fname = LLVM.name(f)
+        for bb in LLVM.blocks(f), inst in LLVM.instructions(bb)
+            inst isa LLVM.CallInst || continue
+            c = LLVM.called_operand(inst)
+            c isa LLVM.Function || continue
+            LLVM.isdeclaration(c) && continue
+            list = get!(callers, LLVM.name(c), String[])
+            fname in list || push!(list, fname)
+        end
+    end
+    return callers
+end
+
+# the shortest chain of functions from one without callers (the entry point) to `name`
+function path_to_entry(callers::Dict{String,Vector{String}}, name::String; limit::Int = 12)
+    prev = Dict{String,String}()
+    queue = [name]
+    seen = Set([name])
+    root = name
+    while !isempty(queue)
+        cur = popfirst!(queue)
+        cs = get(callers, cur, String[])
+        if isempty(cs)
+            root = cur
+            break
+        end
+        for c in cs
+            c in seen && continue
+            push!(seen, c)
+            prev[c] = cur
+            push!(queue, c)
+        end
+    end
+    path = String[root]
+    while root != name && length(path) < limit
+        root = prev[root]
+        push!(path, root)
+    end
+    return [readable_name(n) for n in path]
+end
+
+# the places that call the runtime functions of `found` (see `dynamic_runtime_calls`): at most `limit` for each, and the first of each function
+function dynamic_call_sites(mod::LLVM.Module, found; limit::Int = 4)
+    sites = Pair{String,Vector{DynamicSite}}[]
+    isempty(found) && return sites
+    callers = callers_of(mod)
+    fns = LLVM.functions(mod)
+    for (name, _) in found
+        haskey(fns, name) || continue
+        list = DynamicSite[]
+        seen = Set{String}()
+        for use in LLVM.uses(fns[name])
+            inst = LLVM.user(use)
+            inst isa LLVM.Instruction || continue
+            fn = LLVM.parent(LLVM.parent(inst))
+            fname = LLVM.name(fn)
+            frames = debug_frames(inst)
+            key = string(fname, first(frames, 1))
+            key in seen && continue
+            push!(seen, key)
+            push!(list, DynamicSite(function_of(inst), signature_of(fn), frames, path_to_entry(callers, fname)))
+            length(list) >= limit && break
+        end
+        isempty(list) || push!(sites, name => list)
+    end
+    return sites
+end
+
 """
     UnsupportedCodeError
 
@@ -95,9 +215,11 @@ struct UnsupportedCodeError <: Exception
     dynamic::Vector{Pair{String,Vector{String}}} # runtime function => where it is called from
     pointers::Vector{Tuple{String,String}}       # (function, instruction) that use an address
     globals::Vector{String}                      # the global variables that are not `const` that the code uses (a likely cause of types that are not known)
+    sites::Vector{Pair{String,Vector{DynamicSite}}} # runtime function => the places in the Julia code that call it (source lines and the way there from the entry point)
 end
 
-UnsupportedCodeError(dynamic, pointers) = UnsupportedCodeError(dynamic, pointers, String[])
+UnsupportedCodeError(dynamic, pointers) = UnsupportedCodeError(dynamic, pointers, String[], Pair{String,Vector{DynamicSite}}[])
+UnsupportedCodeError(dynamic, pointers, globals) = UnsupportedCodeError(dynamic, pointers, globals, Pair{String,Vector{DynamicSite}}[])
 
 # the names (with their modules) of the global variables that are not `const` that the code reads or writes: their bindings are in the binary
 function nonconst_globals(mod::LLVM.Module)
@@ -142,6 +264,17 @@ function Base.showerror(io::IO, e::UnsupportedCodeError)
     end
     print(io, "\n\nPass `strict = false` to compile it anyway: calls that need the runtime will then abort the program if they are reached, and the addresses will crash it.")
     print(io, " Use `allow = (\"function_name\", ...)` to allow specific runtime functions only.")
+    if !isempty(e.sites)
+        print(io, "\n\nWhere in the code (the first places for each; `<unknown type>` is an argument that the compiler did not know the type of):")
+        for (name, list) in e.sites
+            print(io, "\n  ", name, ":")
+            for site in list
+                print(io, "\n    in ", site.signature)
+                isempty(site.frames) || print(io, "\n      at ", join(first(site.frames, 4), ", inlined into "))
+                length(site.path) > 1 && print(io, "\n      reached through ", join(site.path, " -> "))
+            end
+        end
+    end
 end
 
 # The calls (and the functions they are in) to the runtime functions that need dynamic behavior,

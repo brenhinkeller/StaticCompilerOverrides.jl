@@ -37,3 +37,21 @@ const COV_DICTF = Dict{String,Function}("a" => cov_adder(1), "b" => cos)
         "a function that is not called" => () -> (fs = Function[sin, x -> 2x]; length(fs)),
     ]; batch = false)
 end
+
+# A variable that a closure takes and that is assigned more than once is a `Core.Box`, which holds anything: what is read from it has the type of what is assigned to the variable (src/inference/boxes.jl)
+box_reassigned(x::Int) = (y = x; g = () -> y + 1; y = y * 2; h = () -> y; g() + h())
+box_union(flag::Bool, x::Int) = (v = flag ? nothing : [x, x + 1]; cb = () -> v === nothing ? 0 : length(v); if flag; v = [1, 2, 3]; end; cb() + (v === nothing ? 100 : sum(v)))
+box_nested(x::Int) = (n = x; inner() = (() -> n * 2)(); n = n + 1; inner())
+box_assigned_in_closure(x::Int) = (n = 0; inc = () -> (n += x; nothing); inc(); inc(); n)
+box_two(x::Int) = (a = x; b = 1.5; f = () -> a + b; a = a + 1; b = b * 2; f())
+
+@testset "Variables that closures take are boxes of the type of what they hold" begin
+    check_cases([
+        "a variable assigned from itself"          => @opaque(() -> box_reassigned(opaque(5))),
+        "a union that is assigned again, flag"     => @opaque(() -> box_union(opaque(1) == 1, opaque(3))),
+        "a union that is assigned again, no flag"  => @opaque(() -> box_union(opaque(1) == 2, opaque(3))),
+        "a variable taken by a closure in a closure" => @opaque(() -> box_nested(opaque(4))),
+        "a closure that assigns the variable"      => @opaque(() -> box_assigned_in_closure(opaque(4))),
+        "two variables of different types"         => @opaque(() -> round(Int, 10 * box_two(opaque(2)))),
+    ]; batch = false)
+end

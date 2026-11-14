@@ -32,6 +32,12 @@ end
     @test occursin("strict = false", sprint(showerror, err))
     @test "ijl_apply_generic" in undefined_symbols(printing)    # reported by the diagnostics too
 
+    # and where in the Julia code the call is: the function, the types of its arguments (`<unknown type>` for an argument that is not known), the source line, and the way from the entry point
+    msg = sprint(showerror, err)
+    @test occursin("Where in the code", msg)
+    @test !isempty(err.sites) && any(((_, sites),) -> any(s -> !isempty(s.path) && !isempty(s.frames), sites), err.sites)
+    @test occursin("reached through", msg) && occursin(".jl:", msg)
+
     # the global `stderr` has the abstract type `IO`: the message says to use `STDERR`
     uses_stderr() = (println(stderr, "message"); 1)
     stderr_main = StaticRuntime.make_main(uses_stderr)

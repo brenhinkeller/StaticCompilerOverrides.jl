@@ -223,6 +223,20 @@ function CC.abstract_call_known(interp::OverridesInterpreter, f::typeof(call_cal
                                           vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int)
 end
 
+# A recursion through callbacks (a `map!`ed observable that listens to an observable and sets another one of the same type, which notifies the callbacks of its own) is not widened.
+# Julia limits what it infers for a method that it is already inferring with other types (two `MapCall`s of different functions: the second is inferred as `MapCall`, with no
+# parameters), and the call that is made with those types is then a dispatch over the types that the parameters could be, which a program cannot do. The callbacks are of
+# finite many types (those registered), so the inference ends without the limit.
+function CC.edge_matches_sv(interp::OverridesInterpreter, frame::CC.AbsIntState, method::Method, @nospecialize(sig), sparams::Core.SimpleVector,
+                            hardlimit::Bool, sv::CC.AbsIntState)
+    if !hardlimit && sig isa DataType && isconcretetype(sig) && !isempty(CALLBACK_CANDIDATES)
+        F = sig.parameters[1]
+        any(c -> c[2] === F, CALLBACK_CANDIDATES) && return false
+    end
+    return @invoke CC.edge_matches_sv(interp::CC.AbstractInterpreter, frame::CC.AbsIntState, method::Method, sig::Any, sparams::Core.SimpleVector,
+                                      hardlimit::Bool, sv::CC.AbsIntState)
+end
+
 # The type of a function that is not known: `Function`, a type of functions that has subtypes (`Base.Callable` is not one: it has types), or `Any`
 function unknown_function_type(@nospecialize(T))
     T === Any && return true
@@ -290,6 +304,7 @@ function with_function_candidates(compile; strict::Bool = true)
         empty!(SEEN_FUNCTIONS_SET)
         empty!(SEEN_CFUNCTIONS)
         empty!(SEEN_CALLBACKS)
+        empty!(SEEN_BOXES)
         CALLBACK_CALL_REQUESTED[] = false
         FUNCTION_DISPATCH_REQUESTED[] = false
         FUNCTION_UNION_USED[] = false
@@ -308,8 +323,16 @@ function with_function_candidates(compile; strict::Bool = true)
         more_functions = FUNCTION_DISPATCH_REQUESTED[] && !isempty(new) && (failure !== nothing || !strict || FUNCTION_UNION_USED[])
         newcb = Tuple{Type,Type}[c for c in SEEN_CALLBACKS if !(c in CALLBACK_CANDIDATES)]
         more_callbacks = CALLBACK_CALL_REQUESTED[] && !isempty(newcb)
-        retry = pass < MAX_FUNCTION_PASSES && (more_functions || more_callbacks || !isempty(newc))
+        # (the types of the boxes that were found with the types that the last pass had are the ones for the next: until they are the same)
+        more_boxes = any(((k, T),) -> T === Any ? haskey(BOX_TYPES, k) : get(BOX_TYPES, k, nothing) !== T, SEEN_BOXES)
+        retry = pass < MAX_FUNCTION_PASSES && (more_functions || more_callbacks || !isempty(newc) || more_boxes)
         if retry
+            if more_boxes
+                for (k, T) in SEEN_BOXES
+                    T === Any ? delete!(BOX_TYPES, k) : (BOX_TYPES[k] = T)
+                end
+                BOX_VERSION[] += 1
+            end
             more_callbacks && append!(CALLBACK_CANDIDATES, newcb)
             more_functions && append!(FUNCTION_CANDIDATES, new)
             for c in newc

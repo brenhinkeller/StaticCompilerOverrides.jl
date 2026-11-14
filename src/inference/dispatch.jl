@@ -295,6 +295,7 @@ end
 function CC.optimize(interp::OverridesInterpreter, opt::CC.OptimizationState, caller::CC.InferenceResult)
     code = opt.src.code
     note_functions_of!(code, opt.src.ssavaluetypes, caller.linfo) # (the functions that the code has: see closures.jl)
+    caller.linfo isa Core.MethodInstance && learn_boxes!(opt.src, caller.linfo) # (the types of the boxes of the code: see boxes.jl)
     for pc in eachindex(code)
         st = code[pc]
         # (a call that is assigned to a variable is the second of the arguments of `=`)

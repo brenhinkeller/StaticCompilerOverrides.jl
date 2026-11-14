@@ -33,7 +33,7 @@ const FUNCTION_CANDIDATES = Type[]
 
 # The callbacks of the program that is compiled now: the types that were registered with `note_callback` (see closures.jl), each with the type of the value that it is called with
 const CALLBACK_CANDIDATES = Tuple{Type,Type}[]
-OverridesParams() = OverridesParams(hash(CALLBACK_CANDIDATES, hash(FUNCTION_CANDIDATES, hash(CANDIDATES_VERSION[]))) % Int)
+OverridesParams() = OverridesParams(hash(BOX_VERSION[], hash(CALLBACK_CANDIDATES, hash(FUNCTION_CANDIDATES, hash(CANDIDATES_VERSION[])))) % Int)
 
 Base.Experimental.@MethodTable(method_table)
 @doc """
@@ -115,13 +115,21 @@ for f in (:compile_executable, :compile_shlib, :static_code_typed, :static_llvm_
             check_gc(gc)
             register_custom_deepcopy!() # (this can change the parameters: they have the version of the lists of types)
             explicit_params = params
-            result = with_function_candidates(; strict) do
+            run(extra) = with_function_candidates(; strict) do
                 job_params = explicit_params === nothing ? OverridesParams() : explicit_params
                 $(f in (:compile_executable, :compile_shlib) ?
                     :(length(args) >= 2 && args[1] isa Function && args[2] isa Tuple && check_entry(args[1], args[2]; method_table, params = job_params, target)) : :nothing)
                 entry_args = rooted_arguments(args)
                 Base.invokelatest(StaticCompiler.$f, entry_args...; method_table, params = job_params, target, llvm_postprocess,
-                                  $(f in (:compile_executable, :compile_shlib) ? :(merge((; cflags = default_cflags(small)), NamedTuple(kwargs))...) : :(kwargs...)))
+                                  $(f in (:compile_executable, :compile_shlib) ? :(merge((; cflags = default_cflags(small)), NamedTuple(kwargs), extra)...) : :(merge(NamedTuple(kwargs), extra)...)))
+            end
+            result = try
+                run((;))
+            catch e
+                # (the debug information, which says where in the Julia code the calls of the runtime are, is removed before the code is checked: when it is not accepted, it is made again with it)
+                (e isa UnsupportedCodeError && strict && !haskey(kwargs, :strip)) || rethrow()
+                detailed = try run((; strip = false)); nothing catch e2; e2 end
+                throw(detailed isa UnsupportedCodeError ? detailed : e)
             end
             $(f in (:compile_executable, :compile_shlib) ? :(libraries === :bundle && result isa AbstractString && Runtime.bundle_libraries(result)) : :nothing)
             return result

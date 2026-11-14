@@ -84,7 +84,7 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     if strict
         dynamic = dynamic_runtime_calls(mod; allow)
         pointers = unresolved_pointer_uses(mod)
-        isempty(dynamic) && isempty(pointers) || throw(UnsupportedCodeError(dynamic, pointers, isempty(dynamic) ? String[] : nonconst_globals(mod)))
+        isempty(dynamic) && isempty(pointers) || throw(UnsupportedCodeError(dynamic, pointers, isempty(dynamic) ? String[] : nonconst_globals(mod), dynamic_call_sites(mod, dynamic)))
     end
     define_dynamic_stubs!(mod)
     needed = filter(RUNTIME_SHIM_FUNCTIONS) do name

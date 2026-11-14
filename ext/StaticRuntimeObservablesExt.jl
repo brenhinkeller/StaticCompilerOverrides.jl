@@ -43,6 +43,19 @@ end
     return false
 end
 
+# `off`, without what is called when a listener is removed (`removehandler_callbacks`: a vector of `Any`, each called with the observable and the function, so that
+# every function of the program that can be in it is a call that has to be made)
+@device_override function Observables.off(observable::AbstractObservable, f)
+    callbacks = listeners(observable)::Vector{Pair{Int,Any}}
+    for (i, (_, f2)) in enumerate(callbacks)
+        if f === f2
+            deleteat!(callbacks, i)
+            return true
+        end
+    end
+    return false
+end
+
 # `on`, without what is called when a listener is added (`addhandler_callbacks`, which is for tools that watch the observables)
 @device_override function Observables.on(f, observable::AbstractObservable; weak::Bool = false, priority::Int = 0, update::Bool = false)::ObserverFunction
     Observables.register_callback(observable, priority, f)
