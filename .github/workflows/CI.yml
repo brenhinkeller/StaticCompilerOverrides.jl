@@ -73,7 +73,7 @@ jobs:
   packages:
     # what compiles from the standard libraries and from other packages (Dates, SparseArrays, LinearAlgebra, Distributions.jl, StatsBase.jl, MPI.jl, ...), as programs that give what
     # Julia gives: a survey kept as tests (`test/packages`, the group `Packages`), which takes a few minutes, so it is a job of its own, on one platform of each kind
-    name: Packages - ${{ matrix.os }}
+    name: Packages - ${{ matrix.os }}${{ matrix.experiment }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -81,6 +81,19 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
+        experiment:
+          - ''
+        include:
+          # TEMPORARY: a program of `StyledStrings` crashes on ubuntu-latest (x64) (`interpolation`, then `annotate!`): these find which part of the runtime it is (the SLP vectorizer, the collector)
+          - os: ubuntu-latest
+            experiment: ' (no SLP vectorizer)'
+            slp: '0'
+          - os: ubuntu-latest
+            experiment: ' (no collector)'
+            gc: 'false'
+          - os: ubuntu-latest
+            experiment: ' (collector in every program, a collection every 3 allocations)'
+            gc: '3'
     steps:
       - uses: actions/checkout@v2
       - uses: julia-actions/setup-julia@v2
@@ -88,6 +101,9 @@ jobs:
           version: 'pre'
       - uses: julia-actions/cache@v1
       - uses: julia-actions/julia-buildpkg@v1
+      - name: Install a debugger (a program that crashes is run again under it, and the log has where)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y gdb
       - uses: julia-actions/julia-runtest@v1
         with:
           # (coverage instrumentation stops Julia from inlining and folding the code of the packages, which exposes calls that are not supported yet: a `getproperty` with a symbol that
@@ -96,6 +112,8 @@ jobs:
         env:
           GROUP: Packages
           TEST_FOLDED: 1
+          STATIC_RUNTIME_SLP: ${{ matrix.slp || '1' }}
+          STATIC_RUNTIME_GC: ${{ matrix.gc || 'auto' }}
   docs:
     name: Documentation
     runs-on: ubuntu-latest

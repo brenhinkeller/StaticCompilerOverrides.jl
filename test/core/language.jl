@@ -31,6 +31,10 @@ bx_identity() = (y = Base.inferencebarrier(1.5)::Float64; z = Base.inferencebarr
     check_cases([
         "boxed numbers of several types" => @opaque(() -> (a = boxed(1.5)::Float64; b = boxed(Float32(2.5))::Float32; c = boxed(Int8(3))::Int8; d = boxed(UInt16(4))::UInt16; Int(round(a + b)) + c + d)),
         "identity of boxed numbers"      => bx_identity,
+        # (a number that the program makes is boxed by the runtime, which writes the tag of its type: of `Float32` and the types that have no small tag it is the address of the type, which has to be the one in the binary)
+        "a Float32 that is made, in a Vector{Any}" => @opaque(() -> (v = Any[Float32(opaque(1)) * 0.5f0]; Int(v[1] isa Float32) + 10 * Int(typeof(v[1]) === Float32) + 100 * Int(round(100 * (v[1] * 2f0))))),
+        "numbers of several types, made and boxed" => @opaque(() -> (v = Any[Float32(opaque(1)), opaque(2) * 1.5, Float16(opaque(3)), UInt8(opaque(4)), 'x']; Int(v[1] isa Float32) + 2 * Int(v[2] isa Float64) + 4 * Int(v[3] isa Float16) + 8 * Int(v[4] isa UInt8) + 16 * Int(v[5] isa Char))),
+        "arithmetic on a made Float32 of type Any"  => @opaque(() -> (v = Any[Float32(opaque(3)) / 2f0]; round(Int, 100 * (1.0f0 * v[1])))),
     ])
 end
 

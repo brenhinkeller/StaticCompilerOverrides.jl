@@ -36,8 +36,11 @@ function GPUCompiler.buildVectorPipeline(fpm, job::GPUCompiler.CompilerJob{<:Sta
     LLVM.add!(fpm, LLVM.EarlyCSEPass())
     LLVM.add!(fpm, LLVM.CorrelatedValuePropagationPass())
     LLVM.add!(fpm, GPUCompiler.instcombine_pass(job))
-    LLVM.add!(fpm, "unreachableblockelim")
-    LLVM.add!(fpm, LLVM.SLPVectorizerPass())
+    # (`STATIC_RUNTIME_SLP=0` leaves the SLP vectorizer out, and `STATIC_RUNTIME_UNREACHABLE_ELIM=0` the removal of the blocks that nothing jumps to before it: to find out which of them a failure is from)
+    if get(ENV, "STATIC_RUNTIME_SLP", "1") != "0"
+        get(ENV, "STATIC_RUNTIME_UNREACHABLE_ELIM", "1") != "0" && LLVM.add!(fpm, "unreachableblockelim")
+        LLVM.add!(fpm, LLVM.SLPVectorizerPass())
+    end
     LLVM.add!(fpm, LLVM.VectorCombinePass())
     LLVM.version() >= v"17" && LLVM.add!(fpm, LLVM.VectorizerStartCallbacks(; opt_level))
     LLVM.add!(fpm, LLVM.LoopUnrollPass(; opt_level))

@@ -101,6 +101,8 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, stub_errors::Bool 
         LLVM.datalayout!(shim, LLVM.datalayout(mod))
         LLVM.triple!(shim, LLVM.triple(mod))
         LLVM.link!(mod, shim) # consumes `shim`
+        # (the tags that the shim writes, of `Float32` and of the types that have no small tag, are the addresses of the types in this process: the objects of the types that the code compares them with are in the binary, so they are the numbers of those)
+        embed_type_numbers!(e)
     end
     linked |= link_blas!(mod, blas)
     linked |= link_libraries!(mod, library_plan; libraries)

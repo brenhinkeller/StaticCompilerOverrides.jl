@@ -391,6 +391,27 @@ function resolve_type_placeholders!(e::ObjectEmbedder)
     return true
 end
 
+# The numbers of the addresses of types, where code compares and stores them as the tags of objects: the objects of the types are in the binary, and the number is that of the address of the object there
+function embed_type_numbers!(e::ObjectEmbedder)
+    mod = e.mod
+    changed = false
+    for (addr, uses) in type_number_constants(mod)
+        ref = try
+            embed_ref!(e, addr)
+        catch err
+            err isa EmbedFailure || rethrow()
+            @debug "The number of the address of a type stays, as the type is not in the binary" address = string(addr, base = 16) type = object_type(addr) reason = err.reason
+            continue
+        end
+        number = LLVM.const_ptrtoint(ref, LLVM.Int64Type())
+        for (inst, i) in uses
+            LLVM.operands(inst)[i] = number
+        end
+        changed = true
+    end
+    return changed
+end
+
 function embed_constants!(e::ObjectEmbedder)
     mod = e.mod
     resolve_type_placeholders!(e)
@@ -422,21 +443,7 @@ function embed_constants!(e::ObjectEmbedder)
         end
         changed = true
     end
-    # the numbers of the addresses of types: the objects of the types are in the binary
-    for (addr, uses) in type_number_constants(mod)
-        ref = try
-            embed_ref!(e, addr)
-        catch err
-            err isa EmbedFailure || rethrow()
-            @debug "The number of the address of a type stays, as the type is not in the binary" address = string(addr, base = 16) type = object_type(addr) reason = err.reason
-            continue
-        end
-        number = LLVM.const_ptrtoint(ref, LLVM.Int64Type())
-        for (inst, i) in uses
-            LLVM.operands(inst)[i] = number
-        end
-        changed = true
-    end
+    changed |= embed_type_numbers!(e)
     changed |= type_number_globals!(e)
     changed |= embed_address_arguments!(e)
     # drop the globals of objects that failed, and of objects only they referred to

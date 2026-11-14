@@ -230,6 +230,7 @@ function CC.abstract_call_gf_by_type(interp::OverridesInterpreter, @nospecialize
     if closed !== nothing && dispatch_needed(interp, arginfo, atype, max_methods)
         original = arginfo.argtypes
         arginfo, atype, registered = closed
+        note_dispatch_split!(f, original, arginfo.argtypes, registered)
         max_methods = max(max_methods, SPLIT_LIMIT[]) # (one method for each type, at most)
         if registered
             fname = f isa Function ? nameof(f) : f isa Type ? f : nameof(typeof(f))
@@ -243,6 +244,25 @@ function CC.abstract_call_gf_by_type(interp::OverridesInterpreter, @nospecialize
     return CC.Future{CC.CallMeta}(call, interp, sv) do result, interp, sv
         return CC.CallMeta(result.rt, result.exct, result.effects, uncovered(result.info), result.refinements)
     end
+end
+
+# What the splitting of calls cost, for measuring (see `bench/dispatch.jl`): for each call that was split, the types that it had, and the number of cases that it was split in (the product of the
+# numbers of types of its arguments). Only kept when `DISPATCH_STATS_ON[]` is set.
+const DISPATCH_STATS_ON = Ref(false)
+const DISPATCH_STATS = Dict{String,NamedTuple{(:visits, :cases, :registered),Tuple{Int,Int,Bool}}}()
+function note_dispatch_split!(@nospecialize(f), original, argtypes, registered::Bool)
+    DISPATCH_STATS_ON[] || return
+    fname = f isa Function ? string(nameof(f)) : f isa Type ? string(f) : string(nameof(typeof(f)))
+    key = string(fname, "(", join(("::" * (T isa Core.TypeofVararg ? string(T) : string(CC.widenconst(T))) for T in original[2:end]), ", "), ")")
+    cases = 1
+    for a in argtypes[2:end]
+        a isa Core.TypeofVararg && continue
+        T = CC.widenconst(a)
+        cases *= T isa Union ? length(Base.uniontypes(T)) : 1
+    end
+    old = get(DISPATCH_STATS, key, (visits = 0, cases = cases, registered = registered))
+    DISPATCH_STATS[key] = (visits = old.visits + 1, cases = cases, registered = registered)
+    return
 end
 
 # What the compile that has just been done did over the registered types, as a debug message (shown with

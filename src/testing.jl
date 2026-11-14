@@ -49,7 +49,8 @@ function crash_backtrace(exe)
         # (`-k` runs when the program crashes: in batch mode, nothing that is given with `-o` runs after it does)
         `lldb --batch -o run -k bt -k "register read" -k "disassemble --pc --count 40" -k "memory read --force --size 8 --count 16 \$sp" -- $exe`
     elseif Sys.which("gdb") !== nothing
-        `gdb --batch -ex run -ex bt -ex "info sharedlibrary" -ex "info registers" $exe`
+        # (the address that the program was reading or writing, and the instructions at and before the one that failed: what the crash was, not only where)
+        `gdb --batch -ex run -ex bt -ex "p/x \$_siginfo._sifields._sigfault.si_addr" -ex "x/8i \$pc" -ex "x/24i \$pc-64" -ex "info registers" -ex "info proc mappings" -ex "x/8gx \$rsp" $exe`
     else
         return
     end
@@ -104,6 +105,7 @@ function static_status(f; kwargs...)
     out = try
         read(pipeline(`$exe`; stderr = err_path), String)
     catch e
+        crash_backtrace(exe) # (what a crash of the program was, in the log of CI, where it can't be run again by hand)
         return :runtime_error, first(sprint(showerror, e), 300)
     end
     # after compiling, which snapshots the state of any global data
