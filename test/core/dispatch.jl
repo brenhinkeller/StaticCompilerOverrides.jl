@@ -194,3 +194,35 @@ invokelatest_square(x) = x * x
 @testset "invokelatest" begin
     @test static_result(() -> Base.invokelatest(invokelatest_square, Base.inferencebarrier(7)::Int)) == 49
 end
+
+# A method that is `@nospecializeinfer` (`Makie`'s `node_pairs`) is inferred for the types that it is declared with, so what it does with the fields of a `NamedTuple` that has no fields known (`nfields`, `getfield(nt, i)`)
+# is a call of the runtime. A compilation infers it for the types of the call (`PRECISE_NOSPECIALIZEINFER`), and puts the flag of the method back when it is done.
+Base.@nospecializeinfer @noinline function nsi_total(@nospecialize(nt::NamedTuple))
+    s = 0.0
+    for i in 1:nfields(nt)
+        s += Float64(getfield(nt, i))
+    end
+    return s
+end
+@testset "@nospecializeinfer methods are inferred for the types of the call" begin
+    @test static_result(() -> round(Int, 10 * nsi_total((a = opaque(1), b = 2.5, c = 3)))) == 65
+    @test only(methods(nsi_total)).nospecializeinfer # (as it was)
+    # (and with the old behavior, which is asked for by `STATIC_RUNTIME_NOSPECIALIZEINFER=0`, the fields are not known)
+    try
+        ENV["STATIC_RUNTIME_NOSPECIALIZEINFER"] = "0"
+        @test static_status(() -> round(Int, 10 * nsi_total((a = opaque(2), b = 2.5, c = 3))))[1] == :compile_error
+        @test only(methods(nsi_total)).nospecializeinfer
+    finally
+        delete!(ENV, "STATIC_RUNTIME_NOSPECIALIZEINFER")
+    end
+end
+
+# `getfield(x, i)` with an index that is not known, of a struct or a tuple that has fields of different types, is `jl_get_nth_field_checked`: a comparison with each index gives each field its own type (`index_field`)
+@testset "getfield with an index that is not a constant" begin
+    check_cases([
+        "tuple"        => () -> (t = (opaque(1), 2.5, 3); s = 0.0; for i in 1:3; s += Float64(getfield(t, i)); end; round(Int, 10 * s)),
+        "namedtuple"   => () -> (t = (a = opaque(1), b = 2.5f0, c = 0x03); s = 0.0; for i in 1:3; s += Float64(getfield(t, i)); end; round(Int, 10 * s)),
+        "struct"       => () -> (b = DDog(opaque(3)); getfield(b, opaque(1))),
+    ])
+    @test static_status(() -> (t = (opaque(1), 2.5); getfield(t, opaque(5))))[1] in (:runtime_error, :mismatch)
+end

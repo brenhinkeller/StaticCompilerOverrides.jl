@@ -198,6 +198,15 @@ end
 # compiler replaces that call with a call of this (see `expand_dynamic_getfield!`), which is also what `nt[name]` and `nt.name` are.
 @generated struct_field(x, name::Symbol) = field_chain(x, :(throw(FieldError($x, name))))
 
+# `getfield(x, i)` with an `i::Int` that is not known when compiling (`getfield(nt, i)` in a loop over the fields of a `NamedTuple`, as `Makie`'s `node_pairs` does) is the same: a comparison with each index.
+@generated function index_field(x, i::Int)
+    chain = :(throw(BoundsError(x, i)))
+    for k in fieldcount(x):-1:1
+        chain = :(i === $k ? getfield(x, $k) : $chain)
+    end
+    return chain
+end
+
 # `get(nt, name, default)` is the same chain that ends in the default.
 @generated namedtuple_get(x::NamedTuple, name::Symbol, default) = field_chain(x, :default)
 @device_override @inline Base.get(nt::NamedTuple, name::Symbol, default) = namedtuple_get(nt, name, default)

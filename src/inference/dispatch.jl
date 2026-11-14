@@ -258,6 +258,31 @@ function CC.abstract_call_gf_by_type(interp::OverridesInterpreter, @nospecialize
     end
 end
 
+## `@nospecializeinfer`
+#
+# A method that is `@nospecializeinfer` (with `@nospecialize` arguments) is inferred for the types that it is declared with, not those of the call, to keep the latency of Julia down: `Makie`'s `node_pairs(@nospecialize(nt::NamedTuple))`
+# is inferred for a `NamedTuple` that has no fields known, so what it does with them (`nfields`, `getfield(nt, i)`, `fieldname(typeof(nt), i)`) is not known, which is a dynamic call for each. A program that is compiled has
+# the types of the call, and needs what they give, since there is no runtime to look up what is not known: so the calls are inferred for the types that they have. The flag of the method is cleared for as long as a compilation runs
+# (`restore_nospecializeinfer!` puts it back) and its inference is that of any method. `STATIC_RUNTIME_NOSPECIALIZEINFER=0` leaves them as they are.
+const PRECISE_NOSPECIALIZEINFER = Ref(true)
+const CLEARED_NOSPECIALIZEINFER = Method[]
+
+function CC.abstract_call_method(interp::OverridesInterpreter, method::Method, @nospecialize(sig), sparams::Core.SimpleVector, hardlimit::Bool, si::CC.StmtInfo, sv::CC.AbsIntState)
+    if PRECISE_NOSPECIALIZEINFER[] && method.nospecializeinfer
+        method.nospecializeinfer = false
+        push!(CLEARED_NOSPECIALIZEINFER, method)
+    end
+    return @invoke CC.abstract_call_method(interp::CC.AbstractInterpreter, method::Method, sig::Any, sparams::Core.SimpleVector, hardlimit::Bool, si::CC.StmtInfo, sv::CC.AbsIntState)
+end
+
+function restore_nospecializeinfer!()
+    for m in CLEARED_NOSPECIALIZEINFER
+        m.nospecializeinfer = true
+    end
+    empty!(CLEARED_NOSPECIALIZEINFER)
+    return
+end
+
 # What the splitting of calls cost, for measuring (see `bench/dispatch.jl`): for each call that was split, the types that it had, and the number of cases that it was split in (the product of the
 # numbers of types of its arguments). Only kept when `DISPATCH_STATS_ON[]` is set.
 const DISPATCH_STATS_ON = Ref(false)
@@ -390,12 +415,20 @@ function expand_dynamic_getfield!(ir::CC.IRCode)
         st isa Expr && st.head === :call && 3 <= length(st.args) <= 4 || continue
         CC.singleton_type(CC.argextype(st.args[1], ir)) === Core.getfield || continue
         name = CC.argextype(st.args[3], ir)
-        (name isa Core.Const || CC.widenconst(name) !== Symbol) && continue
+        name isa Core.Const && continue
+        kind = CC.widenconst(name)
+        (kind === Symbol || kind === Int) || continue
         T = CC.widenconst(CC.argextype(st.args[2], ir))
-        (T isa DataType && isconcretetype(T) && !(T <: Tuple) && !(T <: Type) && T !== DataType && T !== Module &&
+        (T isa DataType && isconcretetype(T) && !(T <: Type) && T !== DataType && T !== Module &&
          Base.datatype_fieldcount(T) isa Int && 0 < Base.datatype_fieldcount(T) <= 64) || continue
-        mi = CC.specialize_method(only(methods(struct_field)), Tuple{typeof(struct_field),T,Symbol}, Core.svec())
-        ir.stmts[pc][:stmt] = Expr(:invoke, mi, struct_field, st.args[2], st.args[3])
+        if kind === Symbol
+            T <: Tuple && continue
+            mi = CC.specialize_method(only(methods(struct_field)), Tuple{typeof(struct_field),T,Symbol}, Core.svec())
+            ir.stmts[pc][:stmt] = Expr(:invoke, mi, struct_field, st.args[2], st.args[3])
+        else
+            mi = CC.specialize_method(only(methods(index_field)), Tuple{typeof(index_field),T,Int}, Core.svec())
+            ir.stmts[pc][:stmt] = Expr(:invoke, mi, index_field, st.args[2], st.args[3])
+        end
     end
     return ir
 end

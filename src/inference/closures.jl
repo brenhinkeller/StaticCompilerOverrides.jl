@@ -293,7 +293,13 @@ end
 
 # Compile with the types of functions that the code has: `compile` is run, and again with what it found if it has a call of an unknown function that it could not
 # resolve (it failed, or it is not `strict`: such a call aborts the program), or a `@cfunction` (see cfunctions.jl), until it finds no more
-function with_function_candidates(compile; strict::Bool = true)
+with_function_candidates(compile; strict::Bool = true) = try
+    with_function_candidates_passes(compile; strict)
+finally
+    restore_nospecializeinfer!() # (what was inferred with the types of the call is kept; the methods are as they were)
+end
+
+function with_function_candidates_passes(compile; strict::Bool = true)
     empty!(FUNCTION_CANDIDATES)
     empty!(Runtime.CFUNCTION_ROOTS)
     empty!(CFUNCTION_FUNCTIONS)

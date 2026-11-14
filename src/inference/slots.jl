@@ -62,6 +62,7 @@ function reset_slots!()
     SLOT_PASSES[] = 0
     mode = get(ENV, "STATIC_RUNTIME_SLOTS", "on")
     SLOTS_MODE[] = mode == "0" ? :off : mode == "observe" ? :observe : :on
+    PRECISE_NOSPECIALIZEINFER[] = get(ENV, "STATIC_RUNTIME_NOSPECIALIZEINFER", "1") != "0"
     return
 end
 
