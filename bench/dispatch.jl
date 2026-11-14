@@ -136,6 +136,12 @@ function main_cli(args)
         foreach(println, ORDER)
     elseif cmd == "run"
         run_one(args[2])
+    elseif cmd == "slots"       # what the slots of an abstract type hold, in the code of the program (src/inference/slots.jl)
+        main = StaticRuntime.make_main(PROGRAMS[args[2]])
+        ENV["STATIC_RUNTIME_SLOTS"] = "observe"
+        empty!(StaticRuntime.SEEN_SLOTS)
+        Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)))
+        StaticRuntime.slots_report()
     elseif cmd == "all"
         script = @__FILE__
         results = Dict{String,String}[]

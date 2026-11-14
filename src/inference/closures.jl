@@ -9,7 +9,7 @@
 # Where that code is is not known before it is inferred, and the call is inferred before all of it is. So a compilation that has such a call, and fails (or, with
 # `strict = false`, would abort at the call), is made again with the types that the first found (`with_function_candidates`), until it finds no more.
 
-const MAX_FUNCTION_PASSES = 6
+const MAX_FUNCTION_PASSES = 8
 
 # The types of functions that were found (in the order that they were) by the compilation that is made now
 const SEEN_FUNCTIONS = Type[]
@@ -298,6 +298,7 @@ function with_function_candidates(compile; strict::Bool = true)
     empty!(Runtime.CFUNCTION_ROOTS)
     empty!(CFUNCTION_FUNCTIONS)
     empty!(CALLBACK_CANDIDATES)
+    reset_slots!() # (what the slots of a compilation hold is of the program that is compiled)
     local failure = nothing
     for pass in 1:MAX_FUNCTION_PASSES
         empty!(SEEN_FUNCTIONS)
@@ -306,6 +307,9 @@ function with_function_candidates(compile; strict::Bool = true)
         empty!(SEEN_CALLBACKS)
         empty!(SEEN_BOXES)
         CALLBACK_CALL_REQUESTED[] = false
+        REGISTERED_DISPATCH_USED[] = false
+        reset_slots_pass!()
+        slots_retry = false
         FUNCTION_DISPATCH_REQUESTED[] = false
         FUNCTION_UNION_USED[] = false
         failure = nothing
@@ -314,18 +318,23 @@ function with_function_candidates(compile; strict::Bool = true)
         try
             result = compile()
         catch e
-            (e isa UnsupportedCodeError || e isa InferenceError) || rethrow()
-            failure = e
+            if e isa SlotsChanged
+                slots_retry = true # (the types of the slots are different: see slots.jl)
+            else
+                (e isa UnsupportedCodeError || e isa InferenceError) || rethrow()
+                failure = e
+            end
         end
         new = Type[T for T in SEEN_FUNCTIONS if !(T in FUNCTION_CANDIDATES)]
         @debug "compilation pass" pass seconds = round(time() - started; digits = 1) candidates = length(FUNCTION_CANDIDATES) new = length(new) cfunctions = length(Runtime.CFUNCTION_ROOTS) failed = failure !== nothing requested = FUNCTION_DISPATCH_REQUESTED[] _id = :static_passes
         newc = [c for c in SEEN_CFUNCTIONS if !any(r -> r.ftype === c[1] && r.args == c[2] && r.ret === c[3], Runtime.CFUNCTION_ROOTS)]
-        more_functions = FUNCTION_DISPATCH_REQUESTED[] && !isempty(new) && (failure !== nothing || !strict || FUNCTION_UNION_USED[])
+        # (a pass that was cut short, as the types of the slots are different, did not get as far as telling whether the functions that it found are needed)
+        more_functions = FUNCTION_DISPATCH_REQUESTED[] && !isempty(new) && (failure !== nothing || !strict || FUNCTION_UNION_USED[] || slots_retry)
         newcb = Tuple{Type,Type}[c for c in SEEN_CALLBACKS if !(c in CALLBACK_CANDIDATES)]
         more_callbacks = CALLBACK_CALL_REQUESTED[] && !isempty(newcb)
         # (the types of the boxes that were found with the types that the last pass had are the ones for the next: until they are the same)
         more_boxes = any(((k, T),) -> T === Any ? haskey(BOX_TYPES, k) : get(BOX_TYPES, k, nothing) !== T, SEEN_BOXES)
-        retry = pass < MAX_FUNCTION_PASSES && (more_functions || more_callbacks || !isempty(newc) || more_boxes)
+        retry = pass < MAX_FUNCTION_PASSES && (more_functions || more_callbacks || !isempty(newc) || more_boxes || slots_retry)
         if retry
             if more_boxes
                 for (k, T) in SEEN_BOXES
@@ -342,6 +351,7 @@ function with_function_candidates(compile; strict::Bool = true)
             end
             continue
         end
+        slots_retry && error("the types of the slots did not settle")
         failure === nothing || throw(failure)
         return result
     end

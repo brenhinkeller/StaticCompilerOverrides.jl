@@ -69,8 +69,12 @@ dopen(a::DOpenE) = 5
         @test static_result(g) == g()
     end
     @testset "abstract types that can't be listed stay dynamic (and are rejected)" begin
-        f() = (v = DOpen[DOpenB(1), DOpenB(2)]; sum(dopen, v))
+        # (what is stored in the slot is not known: the type of it is only `DOpen`)
+        f() = (v = DOpen[Base.inferencebarrier(DOpenB(1))::DOpen, DOpenB(2)]; sum(dopen, v))
         @test static_status(f)[1] == :compile_error
+        # (what is stored is known: the types that the slot holds are what is dispatched on)
+        f2() = (v = DOpen[DOpenB(1), DOpenC(2)]; sum(dopen, v))
+        @test static_result(f2) == f2()
         h() = (v = Any[1, 2.5]; sum(x -> x isa Int ? 1 : 2, v))
         @test static_status(h)[1] == :ok # (the tests of a type are not dispatch)
     end
@@ -99,7 +103,10 @@ dopen(a::DOpenE) = 5
             p = run(ignorestatus(pipeline(`$exe`; stdout = out, stderr = devnull)))
             return p.exitcode, String(take!(out))
         end
-        code, out = exe_output(() -> (v = Any[1, DUnregistered(1)]; s = 0; for x in v; s += dnamed(x); end; s))
+        # (a type that the program stores in the slot is dispatched on as well, registered or not)
+        @test static_result(() -> (v = Any[1, DUnregistered(7)]; s = 0; for x in v; s += dnamed(x); end; s)) == 1 + 7
+        # (what is stored is not known here, so it is the registered types)
+        code, out = exe_output(() -> (v = Any[1, Base.inferencebarrier(DUnregistered(1))::Any]; s = 0; for x in v; s += dnamed(x); end; s))
         @test code == 1
         @test occursin("MethodError", out) && occursin("dnamed", out)
         add_dispatch_candidates!(DUnregistered)

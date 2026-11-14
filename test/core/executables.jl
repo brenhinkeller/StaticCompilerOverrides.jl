@@ -169,3 +169,37 @@ end
     @test read(ignorestatus(`$exe a b`), String) == "3\n"
     @test exit_code(exe, "a", "b") == 4
 end
+
+# The optimizer reads the alignment of a pointer from the bits of the address that it was in the process that compiles (`inttoptr 0x162293e80` is aligned to 128 bytes, by chance), and the SLP vectorizer made
+# an aligned `vmovaps ymm` of four of such loads. The object that replaces the address is aligned to 16 bytes (and its data, 16 bytes in, to 16): the program crashed on the processors that have it
+# (`clamp_embedded_alignment!`). The accesses of what was embedded are as aligned as it is.
+@testset "The alignment of an access to an embedded object is the one that it has" begin
+    ir = """
+    @g = global <{ i64, i64, [32 x i8] }> zeroinitializer, align 16
+    declare void @llvm.memcpy.p0.p0.i64(ptr noalias writeonly captures(none), ptr noalias readonly captures(none), i64, i1 immarg)
+    define i64 @f(ptr %p, i64 %i) {
+      %a = load i64, ptr getelementptr inbounds (i8, ptr @g, i64 16), align 128
+      %b = load <4 x i64>, ptr getelementptr inbounds (i8, ptr @g, i64 16), align 32
+      %c = load i64, ptr getelementptr inbounds (i8, ptr @g, i64 24), align 64
+      %d = load i64, ptr %p, align 128
+      store <4 x i64> %b, ptr %p, align 32
+      store i64 %a, ptr getelementptr inbounds (i8, ptr @g, i64 32), align 128
+      call void @llvm.memcpy.p0.p0.i64(ptr align 128 %p, ptr align 128 getelementptr inbounds (i8, ptr @g, i64 16), i64 32, i1 false)
+      ret i64 %a
+    }
+    """
+    LLVM.@dispose ctx = LLVM.Context() begin
+        mod = parse(LLVM.Module, ir)
+        @test StaticRuntime.Runtime.clamp_embedded_alignment!(mod)
+        text = string(mod)
+        @test occursin("load i64, ptr getelementptr inbounds (i8, ptr @g, i64 16), align 16", text)
+        @test occursin("load <4 x i64>, ptr getelementptr inbounds (i8, ptr @g, i64 16), align 16", text)
+        @test occursin("load i64, ptr getelementptr inbounds (i8, ptr @g, i64 24), align 8", text)
+        @test occursin("store i64 %a, ptr getelementptr inbounds (i8, ptr @g, i64 32), align 16", text)
+        @test occursin("align 16 getelementptr inbounds (i8, ptr @g, i64 16)", text) # (the argument of the `memcpy`)
+        @test occursin("load i64, ptr %p, align 128", text) # (not an embedded object: left as it is)
+        @test occursin("store <4 x i64> %b, ptr %p, align 32", text)
+        @test !StaticRuntime.Runtime.clamp_embedded_alignment!(mod) # (nothing more to do)
+        LLVM.dispose(mod)
+    end
+end

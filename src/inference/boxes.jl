@@ -45,6 +45,10 @@ function operand_type(src::Core.CodeInfo, x)
         return typeof(x.value)
     elseif x isa GlobalRef
         return Any
+    elseif x isa Core.BindingPartition
+        # (the code refers to a global through its binding partition: a constant has the type of its value)
+        f = called_function(nothing, x)
+        return f === nothing && !((x.kind & 0x0f) in (Base.PARTITION_KIND_CONST, Base.PARTITION_KIND_CONST_IMPORT, Base.PARTITION_KIND_IMPLICIT_CONST, Base.PARTITION_KIND_BACKDATED_CONST)) ? Any : typeof(f)
     elseif x isa Expr
         return Any
     else
@@ -260,13 +264,37 @@ function CC.abstract_call_known(interp::OverridesInterpreter, f::typeof(Core.get
     isempty(BOX_TYPES) && return call
     sv isa CC.InferenceState || return call
     argtypes = arginfo.argtypes
-    length(argtypes) == 3 && CC.widenconst(argtypes[2]) === Core.Box || return call
+    length(argtypes) == 3 || return call
     t = argtypes[3]
-    (t isa Core.Const && t.val === :contents) || return call
-    arginfo.fargs === nothing && return call
-    T = box_content_type(sv, arginfo.fargs[2])
+    T = nothing
+    if CC.widenconst(argtypes[2]) === Core.Box
+        (t isa Core.Const && t.val === :contents) || return call
+        arginfo.fargs === nothing && return call
+        T = box_content_type(sv, arginfo.fargs[2])
+    elseif t isa Core.Const && (t.val isa Symbol || t.val isa Integer)
+        # (a field of an abstract type: what has been stored in it, see slots.jl)
+        key = field_slot_key(argtypes[2], t.val)
+        key === nothing || (T = slot_read_type(key))
+    end
     T === nothing && return call
     return CC.Future{CC.CallMeta}(call, interp, sv) do result, interp, sv
-        return CC.CallMeta(T, result.exct, result.effects, result.info, result.refinements)
+        return CC.CallMeta(refined_read(T, result.rt), result.exct, result.effects, result.info, result.refinements)
+    end
+end
+
+# What is read from the elements of a memory of an abstract type (`Memory{Any}`) is of the types that were stored in them (see slots.jl)
+function CC.abstract_call_known(interp::OverridesInterpreter, f::typeof(Core.memoryrefget), arginfo::CC.ArgInfo, si::CC.StmtInfo,
+                                vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int = CC.get_max_methods(interp, f, sv))
+    call = @invoke CC.abstract_call_known(interp::CC.AbstractInterpreter, f::Any, arginfo::CC.ArgInfo, si::CC.StmtInfo,
+                                          vtypes::Union{Nothing,Vector{CC.VarState}}, sv::CC.AbsIntState, max_methods::Int)
+    isempty(SLOT_TYPES) && return call
+    sv isa CC.InferenceState || return call
+    length(arginfo.argtypes) >= 2 || return call
+    key = elem_slot_key(arginfo.argtypes[2])
+    key === nothing && return call
+    T = slot_read_type(key)
+    T === nothing && return call
+    return CC.Future{CC.CallMeta}(call, interp, sv) do result, interp, sv
+        return CC.CallMeta(refined_read(T, result.rt), result.exct, result.effects, result.info, result.refinements)
     end
 end

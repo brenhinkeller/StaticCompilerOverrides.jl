@@ -31,7 +31,7 @@ using Libdl
             "round"      => () -> Int(round(big(2.5))),
             "to Float64" => () -> Float64(sqrt(big(2))) > 1.41,
             "precision"  => () -> setprecision(() -> Int(precision(big(1.5))), BigFloat, 100),
-        ]; broken = ("precision",))
+        ])
     end
 
     @testset "Regex" begin

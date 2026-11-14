@@ -457,6 +457,66 @@ function embed_constants!(e::ObjectEmbedder)
     return changed
 end
 
+# The alignment that the objects that were embedded really have (a global of `EMBED_ALIGN`, and the object 16 bytes into it), and what the code says it is. The optimizer (that ran before the objects were
+# embedded) read the alignment of a pointer from the bits of the address that it was: `inttoptr 0x162293e80` has 7 zero bits, so its loads are `align 128` (and a `<4 x i64>` that the SLP vectorizer made of
+# four loads is `align 32`: `vmovaps ymm`, which faults on an address that is not a multiple of 32). The address was one of an object in the process that compiled, which is aligned as the allocator
+# chose, so which loads were affected changed from run to run, and the program only crashed on a processor that has the wide instructions. The accesses to what was embedded are given the alignment of
+# what they are in the binary.
+function embedded_alignment(v)
+    offset = 0
+    while true
+        if v isa LLVM.GlobalVariable
+            a = Int(LLVM.alignment(v))
+            a == 0 && return nothing
+            return offset == 0 ? a : min(a, 1 << trailing_zeros(offset))
+        elseif v isa LLVM.GetElementPtrInst || (v isa LLVM.ConstantExpr && LLVM.opcode(v) == LLVM.API.LLVMGetElementPtr)
+            ops = LLVM.operands(v)
+            length(ops) == 2 || return nothing # (indexes into a type that has fields: not made by the embedder)
+            # (an index that is not a constant is a multiple of the size of what it indexes, which the alignment that the optimizer found already took into account)
+            if ops[2] isa LLVM.ConstantInt
+                T = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(v))
+                T isa LLVM.IntegerType || return nothing
+                offset += convert(Int, ops[2]) * (Int(LLVM.width(T)) ÷ 8)
+            end
+            v = ops[1]
+        elseif v isa LLVM.BitCastInst || v isa LLVM.AddrSpaceCastInst || (v isa LLVM.ConstantExpr && LLVM.opcode(v) in (LLVM.API.LLVMBitCast, LLVM.API.LLVMAddrSpaceCast))
+            v = LLVM.operands(v)[1]
+        else
+            return nothing
+        end
+    end
+end
+
+function clamp_embedded_alignment!(mod::LLVM.Module)
+    ctx = LLVM.context(mod)
+    kind = LLVM.API.LLVMGetEnumAttributeKindForName("align", 5)
+    changed = false
+    for fn in LLVM.functions(mod), bb in LLVM.blocks(fn), inst in LLVM.instructions(bb)
+        if inst isa LLVM.LoadInst || inst isa LLVM.StoreInst
+            a = embedded_alignment(LLVM.operands(inst)[inst isa LLVM.StoreInst ? 2 : 1])
+            a === nothing && continue
+            if Int(LLVM.alignment(inst)) > a
+                LLVM.alignment!(inst, a)
+                changed = true
+            end
+        elseif inst isa LLVM.CallInst
+            ops = LLVM.operands(inst)
+            for i in 1:(length(ops) - 1) # (the last operand is the function)
+                LLVM.value_type(ops[i]) isa LLVM.PointerType || continue
+                attr = LLVM.API.LLVMGetCallSiteEnumAttribute(inst, i, kind) # (the index of an argument is 1 + its place)
+                attr == C_NULL && continue
+                have = Int(LLVM.API.LLVMGetEnumAttributeValue(attr))
+                a = embedded_alignment(ops[i])
+                (a === nothing || have <= a) && continue
+                LLVM.API.LLVMRemoveCallSiteEnumAttribute(inst, i, kind)
+                LLVM.API.LLVMAddCallSiteAttribute(inst, i, LLVM.API.LLVMCreateEnumAttribute(ctx, kind, a))
+                changed = true
+            end
+        end
+    end
+    return changed
+end
+
 # whether a name is a plain ASCII identifier, which is written `:name` by `show` (the same test is made for the symbols of the program, in `show.jl`)
 function plain_symbol_name(name)
     isempty(name) && return false

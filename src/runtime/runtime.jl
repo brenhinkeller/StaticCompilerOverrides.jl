@@ -76,6 +76,7 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, stub_errors::Bool 
     gc === false || classify_allocations!(mod)
     queries = subtype_queries(mod)
     embed_constants!(e)
+    clamp_embedded_alignment!(mod) # (the alignment of the accesses was found from the addresses of the objects in this process: see there)
     queries === nothing ? define_subtype_table!(e) : define_subtype!(e, queries)
     finalizers = uses_finalizers(mod) # (before they are linked: see `link_finalizers!`)
     link_finalizers!(mod)

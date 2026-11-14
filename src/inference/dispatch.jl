@@ -236,6 +236,18 @@ function CC.abstract_call_gf_by_type(interp::OverridesInterpreter, @nospecialize
             fname = f isa Function ? nameof(f) : f isa Type ? f : nameof(typeof(f))
             key = string(fname, "(", join(("::" * (T isa Core.TypeofVararg ? string(T) : string(CC.widenconst(T))) for T in original[2:end]), ", "), ")")
             REGISTERED_CALLS[key] = get(REGISTERED_CALLS, key, 0) + 1
+            note_dispatch_used!()
+        end
+    end
+    # (an argument of an abstract type that is not split: what the slots of the program hold may make it a type that is, see slots.jl)
+    if !registered && !REGISTERED_DISPATCH_USED[] && SLOTS_MODE[] !== :off
+        for T in arginfo.argtypes[2:end]
+            T isa Core.TypeofVararg && continue
+            T = CC.widenconst(T)
+            if T isa DataType && isabstracttype(T) && !(T <: Function) && !(T <: Type)
+                note_dispatch_used!()
+                break
+            end
         end
     end
     call = @invoke CC.abstract_call_gf_by_type(interp::CC.AbstractInterpreter, f::Any, arginfo::CC.ArgInfo, si::CC.StmtInfo, atype::Any,
@@ -308,6 +320,8 @@ function called_function(code, x)
     end
     x isa GlobalRef && return isdefined(x.mod, x.name) ? getglobal(x.mod, x.name) : nothing
     x isa QuoteNode && return x.value
+    # (optimized code refers to a global through its binding partition: a constant binding holds the value)
+    x isa Core.BindingPartition && return (x.kind & 0x0f) in (Base.PARTITION_KIND_CONST, Base.PARTITION_KIND_CONST_IMPORT, Base.PARTITION_KIND_IMPLICIT_CONST, Base.PARTITION_KIND_BACKDATED_CONST) ? x.restriction : nothing
     return x isa Expr ? nothing : x
 end
 

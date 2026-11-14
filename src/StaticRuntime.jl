@@ -40,6 +40,7 @@ include("overrides/finalizers.jl") # finalizer(f, x) of a Julia function
 include("inference/dispatch.jl")    # dynamic dispatch on abstract types, by union splitting
 include("inference/closures.jl")    # calls of functions that are not known: closures in collections, in boxes
 include("inference/boxes.jl")       # the variables that closures take, as boxes of the type of what they hold
+include("inference/slots.jl")       # what the slots of an abstract type (a `Vector{Any}`, a field of the type `Any`) hold
 include("inference/cfunctions.jl")  # @cfunction: C functions that call functions of the program
 include("inference/diagnostics.jl") # Why an entry point does not infer to a concrete type
 

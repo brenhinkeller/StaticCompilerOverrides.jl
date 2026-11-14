@@ -184,8 +184,8 @@ end
     @testset "table of the types of the small tags" begin
         # the types that code names are loaded one by one: no table
         @test !occursin("@jl_small_typeof = linkonce_odr", ir(() -> (println(42); 0)))
-        # an index that is only known when run (the type of a boxed value) needs it
-        boxed(i) = Any[1, "a", :s][i]
+        # an index that is only known when run (the type of a boxed value) needs it (when the types of what is stored are not known: they are, for the elements of an `Any[1, "a", :s]`, see slots.jl)
+        boxed(i) = Any[1, "a", Base.inferencebarrier(:s)::Any][i]
         @test occursin("@jl_small_typeof = linkonce_odr", ir(() -> (c = 0; for i in 1:3; c += (boxed(i) isa Number); end; c)))
     end
 end

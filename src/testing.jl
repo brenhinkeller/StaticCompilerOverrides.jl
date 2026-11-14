@@ -37,14 +37,19 @@ function static_result(f; dir = mktempdir(), kwargs...)
     exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), dir, string(nameof(main)); kwargs...)
     try
         return parse(Int, readchomp(`$exe`))
-    catch
-        crash_backtrace(exe) # (what a crash of the program was, in the log of CI, where it can't be run again by hand)
+    catch err
+        crash_backtrace(exe, err) # (what a crash of the program was, in the log of CI, where it can't be run again by hand)
         rethrow()
     end
 end
 
-# print a backtrace of the program, run again under a debugger, if there is one (`lldb` on macOS, `gdb` on Linux)
-function crash_backtrace(exe)
+# whether the error is of a program that was stopped by a signal (a crash: a segmentation fault, an illegal instruction, an abort), not one that exited with a status, as when it stops with a message of its own
+# (`Dynamic behavior is not supported`, an error that is not caught), which says what it is and which is what some tests expect
+crashed(err) = err isa ProcessFailedException && any(p -> p.termsignal != 0, err.procs)
+
+# print a backtrace of the program, run again under a debugger, if there is one (`lldb` on macOS, `gdb` on Linux), when it crashed (see `crashed`)
+function crash_backtrace(exe, err)
+    crashed(err) || return
     cmd = if Sys.which("lldb") !== nothing
         # (`-k` runs when the program crashes: in batch mode, nothing that is given with `-o` runs after it does)
         `lldb --batch -o run -k bt -k "register read" -k "disassemble --pc --count 40" -k "memory read --force --size 8 --count 16 \$sp" -- $exe`
@@ -55,10 +60,10 @@ function crash_backtrace(exe)
         return
     end
     try
-        @info "The program failed: a backtrace of it" exe
+        @info "The program failed. Backtrace:" exe
         println(stderr, read(ignorestatus(cmd), String))
     catch err
-        @info "No backtrace" err
+        @info "The program failed. Backtrace not available." err
     end
     return
 end
@@ -105,7 +110,7 @@ function static_status(f; kwargs...)
     out = try
         read(pipeline(`$exe`; stderr = err_path), String)
     catch e
-        crash_backtrace(exe) # (what a crash of the program was, in the log of CI, where it can't be run again by hand)
+        crash_backtrace(exe, e) # (what a crash of the program was, in the log of CI, where it can't be run again by hand)
         return :runtime_error, first(sprint(showerror, e), 300)
     end
     # after compiling, which snapshots the state of any global data

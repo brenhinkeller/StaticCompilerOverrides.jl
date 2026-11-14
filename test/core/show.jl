@@ -57,12 +57,14 @@ StaticRuntime.add_show_candidates!(ShowPt, Tuple{Int,Float64})
 
     # types and values that are not supported are rejected when compiling, or are an error when run (not wrong output)
     @testset "unsupported" begin
-        @test static_status(() -> (println(Any[ShowBox(1)]); 1))[1] == :runtime_error # not in the candidates
+        @test static_status(() -> (println(Any[Base.inferencebarrier(ShowBox(1))]); 1))[1] == :runtime_error # not in the candidates, and what is in the list is not known when compiling
+        @test static_status(() -> (println(Any[ShowBox(1)]); 1))[1] == :ok # (the types that a list holds are those that the program puts in it: see slots.jl)
         # (a symbol that is not an ASCII identifier is written as Julia writes it if the binary has it; one that the program makes is an error unless
         # it is certainly not an identifier or an operator: see `testsymbols.jl`)
         @test static_status(() -> (println(Any[Symbol("+")]); 1))[1] == :ok
         @test static_status(() -> (println(Any[Symbol("a+" * Base.inferencebarrier("b"))]); 1))[1] == :runtime_error # made by the program, and not clearly an operator or not
-        @test static_status(() -> (println(Any[Dict(1 => 2)]); 1))[1] == :runtime_error # not in the candidates
+        @test static_status(() -> (println(Any[Base.inferencebarrier(Dict(1 => 2))]); 1))[1] == :runtime_error # not in the candidates
+        @test static_status(() -> (println(Any[Dict(1 => 2)]); 1))[1] == :ok
         @test static_status(() -> (println(Base.inferencebarrier(Any[1])); 1))[1] == :runtime_error # (a call with an `Any`: over the types that are registered, which have not `Vector{Any}`)
     end
 
