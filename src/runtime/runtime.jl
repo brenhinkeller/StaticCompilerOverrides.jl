@@ -60,7 +60,7 @@ include("libraries.jl")   # the functions of libraries that are called by their 
 include("cfunctions_link.jl") # the wrappers of `@cfunction`, that call the functions of the program
 
 # Define the runtime functions that `mod` calls but does not define.
-function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux() ? :auto : false, libraries::Symbol = :system, bounded::Bool = false, optimize::Bool = false)
+function link_runtime!(mod::LLVM.Module; strict::Bool = true, stub_errors::Bool = true, allow = (), gc = Sys.isapple() || Sys.islinux() ? :auto : false, libraries::Symbol = :system, bounded::Bool = false, optimize::Bool = false)
     link_cfunctions!(mod) && run!(GlobalDCEPass(), mod)
     blas = resolve_blas_lookups!(mod) # (before what they are given is embedded)
     library_plan = resolve_library_lookups!(mod; libraries)
@@ -81,6 +81,10 @@ function link_runtime!(mod::LLVM.Module; strict::Bool = true, allow = (), gc = S
     link_finalizers!(mod)
     resolve_lazy_lookups!(mod)
     define_aborting_functions!(mod)
+    if stub_errors
+        stubbed = stub_error_paths!(mod; allow)
+        isempty(stubbed) || @debug "Code that needs the Julia runtime, and is only on the way to an error, was replaced by a stop with a message" count = length(stubbed) first = first(stubbed, 5) _id = :static_error_paths
+    end
     if strict
         dynamic = dynamic_runtime_calls(mod; allow)
         pointers = unresolved_pointer_uses(mod)
@@ -132,52 +136,21 @@ function drop_type_based_aliasing!(mod::LLVM.Module)
     return
 end
 
-# The functions that run only where the program is about to stop with an error: those that are `cold` or `noreturn` (what Julia marks the functions that throw), and those that are only called from them or from a
-# block that ends in `unreachable` (the constructors of the exceptions and their messages, `show` of them, ...).
+# The functions that are rarely run: what is known to be so is the code on the way to an error (see `error_functions`), and the functions that Julia marks `cold` (the constructors of the exceptions,
+# what throws) or `noreturn`, with those that are only called from them. A path that is rarely run and returns is not here (it can be that, and not an error): this is what is known, and not all that is cold.
 function cold_functions(mod::LLVM.Module)
-    key(f) = Ptr{Cvoid}(f.ref)
-    cold = Set{Ptr{Cvoid}}()
-    for fn in LLVM.functions(mod)
-        LLVM.isdeclaration(fn) && continue
-        attrs = collect(LLVM.function_attributes(fn))
-        (LLVM.EnumAttribute("cold") in attrs || LLVM.EnumAttribute("noreturn") in attrs) && push!(cold, key(fn))
-    end
-    sites = Dict{Ptr{Cvoid},Vector{Tuple{LLVM.Function,LLVM.BasicBlock}}}() # (where each is called from)
-    referred = Set{Ptr{Cvoid}}()                                               # (those that something refers to otherwise: they can be called from anywhere)
-    for fn in LLVM.functions(mod)
-        LLVM.isdeclaration(fn) && continue
-        for use in LLVM.uses(fn)
-            inst = LLVM.user(use)
-            if inst isa LLVM.CallInst && LLVM.called_operand(inst) == fn
-                push!(get!(Vector{Tuple{LLVM.Function,LLVM.BasicBlock}}, sites, key(fn)), (LLVM.parent(LLVM.parent(inst)), LLVM.parent(inst)))
-            else
-                push!(referred, key(fn))
-            end
-        end
-    end
-    changed = true
-    while changed
-        changed = false
-        for fn in LLVM.functions(mod)
-            LLVM.isdeclaration(fn) && continue
-            k = key(fn)
-            (k in cold || k in referred || !haskey(sites, k)) && continue
-            if all(site -> key(site[1]) in cold || LLVM.terminator(site[2]) isa LLVM.UnreachableInst, sites[k])
-                push!(cold, k)
-                changed = true
-            end
-        end
-    end
-    return cold
+    marked = Set{LLVM.Function}(fn for fn in LLVM.functions(mod) if !LLVM.isdeclaration(fn) &&
+                                any(a -> a in collect(LLVM.function_attributes(fn)), (LLVM.EnumAttribute("cold"), LLVM.EnumAttribute("noreturn"))))
+    return error_functions(mod, Dict{LLVM.Function,Set{LLVM.BasicBlock}}(); seeds = marked)
 end
 
-# The code that runs only to stop with an error is optimized for size (`optsize` and `minsize`, as `-Oz` does): it is 10% of the code of a program that prints, parses or sorts, and nothing waits for it. (The machine
-# outliner of AArch64 runs on the functions that are `minsize`.) The rest of the program is not: the same for all of it takes 12 to 34% more time.
+# The code that is rarely run is optimized for size (`optsize` and `minsize`, as `-Oz` does): the code that runs only to stop with an error is 10% of the code of a program that prints, parses or sorts, and nothing
+# waits for it. (The machine outliner of AArch64 runs on the functions that are `minsize`.) The rest of the program is not: the same for all of it takes 12 to 34% more time.
 function optimize_cold_for_size!(mod::LLVM.Module)
     cold = cold_functions(mod)
     for fn in LLVM.functions(mod)
         LLVM.isdeclaration(fn) && continue
-        Ptr{Cvoid}(fn.ref) in cold || continue
+        fn in cold || continue
         push!(LLVM.function_attributes(fn), LLVM.EnumAttribute("optsize"))
         push!(LLVM.function_attributes(fn), LLVM.EnumAttribute("minsize"))
     end

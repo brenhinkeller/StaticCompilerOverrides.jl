@@ -273,8 +273,21 @@ The names are those of the functions of the Julia runtime that the code needs, a
 functions that call them. For a `ccall` into a library that could not be resolved, it says which function.
 (`undefined_symbols` lists the same things for a function, without compiling it.)
 
-Often, the code involved is only reached on a path that fails, for instance to build the message
-of an error. `strict = false` compiles such code anyway, defining those runtime functions to print
+The names are followed by where in the Julia code each is: the function and the types of its
+arguments (`<unknown type>` is an argument that the compiler did not know the type of, which is
+usually the cause), the source lines, including what each was inlined into, and the way there from the
+entry point. (When it fails, the program is compiled again with the debug information, which is
+removed before the check, to find the lines.)
+
+**Code that is only on the way to an error is not refused.** The code involved is often only reached
+on a path that fails, for instance to build the message of an error, or to say which method was
+not found. A call that needs the runtime and that is only reached on the way to a `throw` (no path
+from it goes on with the rest of the program: the path ends in a `throw`, or an `exit`) is replaced by a stop with a message that says what it was
+(`JULIA_DEBUG=StaticRuntime` lists them). The program is the same until it gets there; what it
+prints is not what Julia prints, and an exception that would have been caught stops the program.
+`stub_errors = false` refuses these too. The same call on a path that goes on is refused.
+
+`strict = false` compiles all of the code anyway, defining those runtime functions to print
 a message and abort if they are ever called (and the addresses will crash the program if used).
 `allow = ("function_name", ...)` accepts specific runtime functions, and keeps the check for the rest.
 Run with `JULIA_DEBUG=StaticRuntime` to see which are defined this way.

@@ -82,3 +82,27 @@ inference_always() = inference_leaf(-1) + error("never")
     @test err.rt === Union{}
     @test occursin("inference_always()", text) && occursin("inference_leaf(::Int64)", text) && occursin("always throws", text)
 end
+
+# A call that needs the runtime and is only on the way to a `throw` (the message of an error, a method looked up to say which one) is not refused: it stops the program, with a message, if it is reached
+# (src/runtime/strict.jl). The same call where the program goes on is.
+cold_dynamic_only(x::Int) = x > 0 ? x * 2 : (io = Base.inferencebarrier(STDOUT)::IO; println(io, "bad value"); throw(ArgumentError("bad")))
+cold_dynamic_hot(x::Int) = (io = Base.inferencebarrier(STDOUT)::IO; println(io, x); x)
+cold_reflection(f, x::Int) = x > 0 ? x : error("no method like ", first(methods(f)), " for ", x)
+
+@testset "Code that is only on the way to an error" begin
+    # compiled, and the part that goes on is the same
+    check_cases([
+        "an unsupported call on the way to a throw"  => @opaque(() -> cold_dynamic_only(opaque(4))),
+        "reflection in the message of an error"      => @opaque(() -> cold_reflection(sin, opaque(5))),
+    ]; batch = false)
+    # reaching it stops the program, and the message says why
+    main = StaticRuntime.make_main(@opaque(() -> cold_dynamic_only(opaque(-1))))
+    exe = Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)))
+    err_path = tempname()
+    proc = run(pipeline(ignorestatus(`$exe`); stdout = devnull, stderr = err_path))
+    @test proc.exitcode == 1
+    # (and with `stub_errors = false` it is refused, as the same call is where the program goes on)
+    @test_throws UnsupportedCodeError Base.invokelatest(compile_executable, main, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(main)); stub_errors = false)
+    hot = StaticRuntime.make_main(@opaque(() -> cold_dynamic_hot(opaque(3))))
+    @test_throws UnsupportedCodeError Base.invokelatest(compile_executable, hot, (Int, Ptr{Ptr{UInt8}}), mktempdir(), string(nameof(hot)))
+end

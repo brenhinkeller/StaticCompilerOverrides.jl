@@ -108,9 +108,9 @@ end
 # package installed in the code that they generate (`llvm_postprocess`)
 for f in (:compile_executable, :compile_shlib, :static_code_typed, :static_llvm_module)
     @eval begin
-        function $f(args...; method_table = method_table, params = nothing, strict::Bool = true, allow = (), gc = default_gc(), target = default_target(),
+        function $f(args...; method_table = method_table, params = nothing, strict::Bool = true, stub_errors::Bool = true, allow = (), gc = default_gc(), target = default_target(),
                     libraries::Symbol = :system, small::Bool = false, optimize::Bool = default_optimize(),
-                    llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, allow, gc, libraries, optimize, bounded = $(f in (:compile_executable, :static_llvm_module)))), kwargs...)
+                    llvm_postprocess = mod -> (report_registered_dispatch(); link_runtime!(mod; strict, stub_errors, allow, gc, libraries, optimize, bounded = $(f in (:compile_executable, :static_llvm_module)))), kwargs...)
             libraries in (:system, :bundle) || throw(ArgumentError("`libraries` is `:system` or `:bundle`, not `$(repr(libraries))`"))
             check_gc(gc)
             register_custom_deepcopy!() # (this can change the parameters: they have the version of the lists of types)
